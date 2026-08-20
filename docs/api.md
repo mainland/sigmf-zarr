@@ -64,3 +64,24 @@
    :members:
    :undoc-members:
 ```
+
+## CLI
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.cli.command
+   :members:
+   :undoc-members:
+
+.. automodule:: sigmf_zarr.cli.group
+   :members:
+   :undoc-members:
+
+.. automodule:: sigmf_zarr.cli.output
+   :members:
+   :undoc-members:
+
+.. automodule:: sigmf_zarr.cli.context
+   :members:
+   :undoc-members:
+
+```
