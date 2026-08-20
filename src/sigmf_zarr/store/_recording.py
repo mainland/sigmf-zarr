@@ -1811,6 +1811,44 @@ class SigMFRecording:
             self._invalidate_integrity(metadata=True)
             self._raw_group.attrs["global"] = metadata
 
+    def calculate_sha512(self) -> str:
+        """Calculate SHA-512 over the standard SigMF dataset byte stream.
+
+        Returns:
+            Lowercase SHA-512 hexadecimal digest.
+
+        Raises:
+            ValueError: If the recording cannot be encoded as standard SigMF.
+        """
+        from sigmf_zarr.sigmf import calculate_sha512
+
+        return calculate_sha512(self)
+
+    def update_sha512(self) -> str:
+        """Calculate and store ``core:sha512`` for the current samples.
+
+        Returns:
+            Stored lowercase SHA-512 hexadecimal digest.
+
+        Raises:
+            ValueError: If the recording cannot be encoded as standard SigMF.
+        """
+        value = self.calculate_sha512()
+        self.set_global_field(SHA512_KEY, value)
+        return value
+
+    def verify_sha512(self) -> bool:
+        """Verify the current samples against declared ``core:sha512``.
+
+        Returns:
+            True only when a valid declared digest is present and matches.
+
+        Raises:
+            ValueError: If the recording cannot be encoded as standard SigMF.
+        """
+        from sigmf_zarr.sigmf import verify_sha512
+
+        return verify_sha512(self)
 
     @property
     def captures(self) -> list[JSONObject]:

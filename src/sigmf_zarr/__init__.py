@@ -4,6 +4,10 @@ from importlib.metadata import PackageNotFoundError, version
 
 from sigmf_zarr.provenance import capture_inputs, verify_inputs
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
+from sigmf_zarr.sigmf import (
+    calculate_sha512,
+    verify_sha512,
+)
 from sigmf_zarr.store import (
     ChecksumName,
     SigMFCollection,
@@ -21,7 +25,9 @@ __all__ = [
     "ZarrFormat",
     "ReadOnlyArray",
     "ReadOnlyGroup",
+    "calculate_sha512",
     "capture_inputs",
+    "verify_sha512",
     "verify_inputs",
 ]
 
