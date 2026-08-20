@@ -241,6 +241,105 @@ recording.add_index(
 Index length must match the selected runtime axis. For example, an `item`
 index on a batched recording with `16` items must have length `16`.
 
+## Per-item metadata
+
+Use per-item metadata for irregular or nested metadata that cannot be
+represented efficiently as a typed index. Each entry can supplement shared
+`global`, `captures`, and `annotations` metadata:
+
+```python
+recording = store.recordings.create(
+    "irregular",
+    batched=True,
+    sample_dtype=np.float32,
+    sample_shape=(2, 128),
+    sample_axes=("iq", "time"),
+    overwrite=True,
+)
+item_batch = np.zeros((2, 2, 128), dtype=np.float32)
+
+recording.append_samples(
+    item_batch,
+    item_metadata=[
+        None,
+        {
+            "global": {"core:frequency": 915_000_000.0},
+            "captures": [
+                {
+                    "core:sample_start": 0,
+                    "core:datetime": "2026-08-19T12:00:00Z",
+                }
+            ],
+        },
+    ],
+)
+
+metadata = recording.get_item_metadata(1)
+resolved = recording.resolved_item_metadata(1)
+```
+
+For individual or contiguous updates, use the validated setters. They encode
+and validate only the supplied entries:
+
+```python
+recording.set_item_metadata_entry(
+    1,
+    {"global": {"core:frequency": 433_920_000.0}},
+)
+recording.set_item_metadata_slice(
+    slice(0, 2),
+    [
+        {"global": {"example:fold": "validation"}},
+        None,
+    ],
+)
+```
+
+The low-level `mutate_item_metadata()` context remains available for bulk
+encoded-array changes. On exit it reads and validates complete Zarr chunks,
+not individual scalar entries. Like `mutate_samples()`, it cannot resize the
+array. If the body changes the shape, the context restores the original shape,
+even when the body raises. It then raises `ValueError`, unless the body raised
+its own exception. Entries outside a shrunken extent are lost and become empty
+metadata objects. Values written inside the context remain, and the metadata
+hashes remain absent. `SigMFCollection.mutate()` restores the original
+collection attributes if the body raises or the result is invalid. All
+`item_metadata` chunks use CRC32C so normal reads detect physical corruption
+before JSON is accepted.
+
+The metadata list must contain one entry per appended item. If a recording
+already has item metadata, appending without `item_metadata` adds empty objects
+to keep the array aligned. Prefer typed indexes for dense scalar values such as
+class IDs and SNRs.
+
+## Channel metadata
+
+Supply one metadata object for each explicit sample channel when creating a
+recording:
+
+```python
+recording = store.recordings.create(
+    "dual-polarized",
+    batched=False,
+    sample_shape=(2, 2, 2048),
+    sample_axes=("channel", "iq", "time"),
+    channel_metadata=[
+        {"antenna:element": 0, "antenna:polarization": "H"},
+        {"antenna:element": 1, "antenna:polarization": "V"},
+    ],
+)
+
+print(recording.channel_metadata(0))
+recording.set_channel_metadata(
+    1,
+    {"antenna:element": 1, "antenna:gain": 12.5},
+)
+```
+
+Channel metadata is stored in numbered groups under `channels/`. A recording
+without an explicit channel axis has one implicit channel and an empty
+`channels/` group.
+
 ## Integrity
 
 New sample arrays use per-chunk CRC32C checksums by default. Zarr validates the

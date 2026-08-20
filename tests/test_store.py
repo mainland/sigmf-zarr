@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
 import pytest
-from numcodecs import CRC32C, Blosc
-from zarr.codecs import BloscCodec, VLenUTF8Codec
+from numcodecs import CRC32C, Blosc, VLenUTF8, Zstd
+from zarr.codecs import (
+    BloscCodec,
+    VLenUTF8Codec,
+)
 from zarr.core.group import Group
 
-from sigmf_zarr.json import JSONValue
+from sigmf_zarr.json import JSONValue, json_object
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
 
 
@@ -149,6 +152,67 @@ def test_create_defaults_to_zarr_format_3(tmp_path: Path) -> None:
 
     assert store.zarr_format == 3
     assert (store_path / "zarr.json").is_file()
+
+
+def test_zarr_format_2_round_trip(tmp_path: Path) -> None:
+    """Format-2 stores should preserve the full logical schema.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, zarr_format=2)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 4),
+        sample_axes=("iq", "time"),
+    )
+    samples = np.arange(24, dtype=np.float32).reshape(3, 2, 4)
+    recording.append_samples(samples)
+    recording.add_index(
+        "label",
+        ["BPSK", "QPSK", "OOK"],
+        axis="item",
+        field="example:label",
+    )
+    recording.set_item_metadata(
+        [
+            {"global": {"example:item": 0}},
+            None,
+            {"global": {"example:item": 2}},
+        ]
+    )
+
+    assert store.zarr_format == 2
+    assert (store_path / ".zgroup").is_file()
+    assert isinstance(recording.samples.metadata.compressor, Zstd)
+    assert any(
+        isinstance(codec, CRC32C)
+        for codec in recording.samples.metadata.filters or ()
+    )
+    assert any(
+        isinstance(codec, VLenUTF8)
+        for codec in recording.index("label").metadata.filters or ()
+    )
+    assert any(
+        isinstance(codec, VLenUTF8)
+        for codec in recording.item_metadata_array.metadata.filters or ()
+    )
+    assert any(
+        isinstance(codec, CRC32C)
+        for codec in recording.item_metadata_array.metadata.filters or ()
+    )
+
+    reopened = SigMFZarrStore.open(store_path)
+    reopened_recording = reopened.recordings["rec"]
+    assert reopened.zarr_format == 2
+    assert reopened_recording.sample_checksum == "crc32c"
+    np.testing.assert_array_equal(reopened_recording.samples[:], samples)
+    reopened_global = json_object(
+        reopened_recording.resolved_item_metadata(2)["global"], name="global"
+    )
+    assert reopened_global["example:item"] == 2
 
 
 def test_zarr_format_2_rejects_sharding(tmp_path: Path) -> None:
@@ -318,6 +382,100 @@ def test_recording_can_use_channel_iq_time_axes(tmp_path: Path) -> None:
     assert recording.axis_index("iq") == 2
     assert recording.axis_index("time") == 3
     assert recording.sample_count == 128
+
+
+def test_recording_stores_channel_metadata(tmp_path: Path) -> None:
+    """Channel metadata should align with the explicit channel axis.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, overwrite=True)
+    recording = store.recordings.create(
+        "array",
+        batched=True,
+        sample_shape=(2, 2, 8),
+        sample_axes=("channel", "iq", "time"),
+        channel_metadata=[
+            {"antenna:element": 0, "antenna:polarization": "H"},
+            {"antenna:element": 1, "antenna:polarization": "V"},
+        ],
+    )
+
+    assert recording.num_channels == 2
+    assert recording.global_metadata["sigmf-zarr:num-channels"] == 2
+    assert recording.channel_metadata(0) == {
+        "antenna:element": 0,
+        "antenna:polarization": "H",
+    }
+    recording.set_channel_metadata(
+        1,
+        {"antenna:element": 1, "antenna:gain": 12.5},
+    )
+
+    reopened = SigMFZarrStore.open(store_path).recordings.open("array")
+    assert reopened.channel_metadata(1) == {
+        "antenna:element": 1,
+        "antenna:gain": 12.5,
+    }
+
+
+@pytest.mark.parametrize("channel_index", [True, np.True_, 1.0, "1", None])
+def test_channel_metadata_rejects_noninteger_indexes(
+    tmp_path: Path, channel_index: object
+) -> None:
+    """Channel indexes must be integers, not values that format as names.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        channel_index: Invalid channel index.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr")
+    recording = store.recordings.create(
+        "rec", sample_shape=(2, 8), sample_axes=("channel", "time")
+    )
+    with pytest.raises(TypeError, match="integer"):
+        recording.channel_metadata(cast(int, channel_index))
+    with pytest.raises(TypeError, match="integer"):
+        recording.set_channel_metadata(cast(int, channel_index), {})
+    recording.set_channel_metadata(np.int64(1), {"test:value": 1})
+    assert recording.channel_metadata(np.int32(1)) == {"test:value": 1}
+
+
+def test_failed_channel_metadata_write_keeps_old_attributes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replacement must write all channel attributes at once.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr")
+    recording = store.recordings.create(
+        "rec",
+        sample_shape=(2, 8),
+        sample_axes=("channel", "time"),
+        channel_metadata=[{"test:value": 0}, {"test:value": 1}],
+    )
+    update_attributes = Group.update_attributes
+
+    def fail_new_attributes(
+        group: Group, new_attributes: dict[str, Any]
+    ) -> Group:
+        if "test:gain" in new_attributes:
+            raise OSError("injected write failure")
+        return update_attributes(group, new_attributes)
+
+    monkeypatch.setattr(Group, "update_attributes", fail_new_attributes)
+    with pytest.raises(OSError, match="injected"):
+        recording.set_channel_metadata(1, {"test:gain": 2.0})
+    monkeypatch.undo()
+    reopened = SigMFZarrStore.open(tmp_path / "store.zarr").recordings.open(
+        "rec"
+    )
+    assert reopened.channel_metadata(1) == {"test:value": 1}
 
 
 def test_recording_rejects_mismatched_channel_metadata(tmp_path: Path) -> None:
@@ -603,6 +761,115 @@ def test_append_samples_adds_batched_capture(tmp_path: Path) -> None:
     ]
 
 
+def test_recording_stores_and_resolves_item_metadata(tmp_path: Path) -> None:
+    """Per-item bundles should supplement shared recording metadata.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 4),
+        global_metadata={"core:sample_rate": 1_000_000.0},
+        captures=[{"core:sample_start": 0}],
+    )
+    recording.append_samples(np.zeros((2, 2, 4), dtype=np.float32))
+    recording.set_item_metadata(
+        [
+            None,
+            {
+                "global": {"core:frequency": 915_000_000.0},
+                "captures": [{"core:datetime": "2026-08-19T00:00:00Z"}],
+                "annotations": [{"core:label": "example"}],
+            },
+        ]
+    )
+
+    assert recording.has_item_metadata is True
+    assert "sigmf-zarr:has-item-metadata" not in recording.global_metadata
+    assert recording.get_item_metadata(0) == {}
+    assert recording.get_item_metadata(-1) == {
+        "global": {"core:frequency": 915_000_000.0},
+        "captures": [{"core:datetime": "2026-08-19T00:00:00Z"}],
+        "annotations": [{"core:label": "example"}],
+    }
+    resolved = recording.resolved_item_metadata(1)
+    resolved_global = json_object(resolved["global"], name="global")
+    assert resolved_global["core:sample_rate"] == 1_000_000.0
+    assert resolved_global["core:frequency"] == 915_000_000.0
+    assert resolved["captures"] == [
+        {"core:sample_start": 0},
+        {"core:datetime": "2026-08-19T00:00:00Z"},
+    ]
+    assert resolved["annotations"] == [{"core:label": "example"}]
+
+    reopened = SigMFZarrStore.open(store_path).recordings.open("rec")
+    assert reopened.get_item_metadata(1) == recording.get_item_metadata(1)
+    assert SigMFRecording._codecs_have_crc32c(
+        reopened.item_metadata_array.metadata.codecs
+    )
+
+
+def test_item_metadata_entry_and_slice_setters(tmp_path: Path) -> None:
+    """Validated setters should update only the selected item bundles.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(np.zeros((4, 2, 4), dtype=np.float32))
+
+    recording.set_item_metadata_entry(
+        1,
+        {"global": {"example:value": 1}},
+    )
+    recording.set_item_metadata_slice(
+        slice(2, 4),
+        [
+            {"global": {"example:value": 2}},
+            {"global": {"example:value": 3}},
+        ],
+    )
+
+    assert recording.get_item_metadata(0) == {}
+    assert recording.get_item_metadata(1) == {"global": {"example:value": 1}}
+    assert recording.get_item_metadata(2) == {"global": {"example:value": 2}}
+    assert recording.get_item_metadata(-1) == {"global": {"example:value": 3}}
+
+
+def test_item_metadata_slice_setter_validates_selection(
+    tmp_path: Path,
+) -> None:
+    """Slice updates should require contiguous, correctly sized values.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(np.zeros((4, 2, 4), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="step of 1"):
+        recording.set_item_metadata_slice(slice(None, None, 2), [{}, {}])
+
+    with pytest.raises(
+        ValueError, match="Expected metadata for 2 selected items"
+    ):
+        recording.set_item_metadata_slice(slice(1, 3), [{}])
+
+
 def test_item_metadata_validation_reads_chunks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -639,6 +906,79 @@ def test_item_metadata_validation_reads_chunks(
     recording._validate_item_metadata_array()
 
 
+def test_append_samples_keeps_item_metadata_aligned(tmp_path: Path) -> None:
+    """Batched appends should extend item metadata with explicit defaults.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(np.zeros((1, 2, 4), dtype=np.float32))
+    recording.append_samples(
+        np.ones((2, 2, 4), dtype=np.float32),
+        item_metadata=[
+            {"global": {"core:frequency": 100.0}},
+            None,
+        ],
+    )
+    recording.append_samples(np.ones((1, 2, 4), dtype=np.float32))
+
+    assert recording.item_metadata_array.shape == (4,)
+    assert recording.get_item_metadata(0) == {}
+    assert recording.get_item_metadata(1) == {
+        "global": {"core:frequency": 100.0}
+    }
+    assert recording.get_item_metadata(2) == {}
+    assert recording.get_item_metadata(3) == {}
+
+
+def test_item_metadata_rejects_storage_overrides(tmp_path: Path) -> None:
+    """Item metadata should not override SigMF-Zarr storage fields.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(np.zeros((1, 2, 4), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="cannot override storage fields"):
+        recording.set_item_metadata([{"global": {"sigmf-zarr:dtype": "<i2"}}])
+
+
+def test_clear_item_metadata_removes_array(tmp_path: Path) -> None:
+    """Clearing item metadata should restore the absent-array state.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(
+        np.zeros((1, 2, 4), dtype=np.float32),
+        item_metadata=[None],
+    )
+
+    recording.clear_item_metadata()
+
+    assert recording.has_item_metadata is False
+    assert "sigmf-zarr:has-item-metadata" not in recording.global_metadata
+    assert recording.get_item_metadata(0) == {}
+
+
 def test_item_metadata_detects_corrupted_zarr_format_3_chunk(
     tmp_path: Path,
 ) -> None:
@@ -666,6 +1006,37 @@ def test_item_metadata_detects_corrupted_zarr_format_3_chunk(
     chunk_path.write_bytes(encoded)
 
     with pytest.raises(ValueError, match="checksum do not match"):
+        recording.get_item_metadata(0)
+
+
+def test_item_metadata_detects_corrupted_zarr_format_2_chunk(
+    tmp_path: Path,
+) -> None:
+    """CRC32C should reject corrupted format-2 item metadata.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, zarr_format=2)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(
+        np.zeros((1, 2, 4), dtype=np.float32),
+        item_metadata=[{"global": {"example:value": 1}}],
+    )
+    item_metadata = recording.item_metadata_array
+    compressor = item_metadata.metadata.compressor
+    assert compressor is not None
+    chunk_path = store_path / "recordings" / "rec" / "item_metadata" / "0"
+    decoded = bytearray(compressor.decode(chunk_path.read_bytes()))
+    decoded[0] ^= 0xFF
+    chunk_path.write_bytes(bytes(compressor.encode(decoded)))
+
+    with pytest.raises(RuntimeError, match="crc32c checksum do not match"):
         recording.get_item_metadata(0)
 
 
