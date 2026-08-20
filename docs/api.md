@@ -8,6 +8,16 @@
    :undoc-members:
 ```
 
+## Store
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.store
+   :members:
+   :imported-members:
+   :undoc-members:
+   :show-inheritance:
+```
+
 ## Integrity
 
 ```{eval-rst}
