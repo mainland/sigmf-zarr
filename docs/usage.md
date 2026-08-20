@@ -27,7 +27,49 @@ Run commands from the repository environment:
 
 ## Command line
 
-The package installs the `sigmf-zarr` command.
+The package installs the `sigmf-zarr` command. Its resource-oriented commands
+inspect a store and its recordings and collections:
+
+```bash
+sigmf-zarr store store.zarr info
+sigmf-zarr store store.zarr recordings
+sigmf-zarr store store.zarr recording myrec info --format json
+sigmf-zarr store store.zarr collections
+sigmf-zarr store store.zarr collection paired info
+sigmf-zarr store store.zarr validate
+sigmf-zarr store store.zarr integrity verify
+```
+
+Inspection commands produce human-readable text by default and accept
+`--format json` for scripts. A store argument is a Zarr URL only when it starts
+with an explicit scheme, such as `s3://` or `file://`. Any other store argument
+names a local directory, including one whose name contains `#` or `?`.
+
+`validate` checks store structure and verifies every declared hash, including
+`core:sha512`. It reads each sample array once for each declared sample hash.
+Pass `--skip-integrity` to check structure only, or `--require-integrity` to
+also require hashes for the store and every recording and collection. For an
+untrusted store, pass `--max-array-bytes` to bound the data that validation
+decodes. Validation does not verify a hash that covers an array whose declared
+logical size, or whose decoded chunk or shard size, exceeds the limit. It does
+not check per-item metadata entries in a chunk that exceeds the limit, and it
+stops checking entries once their decoded text exceeds the limit. Validation
+reports each skipped array and each unchecked set of entries as an issue.
+Variable-length strings count 16 bytes per element. The limit therefore bounds
+the number of strings in one decoded chunk, but not their length, so a small
+compressed chunk of long strings can still decode to more than the limit. The
+limit also applies with `--skip-integrity`.
+
+Before it reads a local store, `validate` lists the directory tree without
+following links. If it finds a symbolic link, an entry that is neither a
+regular file nor a directory, such as a FIFO or device, or a directory that it
+cannot list, it reports each one and reads no store content. A store opened
+through an fsspec local file system, as in `local:///data/store.zarr` or
+`simplecache::file:///data/store.zarr`, is a local store. A failed read,
+including a failed remote read, is reported as an issue.
+
+`integrity update` recalculates every hash, then checks structure and hash
+presence without reading the samples again.
 
 All importers are subcommands of `sigmf-zarr import`. List the supported
 formats with:
@@ -65,6 +107,12 @@ Export one unbatched recording back to standard SigMF:
 
 ```bash
 sigmf-zarr export store.zarr output.sigmf-meta --recording-name myrec
+```
+
+The equivalent resource-oriented form is:
+
+```bash
+sigmf-zarr store store.zarr recording myrec export output.sigmf-meta
 ```
 
 Export a standard SigMF archive:

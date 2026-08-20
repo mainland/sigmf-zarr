@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import zarr
 
+from sigmf_zarr.cli.sigmf import SigMFCommand
 from sigmf_zarr.integrity import INTEGRITY_ATTR
 from sigmf_zarr.json import json_object, json_object_list, json_value
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore
@@ -90,6 +91,73 @@ def test_validate_store_reports_dtype_and_index_corruption(
     assert report.valid is False
     assert any(issue.path == "recordings/rec" for issue in report.issues)
     assert "dtype" in report.format()
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_validation_rejects_big_endian_sample_dtype(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """A big-endian `sigmf-zarr:dtype` written by another tool is invalid.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, zarr_format=zarr_format)
+    store.recordings.create("rec", sample_shape=(4,), sample_checksum=None)
+    # Another tool writes a self-consistent big-endian declaration and, in
+    # Zarr format 2, a big-endian array.
+    root = zarr.open_group(store_path, mode="r+")
+    group = cast(zarr.Group, root["recordings/rec"])
+    if zarr_format == 2:
+        del group["samples"]
+        group.create_array("samples", shape=(4,), dtype=">f4")
+    metadata = json_object(group.attrs["global"], name="global")
+    metadata["sigmf-zarr:dtype"] = ">f4"
+    group.attrs["global"] = metadata
+
+    report = validate_store(store_path, verify_integrity=False)
+
+    assert [issue.path for issue in report.issues] == ["recordings/rec"]
+    assert "little-endian" in report.issues[0].message
+
+
+def test_validation_and_integrity_commands_support_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CLI commands should validate and refresh hashes for scripts.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        capsys: Pytest output capture fixture.
+    """
+    store_path, store = _validation_store(tmp_path)
+    recording = store.recordings.open("rec")
+    recording.set_global_field("core:description", "changed")
+
+    status = SigMFCommand().run(
+        [
+            "store",
+            str(store_path),
+            "integrity",
+            "update",
+            "--format",
+            "json",
+        ]
+    )
+    update_result = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert update_result["valid"] is True
+
+    status = SigMFCommand().run(
+        ["store", str(store_path), "validate", "--format", "json"]
+    )
+    validate_result = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert validate_result["valid"] is True
 
 
 def test_validation_reports_missing_stale_and_unsupported_integrity(

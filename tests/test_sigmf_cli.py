@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import sigmf_zarr.cli.sigmf as sigmf_cli
+import sigmf_zarr.cli.store as store_cli
 from sigmf_zarr.cli import Command, ImportCommand
 from sigmf_zarr.store import SigMFZarrStore
 
@@ -105,6 +107,46 @@ def test_command_run_reports_runtime_errors(
         FailingCommand().run(["--debug"])
 
 
+def test_command_line_program_name_is_sigmf_zarr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Usage and error messages name the installed command.
+
+    Args:
+        capsys: Pytest output capture fixture.
+    """
+    with pytest.raises(SystemExit) as exit_info:
+        sigmf_cli.SigMFCommand().run(["export", "missing.zarr", "out"])
+    assert exit_info.value.code == 2
+    err = capsys.readouterr().err
+    assert err.startswith("usage: sigmf-zarr ")
+    assert "sigmf-zarr: error: --recording-name is required" in err
+
+
+def test_store_info_command_supports_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Resource commands should expose simple machine-readable output.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        capsys: Pytest capture fixture.
+    """
+    store_path = tmp_path / "empty.sigmf-zarr"
+    SigMFZarrStore.create(store_path)
+
+    status = sigmf_cli.SigMFCommand().run(
+        ["store", str(store_path), "info", "--format", "json"]
+    )
+    result = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert result["schema_name"] == "sigmf-zarr"
+    assert result["zarr_format"] == 3
+    assert result["recordings"] == []
+    assert result["collections"] == []
+
+
 def test_sigmf_command_registers_subcommand_classes() -> None:
     """Top-level parser should dispatch to command objects."""
     parser = sigmf_cli.SigMFCommand().build_parser()
@@ -118,6 +160,7 @@ def test_sigmf_command_registers_subcommand_classes() -> None:
     export_args = parser.parse_args(
         ["export", "store.zarr", "output.sigmf-meta"]
     )
+    store_args = parser.parse_args(["store", "store.zarr", "info"])
 
     assert verbose_args.loglevel == logging.INFO
     assert isinstance(import_args.command, sigmf_cli.ImportSigMFCommand)
@@ -126,6 +169,7 @@ def test_sigmf_command_registers_subcommand_classes() -> None:
     assert import_args.zarr_format is None
     assert isinstance(export_args.command, sigmf_cli.ExportCommand)
     assert export_args.handler == export_args.command.handle
+    assert isinstance(store_args.command, store_cli.StoreInfoCommand)
 
 
 def test_import_commands_share_import_base() -> None:

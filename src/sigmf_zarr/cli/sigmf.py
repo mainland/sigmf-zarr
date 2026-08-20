@@ -8,7 +8,8 @@ from typing import Literal, cast, get_args
 
 from sigmf_zarr import SigMFZarrStore
 from sigmf_zarr._text import escape_text
-from sigmf_zarr.cli import Command, CommandGroup, ImportCommand
+from sigmf_zarr.cli import Command, CommandGroup, ImportCommand, StoreContext
+from sigmf_zarr.cli.store import StoreCommand
 from sigmf_zarr.sigmf import (
     export_sigmf,
     export_sigmf_archive,
@@ -346,9 +347,11 @@ class SigMFCommand(CommandGroup):
 
     def __init__(self) -> None:
         """Initialize the top-level SigMF command."""
+        context = StoreContext()
         super().__init__(
-            "Import or export supported data.",
+            "Inspect SigMF-Zarr stores and import or export supported data.",
             (
+                StoreCommand(context),
                 ImportGroup(),
                 ExportCommand(),
             ),
