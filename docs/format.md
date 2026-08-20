@@ -755,10 +755,18 @@ two required attributes and may have the optional `integrity` attribute:
 - The `recording_ids` attribute is a list of recording names that the collection
   references.
 
-Each recording identifier must name a recording in the store. The Python API
-rejects creating a collection that references a missing recording and rejects
-removing a recording that a collection references. Readers should tolerate
-dangling references written by other tools.
+The `metadata` object must satisfy the SigMF collection schema for every field
+that it contains. Export supplies `core:version` when it is absent and derives
+`core:streams` from `recording_ids`, so the object may omit both.
+`validate_store()` checks the object, except `core:streams`, against the
+collection schema of the installed sigmf package.
+
+Each recording identifier must name a recording in the store and must appear at
+most once in `recording_ids`. Writers reject a repeated identifier, and
+`validate_store()` reports one. The Python API rejects creating a collection
+that references a missing recording and rejects removing a recording that a
+collection references. Readers should tolerate dangling references written by
+other tools, and `validate_store()` reports them.
 
 Collections are useful for representing relationships among recordings without
 moving or duplicating sample arrays.

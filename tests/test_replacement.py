@@ -471,6 +471,60 @@ def test_failed_removal_hash_write_restores_recording(
     assert store.verify_integrity()
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_failed_nonlocal_removal_is_reported_and_retryable(
+    zarr_format: ZarrFormat, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partial delete on a nonlocal backend must be detectable.
+
+    Nonlocal removal deletes without a backup, so a failure can leave part
+    of the recording. The recording group's own metadata goes last, so the
+    recording stays listed. Validation must report it, and a second removal
+    must finish the deletion.
+
+    Args:
+        zarr_format: Physical Zarr format to create.
+        monkeypatch: Failure injection for the backend delete.
+    """
+    from sigmf_zarr.validation import validate_store
+
+    store = SigMFZarrStore.create(MemoryStore(), zarr_format=zarr_format)
+    recording = store.recordings.create("rec", sample_shape=(4,))
+    recording.set_samples(np.arange(4, dtype=np.float32))
+    store.update_integrity()
+    original_delete = MemoryStore.delete
+    group_document = "recordings/rec/" + (
+        ".zgroup" if zarr_format == 2 else "zarr.json"
+    )
+
+    async def partial_delete(self: MemoryStore, key: str) -> None:
+        """Delete every object except the recording group's document.
+
+        Args:
+            self: Backend being modified.
+            key: Object key to delete.
+
+        Raises:
+            OSError: If `key` is the recording group's document.
+        """
+        if key == group_document:
+            raise OSError("delete failed")
+        await original_delete(self, key)
+
+    monkeypatch.setattr(MemoryStore, "delete", partial_delete)
+    with pytest.raises(OSError, match="delete failed"):
+        store.recordings.remove("rec")
+    monkeypatch.undo()
+    assert store.metadata_sha512 is None
+    assert "rec" in store.recordings
+    report = validate_store(store)
+    assert report.valid is False
+    assert any(issue.path == "recordings/rec" for issue in report.issues)
+    store.recordings.remove("rec")
+    assert "rec" not in store.recordings
+    assert validate_store(store).valid is True
+
+
 def test_successful_removal_leaves_no_backup(tmp_path: Path) -> None:
     """A local removal must delete its backup after the transaction.
 

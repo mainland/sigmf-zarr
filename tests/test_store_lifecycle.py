@@ -10,6 +10,7 @@ from zarr.storage import LocalStore
 
 from sigmf_zarr.store import SigMFCollection, SigMFZarrStore, ZarrFormat
 from sigmf_zarr.store._common import is_store_url, store_location
+from sigmf_zarr.validation import validate_store
 
 
 def test_create_refuses_existing_store(tmp_path: Path) -> None:
@@ -128,6 +129,39 @@ def test_only_explicit_schemes_make_store_urls(
     """
     assert is_store_url(location) is url
     assert isinstance(store_location(location), str) is url
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_url_locations_reach_zarr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, zarr_format: ZarrFormat
+) -> None:
+    """File and memory URLs keep their URL meaning.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Working-directory fixture.
+        zarr_format: Physical Zarr format.
+    """
+    monkeypatch.chdir(tmp_path)
+    file_url = (tmp_path / "file.zarr").as_uri()
+    SigMFZarrStore.create(
+        file_url, zarr_format=zarr_format
+    ).collections.create("kept")
+    assert (tmp_path / "file.zarr" / "collections" / "kept").is_dir()
+    with SigMFZarrStore.open(file_url) as store:
+        assert store.zarr_format == zarr_format
+        assert store.list_collections() == ("kept",)
+
+    # zarr 3.2.0 gives each opening of a memory URL a new empty store, so
+    # use one handle. Later releases route the URL through fsspec. Either
+    # way, the URL must not become a local directory.
+    memory_url = f"memory://{tmp_path.name}-{zarr_format}"
+    with SigMFZarrStore.create(memory_url, zarr_format=zarr_format) as store:
+        store.collections.create("kept")
+        assert not isinstance(store._group.store, LocalStore)
+        assert store.list_collections() == ("kept",)
+        assert validate_store(store).issues == ()
+    assert [child.name for child in tmp_path.iterdir()] == ["file.zarr"]
 
 
 def test_append_mode_initializes_empty_target_as_format_3(
