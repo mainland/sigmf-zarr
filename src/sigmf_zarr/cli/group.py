@@ -91,10 +91,11 @@ class CommandGroup(Command):
             args: Parsed command-line arguments.
         """
         # Each nested registration overwrites this default, leaving the leaf
-        # command responsible for its own argument validation.
+        # command responsible for its own argument validation. The leaf's
+        # own parser reports errors with the leaf's usage line.
         command = args.command
         if command is not self:
-            command.validate_arguments(parser, args)
+            command.validate_arguments(command.parser or parser, args)
 
 
 __all__ = ["CommandGroup"]
