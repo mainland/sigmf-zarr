@@ -1611,6 +1611,34 @@ class SigMFRecording:
             raise KeyError("item_metadata")
         return cast(Array, self._raw_group["item_metadata"])
 
+    @property
+    def item_metadata_array(self) -> ReadOnlyArray:
+        """Encoded per-item metadata array.
+
+        Returns:
+            One-dimensional variable-length UTF-8 JSON string array.
+
+        Raises:
+            KeyError: If no per-item metadata array is present.
+        """
+        return ReadOnlyArray(self._item_metadata_array)
+
+    @contextmanager
+    def mutate_item_metadata(self) -> Generator[Array, None, None]:
+        """Provide validated writable access to per-item metadata.
+
+        Yields:
+            Writable backing item metadata array.
+
+        Raises:
+            KeyError: If the recording has no item metadata array.
+            ValueError: If the resulting array is malformed or misaligned.
+        """
+        with self._mutation(metadata=True):
+            yield self._item_metadata_array
+        # Validation runs only after a normal context exit. If the caller
+        # raises, the original exception propagates and integrity stays absent.
+        self._validate_item_metadata_array()
 
     @property
     def global_metadata(self) -> JSONObject:
@@ -1886,6 +1914,145 @@ class SigMFRecording:
         array[:] = encoded
         return array
 
+    def set_item_metadata(
+        self,
+        values: Sequence[JSONObject | None],
+        *,
+        overwrite: bool = False,
+    ) -> ReadOnlyArray:
+        """Create or replace metadata bundles aligned with the item axis.
+
+        Args:
+            values: One metadata bundle per batch item. `None` represents no
+                item-specific overrides.
+            overwrite: Whether to replace an existing metadata array.
+
+        Returns:
+            Encoded `item_metadata` Zarr array.
+
+        Raises:
+            ValueError: If the recording is unbatched, the value count does
+                not match the item count, or a bundle is invalid.
+        """
+        if not self.batched:
+            raise ValueError(
+                "item_metadata is only supported for batched recordings"
+            )
+        if len(values) != len(self):
+            raise ValueError(
+                f"Expected metadata for {len(self)} items, got {len(values)}"
+            )
+        encoded = np.asarray(
+            type(self)._encode_item_metadata(values),
+            dtype=object,
+        )
+        array = self._create_item_metadata_array(
+            encoded,
+            overwrite=overwrite,
+        )
+        return ReadOnlyArray(array)
+
+    def set_item_metadata_entry(
+        self,
+        item_index: int,
+        value: JSONObject | None,
+    ) -> None:
+        """Set one validated per-item metadata bundle.
+
+        An absent metadata array is created with empty bundles for every
+        other item.
+
+        Args:
+            item_index: Item-axis index. Negative indexes are supported.
+            value: Metadata bundle or `None` for an empty bundle.
+
+        Raises:
+            IndexError: If the item index is out of range.
+            ValueError: If the recording is unbatched or the bundle is
+                invalid.
+        """
+        if not self.batched:
+            raise ValueError(
+                "item_metadata is only supported for batched recordings"
+            )
+        normalized_index = (
+            item_index if item_index >= 0 else len(self) + item_index
+        )
+        if normalized_index < 0 or normalized_index >= len(self):
+            raise IndexError(item_index)
+        encoded = type(self)._encode_item_metadata_entry(
+            value,
+            item_index=normalized_index,
+        )
+        if not self.has_item_metadata:
+            entries = np.full(len(self), "{}", dtype=object)
+            entries[normalized_index] = encoded
+            self._create_item_metadata_array(entries, overwrite=False)
+            return
+        self._invalidate_integrity(metadata=True)
+        self._item_metadata_array[normalized_index] = encoded
+
+    def set_item_metadata_slice(
+        self,
+        selection: slice,
+        values: Sequence[JSONObject | None],
+    ) -> None:
+        """Set a contiguous slice of validated item metadata bundles.
+
+        An absent metadata array is created with empty bundles outside the
+        selected range.
+
+        Args:
+            selection: Contiguous item-axis slice with step 1.
+            values: One metadata bundle for each selected item.
+
+        Raises:
+            ValueError: If the recording is unbatched, the slice is not
+                contiguous, the value count is wrong, or a bundle is invalid.
+        """
+        if not self.batched:
+            raise ValueError(
+                "item_metadata is only supported for batched recordings"
+            )
+        start, stop, step = selection.indices(len(self))
+        if step != 1:
+            raise ValueError("item metadata slices must use a step of 1")
+        item_indexes = range(start, stop)
+        if len(values) != len(item_indexes):
+            raise ValueError(
+                f"Expected metadata for {len(item_indexes)} selected items, "
+                f"got {len(values)}"
+            )
+        encoded = np.asarray(
+            [
+                type(self)._encode_item_metadata_entry(
+                    value,
+                    item_index=item_index,
+                )
+                for item_index, value in zip(
+                    item_indexes,
+                    values,
+                    strict=True,
+                )
+            ],
+            dtype=object,
+        )
+        if not len(encoded):
+            return
+        normalized_selection = slice(start, stop)
+        if not self.has_item_metadata:
+            entries = np.full(len(self), "{}", dtype=object)
+            entries[normalized_selection] = encoded
+            self._create_item_metadata_array(entries, overwrite=False)
+            return
+        self._invalidate_integrity(metadata=True)
+        self._item_metadata_array[normalized_selection] = encoded
+
+    def clear_item_metadata(self) -> None:
+        """Remove optional per-item metadata from this recording."""
+        self._invalidate_integrity(metadata=True)
+        if self.has_item_metadata:
+            del self._raw_group["item_metadata"]
 
     def get_item_metadata(self, item_index: int) -> JSONObject:
         """Return one item-specific metadata bundle.
@@ -1913,6 +2080,29 @@ class SigMFRecording:
             item_index=normalized_index,
         )
 
+    def resolved_item_metadata(self, item_index: int) -> JSONObject:
+        """Resolve shared recording metadata for one batch item.
+
+        Item `global` fields shallowly override shared global fields. Item
+        captures and annotations are appended to their shared counterparts.
+
+        Args:
+            item_index: Item-axis index.
+
+        Returns:
+            Object containing resolved `global`, `captures`, and `annotations`.
+        """
+        entry = self.get_item_metadata(item_index)
+        item_global = cast(JSONObject, entry.get("global", {}))
+        item_captures = cast(list[JSONObject], entry.get("captures", []))
+        item_annotations = cast(
+            list[JSONObject], entry.get("annotations", [])
+        )
+        return {
+            "global": {**self.global_metadata, **item_global},
+            "captures": [*self.captures, *item_captures],
+            "annotations": [*self.annotations, *item_annotations],
+        }
 
     def channel_metadata(self, channel_index: int) -> JSONObject:
         """Return metadata for one explicit sample channel.
@@ -1936,6 +2126,32 @@ class SigMFRecording:
         channel = cast(Group, self._channels_group[str(channel_index)])
         return cast(JSONObject, dict(channel.attrs))
 
+    def set_channel_metadata(
+        self,
+        channel_index: int,
+        metadata: JSONObject,
+    ) -> None:
+        """Replace metadata for one explicit sample channel.
+
+        Args:
+            channel_index: Zero-based channel index.
+            metadata: JSON-compatible channel metadata object.
+
+        Raises:
+            ValueError: If the recording has no channel axis or metadata is
+                not JSON serializable.
+            IndexError: If the channel index is out of range.
+        """
+        _ = self.channel_metadata(channel_index)
+        copied = json_object(
+            dict(metadata),
+            name=f"channel {channel_index} metadata",
+        )
+        self._invalidate_integrity(metadata=True)
+        channel = cast(Group, self._channels_group[str(channel_index)])
+        for key in tuple(channel.attrs):
+            del channel.attrs[key]
+        channel.attrs.update(copied)
 
     def _append_capture(
         self,
