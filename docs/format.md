@@ -323,7 +323,7 @@ Each recording-level index has these attributes:
 
 `field`
 : Required. Metadata field represented by the index, such as
-  `example:snr`, `example:mod_class`, or an application-specific namespaced
+  `radioml:snr`, `radioml:mod_class`, or an application-specific namespaced
   field.
 
 `kind`
@@ -456,3 +456,11 @@ Dataset-specific metadata should use namespaced fields. Prefer generic
 recording-level indexes when the data is dense and aligned with a sample axis.
 Use `extensions/` only when the data is structured in a way that does not fit a
 one-dimensional axis-aligned index.
+
+The RadioML importer follows this pattern:
+
+- The `global["radioml:source_dataset"]` field records the source dataset name.
+- The `indexes/mod_class_id` array stores integer modulation class IDs with
+  `axis="item"`, `field="radioml:mod_class"`, and `labels=[...]`.
+- The `indexes/snr_db` array stores SNR values with `axis="item"`,
+  `field="radioml:snr"`, and `unit="dB"`.
