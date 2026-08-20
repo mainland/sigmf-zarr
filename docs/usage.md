@@ -1,6 +1,8 @@
 # Usage
 
-Use SigMF-Zarr as a Python API for building Zarr-backed signal stores.
+Use SigMF-Zarr as a Python API for building Zarr-backed signal stores or from
+the command line to import and export standard SigMF files and supported
+datasets.
 
 ## Installation
 
@@ -20,7 +22,135 @@ Run commands from the repository environment:
 
 ```bash
 .venv/bin/python -m pytest
+.venv/bin/sigmf-zarr --help
 ```
+
+## Command line
+
+The package installs the `sigmf-zarr` command.
+
+All importers are subcommands of `sigmf-zarr import`. List the supported
+formats with:
+
+```bash
+sigmf-zarr import --help
+```
+
+Import a single standard SigMF recording:
+
+```bash
+sigmf-zarr import sigmf input.sigmf-meta store.zarr
+```
+
+Import a standard SigMF archive:
+
+```bash
+sigmf-zarr import sigmf input.sigmf store.zarr
+```
+
+All import commands share `SOURCE`, `STORE`, `--recording-name`,
+`--overwrite-store`, `--overwrite-recording`, and `--zarr-format`. When the
+target store already exists, its Zarr format is detected automatically. New
+stores use Zarr format 3 by default. Pass `--zarr-format 2` when creating a new
+store for a downstream tool that requires the Zarr format 2 layout:
+
+```bash
+sigmf-zarr import sigmf input.sigmf-meta store.zarr --zarr-format 2
+```
+
+Supplying `--zarr-format` for an existing store verifies that the store has the
+requested format.
+
+Export one unbatched recording back to standard SigMF:
+
+```bash
+sigmf-zarr export store.zarr output.sigmf-meta --recording-name myrec
+```
+
+Export a standard SigMF archive:
+
+```bash
+sigmf-zarr export store.zarr output.sigmf --archive --recording rec1
+```
+
+Export targets without a `.sigmf-meta` or `.sigmf` suffix receive one, and dots
+in the target stem are retained. An empty target, a target that ends with a
+path separator, and a target whose final component is `.` or `..` are errors.
+
+With `--overwrite`, export moves each existing target file into a backup
+directory before it publishes the new files. If another process creates a
+directory at a target path after the initial check, export moves that
+directory back, raises `ValueError`, and leaves the previous files in place.
+Any exception during publication, including `KeyboardInterrupt`, restores the
+previous files before it propagates.
+
+Archive export writes every member with UID and GID 0, empty owner and group
+names, mode `0o755` for directories and `0o644` for files, and modification
+time 0, the Unix epoch. Exports of the same content to the same target name
+therefore produce identical archive bytes.
+
+The import command can infer standard SigMF input from the file suffix. Use
+`--format` when the suffix is ambiguous.
+
+### Text and JSON output
+
+Text output escapes every nonprintable character in store names, metadata,
+validation messages, warnings, log messages, error messages, and `--debug`
+tracebacks. Control characters, such as the escape character and carriage
+return, appear as Python-style backslash escapes, for example `\x1b` and `\r`.
+A line feed in a name or message appears as `\n`, so each name, issue, and
+message occupies one output line. A file name that is not valid UTF-8
+appears with escapes such as `\udcff`. Backslashes in names are not escaped,
+so text output is for display only. JSON output escapes every non-ASCII
+character, and its strings decode to the stored names.
+
+With `--format json`, each `store` command prints one JSON object:
+
+- `store STORE info` prints `schema_name`, `schema_version`, `zarr_format`,
+  `metadata_sha512`, and the `recordings`, `collections`, and `indexes` name
+  lists.
+- `store STORE validate` and both `integrity` commands print `valid`,
+  `recordings_checked`, `collections_checked`, `indexes_checked`, and
+  `issues`. Each issue has a `path` and a `message`.
+- `store STORE recordings` prints `{"recordings": [...]}`, and
+  `store STORE collections` prints `{"collections": [...]}`.
+- `store STORE recording NAME info` prints `name`, `zarr_format`,
+  `sample_count`, `item_count`, `batched`, `samples_shape`, `samples_chunks`,
+  `sample_axes`, `sample_dtype`, `sample_checksum`, `sha512`,
+  `sample_sha512`, `metadata_sha512`, `num_channels`, `has_item_metadata`,
+  `global_keys`, `num_captures`, `num_annotations`, `extensions`, and
+  `indexes`. `sample_count` is the length of the `time` axis, which is the
+  item length in a batched recording. `item_count` is the number of batch
+  items, or `1` for an unbatched recording.
+- `store STORE recording NAME validate-rfml` prints `valid`, `profile`,
+  `version`, `indexes_checked`, `unvalidated_fields`,
+  `source_truth_verified`, and `issues`.
+- `store STORE recording NAME export` prints `recording` and `output`. With
+  `--dry-run`, it prints the `SigMFExportPlan.as_dict()` report in both
+  output formats.
+- `store STORE collection NAME info` prints `name`, `recording_ids`,
+  `metadata_sha512`, and `metadata_keys`.
+- `store STORE collection NAME export` prints `collection` and `output`.
+
+### Exit status
+
+Every command exits with one of these statuses:
+
+- `0`: The command succeeded.
+- `1`: A check failed. Validation or integrity verification found issues,
+  RFML profile validation found violations, or an export dry run found
+  rejections or omissions that `--allow-lossy` does not permit.
+- `2`: A usage or input error occurred. Examples are an invalid option, a
+  missing or unreadable store, a missing recording, a failed remote read, and
+  an invalid import source. The command prints the usage line of the selected
+  subcommand and a message that starts with `sigmf-zarr: error:` to standard
+  error. Where a library message names a Python parameter that has a
+  command-line option, such as `overwrite=True`, the message names the
+  option, such as `--overwrite`. A missing recording or collection is named
+  with its kind, as in `recording not found: 'name'`.
+
+With `--debug`, an input error prints its Python traceback to standard error
+instead, and the command exits with status 1.
 
 ## Create a recording
 
