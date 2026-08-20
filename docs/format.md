@@ -528,11 +528,13 @@ backing Zarr store directly.
 
 At the standard SigMF boundary, import verifies every available standard hash
 and creates native hashes for content that passes its checks. `core:sha512`
-checks each `.sigmf-data` byte stream. Standalone `.sigmf-meta` files have no
-standard field that hashes their own metadata, so there is nothing external to
-verify in that case. Export always calculates `core:sha512` from the emitted
-data bytes. If a native internal hash is present but stale, export fails rather
-than silently blessing changed content.
+checks each `.sigmf-data` byte stream. A `.sigmf-collection` additionally checks
+its declared hashes for the referenced `.sigmf-meta` files. Standalone
+`.sigmf-meta` files have no standard field that hashes their own metadata, so
+there is nothing external to verify in that case. Export always calculates
+`core:sha512` from the emitted data bytes. Archive export calculates collection
+stream hashes from the emitted metadata bytes. If a native internal hash is
+present but stale, export fails rather than silently blessing changed content.
 
 ### Canonical JSON encoding
 
