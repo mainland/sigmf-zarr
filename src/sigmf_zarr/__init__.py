@@ -18,6 +18,11 @@ from sigmf_zarr.store import (
     SigMFZarrStore,
     ZarrFormat,
 )
+from sigmf_zarr.validation import (
+    ValidationIssue,
+    ValidationReport,
+    validate_store,
+)
 
 __all__ = [
     "ChecksumName",
@@ -26,6 +31,8 @@ __all__ = [
     "SigMFCollection",
     "SigMFRecording",
     "SigMFZarrStore",
+    "ValidationIssue",
+    "ValidationReport",
     "ZarrFormat",
     "__version__",
     "calculate_sha512",
@@ -34,6 +41,7 @@ __all__ = [
     "export_sigmf_archive",
     "import_sigmf",
     "import_sigmf_archive",
+    "validate_store",
     "verify_inputs",
     "verify_sha512",
 ]

@@ -592,7 +592,8 @@ two required attributes and may have the optional `integrity` attribute:
 Each recording identifier must name a recording in the store. The Python API
 rejects creating a collection that references a missing recording and rejects
 removing a recording that a collection references. Readers should tolerate
-dangling references written by other tools.
+dangling references written by other tools, and `validate_store()` reports
+them.
 
 Collections are useful for representing relationships among recordings without
 moving or duplicating sample arrays.

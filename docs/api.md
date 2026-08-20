@@ -41,6 +41,14 @@
    :members: capture_inputs, verify_inputs, file_identity
 ```
 
+## Validation
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.validation
+   :members:
+   :undoc-members:
+```
+
 ## Read-only views
 
 ```{eval-rst}
