@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from os import PathLike, fspath
 from typing import Any, ClassVar, cast
 
 import numpy as np
 import numpy.typing as npt
 import zarr
+from zarr.core.array import (
+    CompressorLike,
+    ShardsLike,
+)
 from zarr.core.common import AccessModeLiteral
 from zarr.core.group import Group
 from zarr.storage import StoreLike
@@ -17,9 +21,180 @@ from sigmf_zarr.integrity import (
     INTEGRITY_ATTR,
 )
 from sigmf_zarr.json import JSONObject
-from sigmf_zarr.readonly import ReadOnlyGroup
+from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
 from sigmf_zarr.store._collection import SigMFCollection
-from sigmf_zarr.store._common import ZarrFormat
+from sigmf_zarr.store._common import ChecksumName, ZarrFormat
+from sigmf_zarr.store._recording import SigMFRecording
+
+
+class SigMFRecordings:
+    """Proxy view over the recordings in a SigMF-Zarr store."""
+
+    _store: SigMFZarrStore
+    """Parent SigMF-Zarr store."""
+
+    def __init__(self, store: SigMFZarrStore) -> None:
+        """Initialize a recordings view for one store.
+
+        Args:
+            store: Parent SigMF-Zarr store.
+        """
+        self._store = store
+
+    def __iter__(self) -> Iterator[SigMFRecording]:
+        """Iterate over recordings in sorted name order.
+
+        Returns:
+            Iterator over recording wrappers.
+        """
+        return self.values()
+
+    def __getitem__(self, recording_name: str) -> SigMFRecording:
+        """Return one recording by name.
+
+        Args:
+            recording_name: Recording name to open.
+
+        Returns:
+            Recording wrapper.
+
+        Raises:
+            KeyError: If no recording has the requested name.
+        """
+        if recording_name not in self:
+            raise KeyError(recording_name)
+        return self.open(recording_name, create=False)
+
+    def __contains__(self, recording_name: object) -> bool:
+        """Return whether a recording with this name exists.
+
+        Args:
+            recording_name: Candidate recording name.
+
+        Returns:
+            True when a recording with this name exists.
+        """
+        return (
+            isinstance(recording_name, str)
+            and recording_name in self._store._recordings_group
+        )
+
+    def __len__(self) -> int:
+        """Return the number of recordings in the store.
+
+        Returns:
+            Number of recordings.
+        """
+        return len(self._store.list_recordings())
+
+    def names(self) -> tuple[str, ...]:
+        """Return recording identifiers in sorted order.
+
+        Returns:
+            Recording names.
+        """
+        return self._store.list_recordings()
+
+    def values(
+        self,
+        *,
+        recording_cls: type[SigMFRecording] = SigMFRecording,
+    ) -> Iterator[SigMFRecording]:
+        """Iterate over recordings in sorted name order.
+
+        Args:
+            recording_cls: Recording wrapper class to instantiate.
+
+        Returns:
+            Iterator over recording wrappers.
+        """
+        for recording_name in self.names():
+            yield self.open(
+                recording_name,
+                create=False,
+                recording_cls=recording_cls,
+            )
+
+    def open(
+        self,
+        recording_name: str,
+        *,
+        create: bool | None = None,
+        overwrite: bool = False,
+        batched: bool = False,
+        recording_cls: type[SigMFRecording] = SigMFRecording,
+        sample_dtype: npt.DTypeLike = np.float32,
+        sample_shape: tuple[int, ...] | None = None,
+        sample_axes: tuple[str, ...] | None = None,
+        global_metadata: JSONObject | None = None,
+        captures: list[JSONObject] | None = None,
+        annotations: list[JSONObject] | None = None,
+        channel_metadata: Sequence[JSONObject] | None = None,
+        sample_chunks: tuple[int, ...] | None = None,
+        sample_shards: ShardsLike | None = None,
+        sample_compressor: CompressorLike = "auto",
+        sample_checksum: ChecksumName | None = "crc32c",
+    ) -> SigMFRecording:
+        """Open or create one recording from the container.
+
+        Args:
+            recording_name: Recording name.
+            create: Whether a missing recording may be created.
+            overwrite: Whether an existing recording should be replaced.
+            batched: Whether a new sample array includes a batch axis.
+            recording_cls: Recording wrapper class to instantiate.
+            sample_dtype: Element dtype for a new sample array.
+            sample_shape: Per-sample shape for a new sample array.
+            sample_axes: Optional axis names for a new sample array.
+            global_metadata: SigMF-like global metadata.
+            captures: Capture metadata.
+            annotations: Annotation metadata.
+            channel_metadata: Optional metadata for each channel.
+            sample_chunks: Optional sample chunk shape.
+            sample_shards: Optional sample shard shape.
+            sample_compressor: Optional sample compressor.
+            sample_checksum: Optional chunk-level sample checksum.
+
+        Returns:
+            Recording wrapper.
+
+        Raises:
+            KeyError: If the recording does not exist and creation is not
+                allowed.
+            ValueError: If recording creation receives an invalid sample shape.
+        """
+        return recording_cls(
+            self._store,
+            recording_name,
+            create=create,
+            overwrite=overwrite,
+            batched=batched,
+            sample_dtype=sample_dtype,
+            sample_shape=sample_shape,
+            sample_axes=sample_axes,
+            global_metadata=global_metadata,
+            captures=captures,
+            annotations=annotations,
+            channel_metadata=channel_metadata,
+            sample_chunks=sample_chunks,
+            sample_shards=sample_shards,
+            sample_compressor=sample_compressor,
+            sample_checksum=sample_checksum,
+        )
+
+    def remove(self, recording_name: str) -> None:
+        """Remove a recording through the managed mutation boundary.
+
+        Args:
+            recording_name: Recording name to remove.
+
+        Raises:
+            KeyError: If the recording does not exist.
+        """
+        if recording_name not in self:
+            raise KeyError(recording_name)
+        self._store._invalidate_metadata_integrity()
+        del self._store._recordings_group[recording_name]
 
 
 class SigMFCollections:
@@ -563,6 +738,52 @@ class SigMFZarrStore:
         """
         return None
 
+    def __repr__(self) -> str:
+        """Return a concise debug representation.
+
+        Returns:
+            Debug representation string.
+        """
+        return (
+            f"{type(self).__name__}("
+            f"num_recordings={len(self.list_recordings())}, "
+            f"num_collections={len(self.list_collections())})"
+        )
+
+    def __iter__(self) -> Iterator[SigMFRecording]:
+        """Iterate over recordings in sorted name order.
+
+        Returns:
+            Iterator over recording wrappers.
+        """
+        return iter(self.recordings)
+
+    def __getitem__(self, name: str) -> SigMFRecording | SigMFCollection:
+        """Return a recording or collection by name.
+
+        Args:
+            name: Recording or collection name.
+
+        Returns:
+            Recording or collection wrapper.
+
+        Raises:
+            KeyError: If `name` matches neither object type, or if it
+                matches both a recording and a collection.
+        """
+        has_recording = name in self.recordings
+        has_collection = name in self.collections
+
+        if has_recording and has_collection:
+            raise KeyError(
+                f"Name {name!r} is ambiguous: it matches both a "
+                "recording and a collection"
+            )
+        if has_recording:
+            return self.recordings.open(name)
+        if has_collection:
+            return self.collections.open(name)
+        raise KeyError(name)
 
     @property
     def _recordings_group(self) -> Group:
@@ -582,6 +803,14 @@ class SigMFZarrStore:
         """
         return cast(Group, self._group["collections"])
 
+    @property
+    def recordings(self) -> SigMFRecordings:
+        """Proxy view over recordings in this store.
+
+        Returns:
+            Recordings proxy view.
+        """
+        return SigMFRecordings(self)
 
     @property
     def collections(self) -> SigMFCollections:
@@ -615,6 +844,30 @@ class SigMFZarrStore:
             Root attributes copied into a dictionary.
         """
         return dict(self._group.attrs)
+
+    def info(self) -> str:
+        """Return a human-readable summary of the container.
+
+        Returns:
+            Multiline store summary.
+        """
+        index_names = sorted(
+            name
+            for name, member in self.indexes.members(max_depth=None)
+            if isinstance(member, ReadOnlyArray)
+        )
+        lines = [
+            f"{type(self).__name__}(",
+            f"  schema_name={self.SCHEMA_NAME!r},",
+            f"  schema_version={self.SCHEMA_VERSION!r},",
+            f"  zarr_format={self.zarr_format!r},",
+            f"  metadata_sha512={self.metadata_sha512!r},",
+            f"  recordings={list(self.list_recordings())!r},",
+            f"  collections={list(self.list_collections())!r},",
+            f"  indexes={index_names},",
+            ")",
+        ]
+        return "\n".join(lines)
 
 
 __all__ = ["SigMFZarrStore"]
