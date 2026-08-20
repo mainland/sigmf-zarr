@@ -2,18 +2,27 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+import json
+from collections.abc import Generator, Iterator, Sequence
+from contextlib import contextmanager
 from os import PathLike, fspath
-from typing import Any, ClassVar, cast
+from pathlib import Path
+from typing import Any, ClassVar, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
 import zarr
+from numcodecs.abc import Codec as NumcodecsCodec
+from zarr.codecs import VLenUTF8Codec
 from zarr.core.array import (
+    Array,
     CompressorLike,
+    CompressorsLike,
+    SerializerLike,
     ShardsLike,
 )
 from zarr.core.common import AccessModeLiteral
+from zarr.core.dtype import VariableLengthUTF8
 from zarr.core.group import Group
 from zarr.storage import StoreLike
 
@@ -659,6 +668,368 @@ class SigMFZarrStore:
         """
         return ReadOnlyGroup(self._indexes_group)
 
+    @staticmethod
+    def _create_array_v2(
+        group: Group,
+        name: str,
+        values: npt.NDArray[Any],
+        *,
+        chunks: tuple[int, ...],
+        compressor: CompressorLike,
+        string_data: bool,
+    ) -> Array:
+        """Create an initialized Zarr format 2 array.
+
+        Args:
+            group: Parent group.
+            name: Array name within `group`.
+            values: Values used to initialize the array.
+            chunks: Logical chunk shape.
+            compressor: Format-2 compressor configuration.
+            string_data: Whether values require variable-length UTF-8 storage.
+
+        Returns:
+            Created array.
+        """
+        if string_data:
+            array = group.create_array(
+                name,
+                shape=values.shape,
+                dtype=cast(Any, VariableLengthUTF8()),
+                chunks=chunks,
+                compressor=compressor,
+            )
+            array[:] = values
+            return array
+        return group.create_array(
+            name,
+            data=values,
+            chunks=chunks,
+            compressor=compressor,
+        )
+
+    @staticmethod
+    def _create_array_v3(
+        group: Group,
+        name: str,
+        values: npt.NDArray[Any],
+        *,
+        chunks: tuple[int, ...],
+        shards: ShardsLike | None,
+        compressors: CompressorsLike,
+        compressor: CompressorLike,
+        serializer: SerializerLike,
+        string_data: bool,
+    ) -> Array:
+        """Create an initialized Zarr format 3 array.
+
+        Args:
+            group: Parent group.
+            name: Array name within `group`.
+            values: Values used to initialize the array.
+            chunks: Logical chunk shape.
+            shards: Optional physical shard shape.
+            compressors: Compressor pipeline configuration.
+            compressor: Optional single-compressor compatibility setting.
+            serializer: Array serializer configuration.
+            string_data: Whether values require variable-length UTF-8 storage.
+
+        Returns:
+            Created array.
+        """
+        if string_data:
+            array = group.create_array(
+                name,
+                shape=values.shape,
+                dtype=cast(Any, VariableLengthUTF8()),
+                chunks=chunks,
+                shards=shards,
+                compressors=compressors,
+                compressor=compressor,
+                serializer=serializer,
+            )
+            array[:] = values
+            return array
+        return group.create_array(
+            name,
+            data=values,
+            chunks=chunks,
+            shards=shards,
+            compressors=compressors,
+            compressor=compressor,
+            serializer=serializer,
+        )
+
+    def create_array(
+        self,
+        group: Group,
+        name: str,
+        data: npt.ArrayLike,
+        *,
+        overwrite: bool,
+        chunks: tuple[int, ...] | None = None,
+        shards: ShardsLike | None = None,
+        compressors: CompressorsLike = "auto",
+        compressor: CompressorLike = "auto",
+        serializer: SerializerLike = "auto",
+    ) -> Array:
+        """Create one array under a group, optionally at a nested path.
+
+        Args:
+            group: Parent group in which to create the array.
+            name: Array name or nested relative path under `group`.
+            data: Array-like values used to initialize the new array.
+            overwrite: Whether an existing array at the same path may be
+                replaced.
+            chunks: Optional chunk shape for the created array. When
+                omitted, one-dimensional index-style chunks are used.
+            shards: Optional shard shape passed through to Zarr.
+            compressors: Optional compressors configuration passed through
+                to Zarr.
+            compressor: Optional single-compressor configuration passed
+                through to Zarr.
+            serializer: Optional serializer configuration passed through
+                to Zarr.
+
+        Returns:
+            The created Zarr array.
+
+        Raises:
+            ValueError: If the target array already exists and
+                `overwrite` is false, or an encoding available only in Zarr
+                format 3 is requested for a Zarr format 2 store.
+        """
+        self._invalidate_metadata_integrity()
+        name_path = Path(name)
+        array_name = name_path.name
+        array_group = (
+            group
+            if name_path.parent == Path(".")
+            else group.require_group(str(name_path.parent))
+        )
+
+        if array_name in array_group:
+            if overwrite:
+                del array_group[array_name]
+            else:
+                raise ValueError(
+                    f"Array {name!r} already exists. Pass overwrite=True "
+                    "to replace it"
+                )
+
+        value_array = np.asarray(data)
+
+        string_data = value_array.dtype.kind in {"U", "O"}
+        if string_data and serializer == "auto":
+            # Object arrays let the variable-length UTF-8 codecs own the wire
+            # representation instead of fixing a NumPy Unicode width.
+            value_array = value_array.astype(str).astype(object)
+            if self.zarr_format == 3:
+                serializer = VLenUTF8Codec()
+
+        resolved_chunks = chunks
+        if resolved_chunks is None:
+            resolved_chunks = self.default_index_chunks(len(value_array))
+
+        if self.zarr_format == 2:
+            if shards is not None:
+                raise ValueError(
+                    "Array sharding requires Zarr format 3. Omit shards or "
+                    "create a Zarr format 3 store"
+                )
+            if serializer != "auto":
+                raise ValueError(
+                    "Explicit serializers require Zarr format 3"
+                )
+            resolved_compressor = type(self)._compressor_v2(
+                compressors=compressors,
+                compressor=compressor,
+            )
+            return type(self)._create_array_v2(
+                array_group,
+                array_name,
+                value_array,
+                chunks=resolved_chunks,
+                compressor=resolved_compressor,
+                string_data=string_data,
+            )
+
+        return type(self)._create_array_v3(
+            array_group,
+            array_name,
+            value_array,
+            chunks=resolved_chunks,
+            shards=shards,
+            compressors=compressors,
+            compressor=compressor,
+            serializer=serializer,
+            string_data=string_data,
+        )
+
+    @classmethod
+    def _compressor_v2(
+        cls,
+        *,
+        compressors: CompressorsLike,
+        compressor: CompressorLike,
+    ) -> NumcodecsCodec | None | Literal["auto"]:
+        """Resolve generic array compression for Zarr format 2.
+
+        Args:
+            compressors: Zarr format 3 compressor pipeline.
+            compressor: Single compressor configuration.
+
+        Returns:
+            A Zarr format 2 compressor configuration.
+
+        Raises:
+            ValueError: If multiple compressors or conflicting settings are
+                supplied, or a codec cannot be represented in Zarr format 2.
+        """
+        if compressors == "auto":
+            return SigMFRecording._sample_compressor_v2(compressor)
+        if compressor != "auto":
+            raise ValueError(
+                "Specify either compressors or compressor, not both"
+            )
+        if compressors is None:
+            return None
+        if not isinstance(compressors, Sequence) or len(compressors) != 1:
+            raise ValueError(
+                "Zarr format 2 supports one compressor, not a compressor "
+                "pipeline"
+            )
+        return SigMFRecording._sample_compressor_v2(
+            cast(CompressorLike, compressors[0])
+        )
+
+    def add_index(
+        self,
+        index_name: str,
+        values: npt.ArrayLike,
+        *,
+        overwrite: bool = False,
+        chunks: tuple[int] | None = None,
+    ) -> ReadOnlyArray:
+        """Create or replace a one-dimensional store-wide index array.
+
+        Args:
+            index_name: Index array name.
+            values: One-dimensional index values.
+            overwrite: Whether an existing index may be replaced.
+            chunks: Optional chunk shape.
+
+        Returns:
+            Created index array.
+
+        Raises:
+            ValueError: If `values` is not one-dimensional or the target index
+                exists and `overwrite` is false.
+        """
+        value_array = np.asarray(values)
+        if value_array.ndim != 1:
+            raise ValueError(
+                f"Index {index_name!r} must be one-dimensional, got "
+                f"shape {value_array.shape}"
+            )
+        index = self.create_array(
+            self._indexes_group,
+            index_name,
+            value_array,
+            overwrite=overwrite,
+            chunks=chunks or self.default_index_chunks(len(value_array)),
+        )
+        if isinstance(index, Array):
+            return ReadOnlyArray(index)
+        return cast(ReadOnlyArray, index)
+
+    def index(self, index_name: str) -> ReadOnlyArray:
+        """Return one store-wide index array.
+
+        Args:
+            index_name: Index array name.
+
+        Returns:
+            Read-only store-wide index array.
+
+        Raises:
+            ValueError: If an earlier mutation did not complete.
+        """
+        index = cast(Array, self._indexes_group[index_name])
+        if index.attrs.get(self._INDEX_VALID_FIELD, True) is not True:
+            reason = index.attrs.get(
+                self._INDEX_INVALID_REASON_FIELD,
+                "unknown reason",
+            )
+            raise ValueError(
+                f"Index {index_name!r} is invalid: {reason}. Repair it "
+                "with mutate_index() or replace it with add_index()"
+            )
+        if index.ndim != 1:
+            raise ValueError(
+                f"Index {index_name!r} must be one-dimensional, got "
+                f"shape {index.shape}"
+            )
+        return ReadOnlyArray(index)
+
+
+    @contextmanager
+    def mutate_index(
+        self,
+        index_name: str,
+    ) -> Generator[Array, None, None]:
+        """Provide writable access to one store-wide index.
+
+        The index is marked invalid before writable access is granted. A
+        successful context exit validates that it remains one-dimensional and
+        marks it current again. If the body raises, it remains invalid.
+
+        Args:
+            index_name: Store-wide index name.
+
+        Yields:
+            Writable backing Zarr index array.
+
+        Raises:
+            KeyError: If the index does not exist.
+            ValueError: If the mutated index is not one-dimensional.
+        """
+        if index_name not in self._indexes_group:
+            raise KeyError(index_name)
+        index = cast(Array, self._indexes_group[index_name])
+        self._invalidate_metadata_integrity()
+        # Mark invalid before exposing the array. An exception or abandoned
+        # mutation therefore cannot make incomplete data appear trustworthy.
+        index.attrs[self._INDEX_VALID_FIELD] = False
+        index.attrs[self._INDEX_INVALID_REASON_FIELD] = (
+            "mutation did not complete"
+        )
+        yield index
+        # Code after the yield runs only for a normal context-manager exit.
+        if index.ndim != 1:
+            raise ValueError(
+                f"Index {index_name!r} must be one-dimensional, got "
+                f"shape {index.shape}"
+            )
+        if self._INDEX_VALID_FIELD in index.attrs:
+            del index.attrs[self._INDEX_VALID_FIELD]
+        if self._INDEX_INVALID_REASON_FIELD in index.attrs:
+            del index.attrs[self._INDEX_INVALID_REASON_FIELD]
+
+    def decode_json_index(self, index_name: str) -> list[JSONObject]:
+        """Decode a JSON-string store-wide index array into objects.
+
+        Args:
+            index_name: Index array name.
+
+        Returns:
+            Decoded JSON objects from the index.
+        """
+        array = self.index(index_name)
+        raw_values = np.asarray(array[:], dtype=object)
+        return [
+            cast(JSONObject, json.loads(str(value))) for value in raw_values
+        ]
 
     @classmethod
     def open(
