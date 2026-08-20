@@ -141,6 +141,35 @@ A recording is treated as batched when
 `samples.ndim == len(sigmf-zarr:sample-shape) + 1`. The leading runtime axis is
 then named `item`.
 
+SigMF-Zarr extension fields are stripped when exporting a recording back to
+standard SigMF metadata. Other extension declarations and non-`sigmf-zarr:*`
+fields are preserved.
+
+## Complex sample representation
+
+Standard SigMF and SigMF-Zarr represent the same logical complex samples
+differently:
+
+| Representation | Standard SigMF | SigMF-Zarr |
+| --- | --- | --- |
+| Container | Flat `.sigmf-data` byte stream | Chunked `samples` Zarr array |
+| Complex sample | Interleaved I and Q components described by a `cf*` datatype | Real-valued elements with an explicit length-2 `iq` axis |
+| Single channel | Time-ordered complex samples | `(iq, time)` |
+| Multiple channels | Time-major, channel-interleaved complex samples | `(channel, iq, time)` |
+
+SigMF-Zarr does not use a complex Zarr dtype, and it does not store I and Q in
+separate arrays. Index `0` of the `iq` axis contains the in-phase component and
+index `1` contains the quadrature component. A standard SigMF import splits
+each complex sample into those two planes. Export combines the planes into
+complex samples again and writes the interleaved byte stream required by the
+declared `core:datatype`.
+
+For floating-point complex data, `cf32_*` maps to a real-valued Zarr array with
+32-bit components and `cf64_*` maps to one with 64-bit components. Import and
+export preserve the declared byte order in the standard SigMF representation.
+The logical Zarr representation uses the array dtype recorded by
+`sigmf-zarr:dtype`.
+
 ## Sample axes
 
 Sample axes make the tensor layout explicit. The stored
@@ -374,6 +403,23 @@ format 2 does not support sharding.
 Writers may disable sample checksums explicitly, in which case
 `sigmf-zarr:checksum` is `null`. Readers must verify that this metadata field
 agrees with the sample array codec pipeline.
+
+An unbatched recording may also carry standard SigMF `core:sha512`. The digest
+covers the exact byte stream produced for its `.sigmf-data` file, after applying
+the layout and byte order declared by `core:datatype`. It does not cover Zarr
+metadata, compressed chunk bytes, or a `.sigmf` archive container. This makes
+the digest independent of whether the physical store uses Zarr format 2 or
+Zarr format 3.
+
+`core:sha512` is optional because it is an O(N) recording-level check and cannot
+be updated incrementally after arbitrary writes. Managed sample replacement and
+append operations must remove it before changing samples. A writer may then
+recalculate it after the mutation is complete. Public sample and index handles
+are read-only. Writable access is available only through mutation contexts,
+which invalidate affected digests before returning the backing array. Chunk
+CRC32C remains the automatic, local integrity mechanism for normal Zarr reads.
+SHA-512 provides portable identity for the reconstructed standard SigMF
+dataset.
 
 SigMF-Zarr also defines optional native logical SHA-512 hashes. These hashes
 cover the data model rather than serialized Zarr metadata or encoded chunk

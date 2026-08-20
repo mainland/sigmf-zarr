@@ -48,3 +48,11 @@
    :members:
    :undoc-members:
 ```
+
+## SigMF import and export
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.sigmf
+   :members:
+   :undoc-members:
+```
