@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 from numcodecs import CRC32C, Blosc
 from zarr.codecs import BloscCodec
 
@@ -167,6 +168,37 @@ def test_zarr_format_2_can_disable_sample_checksums(tmp_path) -> None:
     )
 
 
+def test_zarr_format_2_detects_corrupted_sample_chunk(tmp_path) -> None:
+    """Format-2 CRC32C filters should reject corrupted sample bytes.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+
+    Raises:
+        AssertionError: If corrupted format-2 samples can be read.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, zarr_format=2)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        sample_shape=(2, 4),
+        sample_compressor=None,
+    )
+    recording.set_samples(np.ones((2, 4), dtype=np.float32))
+    chunk_path = store_path / "recordings" / "rec" / "samples" / "0.0"
+    encoded = bytearray(chunk_path.read_bytes())
+    encoded[0] ^= 0xFF
+    chunk_path.write_bytes(encoded)
+
+    try:
+        _ = recording.samples[:]
+    except RuntimeError as exc:
+        assert "crc32c checksum do not match" in str(exc)
+    else:
+        raise AssertionError("Expected corrupted format-2 chunk to fail")
+
+
 def test_recording_batched_is_derived_from_sample_rank(tmp_path) -> None:
     """Recording.batched should be derived from sample rank.
 
@@ -313,6 +345,38 @@ def test_recording_can_disable_sample_checksums(tmp_path) -> None:
     )
 
 
+def test_recording_detects_corrupted_sample_chunk(tmp_path) -> None:
+    """CRC32C should reject corrupted encoded sample bytes.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+
+    Raises:
+        AssertionError: If corrupted samples can be read without error.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        sample_shape=(2, 4),
+    )
+    recording.set_samples(np.ones((2, 4), dtype=np.float32))
+    chunk_path = (
+        store_path / "recordings" / "rec" / "samples" / "c" / "0" / "0"
+    )
+    encoded = bytearray(chunk_path.read_bytes())
+    encoded[0] ^= 0xFF
+    chunk_path.write_bytes(encoded)
+
+    try:
+        _ = recording.samples[:]
+    except ValueError as exc:
+        assert "checksum do not match" in str(exc)
+    else:
+        raise AssertionError("Expected corrupted sample chunk to fail")
+
+
 def test_sharded_recording_checksums_logical_chunks(tmp_path) -> None:
     """CRC32C should remain inside a sharded sample codec pipeline.
 
@@ -332,6 +396,258 @@ def test_sharded_recording_checksums_logical_chunks(tmp_path) -> None:
     assert SigMFRecording._codecs_have_crc32c(
         recording.samples.metadata.codecs
     )
+
+
+def test_set_samples_resizes_unbatched_time_axis(tmp_path) -> None:
+    """set_samples should resize only the explicit time axis.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=False,
+        sample_shape=(2, 4),
+    )
+    samples = np.arange(12, dtype=np.float32).reshape(2, 6)
+
+    recording.set_samples(samples)
+
+    assert recording.samples.shape == (2, 6)
+    assert recording.sample_shape == (2, 6)
+    assert recording.sample_count == 6
+    assert recording.global_metadata["sigmf-zarr:sample-shape"] == [2, 6]
+    np.testing.assert_array_equal(recording.samples[:], samples)
+
+    reopened = SigMFZarrStore.open(store_path, mode="a").recordings.open("rec")
+    assert reopened.sample_shape == (2, 6)
+    assert reopened.sample_count == 6
+    np.testing.assert_array_equal(reopened.samples[:], samples)
+
+
+def test_set_samples_rejects_non_time_axis_resize(tmp_path) -> None:
+    """set_samples should reject non-time axis changes.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+
+    Raises:
+        AssertionError: If a non-time axis resize is accepted.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=False,
+        sample_shape=(4, 2, 8),
+        sample_axes=("channel", "iq", "time"),
+    )
+
+    try:
+        recording.set_samples(np.zeros((5, 2, 8), dtype=np.float32))
+    except ValueError as exc:
+        assert "Expected 'channel' axis length 4" in str(exc)
+    else:
+        raise AssertionError("Expected non-time axis resize to fail")
+
+
+def test_set_samples_rejects_rank_changes(tmp_path) -> None:
+    """set_samples should reject arrays with different rank.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+
+    Raises:
+        AssertionError: If a rank change is accepted.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=False,
+        sample_shape=(2, 8),
+    )
+
+    try:
+        recording.set_samples(np.zeros((2, 8, 1), dtype=np.float32))
+    except ValueError as exc:
+        assert "Expected samples with ndim 2" in str(exc)
+    else:
+        raise AssertionError("Expected rank change to fail")
+
+
+def test_append_samples_adds_batched_capture(tmp_path) -> None:
+    """append_samples should append captures for batched recordings.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    samples = np.arange(16, dtype=np.float32).reshape(2, 2, 4)
+
+    recording.append_samples(
+        samples,
+        capture={"core:frequency": 915_000_000.0},
+    )
+
+    assert recording.samples.shape == (2, 2, 4)
+    np.testing.assert_array_equal(recording.samples[:], samples)
+    assert recording.captures == [
+        {
+            "core:frequency": 915_000_000.0,
+            "core:sample_start": 0,
+        }
+    ]
+
+
+def test_item_metadata_validation_reads_chunks(tmp_path, monkeypatch) -> None:
+    """Full validation should not call the scalar metadata accessor.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(
+        np.zeros((4097, 2, 4), dtype=np.float32),
+        item_metadata=[None] * 4097,
+    )
+
+    def fail_scalar_access(
+        unused_recording: SigMFRecording,
+        unused_item_index: int,
+    ) -> object:
+        del unused_recording, unused_item_index
+        raise AssertionError("scalar item metadata access is too slow")
+
+    monkeypatch.setattr(
+        SigMFRecording,
+        "get_item_metadata",
+        fail_scalar_access,
+    )
+
+    recording._validate_item_metadata_array()
+
+
+def test_item_metadata_detects_corrupted_zarr_format_3_chunk(
+    tmp_path,
+) -> None:
+    """CRC32C should reject corrupted format-3 item metadata.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+
+    Raises:
+        AssertionError: If corrupted item metadata can be read.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(
+        np.zeros((1, 2, 4), dtype=np.float32),
+        item_metadata=[{"global": {"example:value": 1}}],
+    )
+    chunk_path = (
+        store_path / "recordings" / "rec" / "item_metadata" / "c" / "0"
+    )
+    encoded = bytearray(chunk_path.read_bytes())
+    encoded[-1] ^= 0xFF
+    chunk_path.write_bytes(encoded)
+
+    try:
+        recording.get_item_metadata(0)
+    except ValueError as exc:
+        assert "checksum do not match" in str(exc)
+    else:
+        raise AssertionError("Expected corrupted item metadata to fail")
+
+
+def test_append_samples_extends_unbatched_time_axis_with_capture(
+    tmp_path,
+) -> None:
+    """append_samples should extend unbatched recordings along time.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=False,
+        sample_shape=(2, 4),
+    )
+    appended = np.arange(6, dtype=np.float32).reshape(2, 3)
+
+    recording.append_samples(
+        appended,
+        capture={"core:datetime": "2026-06-01T00:00:00Z"},
+    )
+
+    assert recording.samples.shape == (2, 7)
+    assert recording.sample_shape == (2, 7)
+    assert recording.sample_count == 7
+    assert recording.global_metadata["sigmf-zarr:sample-shape"] == [2, 7]
+    np.testing.assert_array_equal(recording.samples[:, 4:7], appended)
+    assert recording.captures == [
+        {
+            "core:datetime": "2026-06-01T00:00:00Z",
+            "core:sample_start": 4,
+        }
+    ]
+
+    reopened = SigMFZarrStore.open(store_path, mode="a").recordings.open("rec")
+    assert reopened.sample_shape == (2, 7)
+    assert reopened.sample_count == 7
+
+
+def test_append_samples_rejects_unbatched_non_time_axis_change(
+    tmp_path,
+) -> None:
+    """append_samples should reject unbatched non-time axis changes.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+
+    Raises:
+        AssertionError: If a non-time axis resize is accepted.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=False,
+        sample_shape=(4, 2, 8),
+        sample_axes=("channel", "iq", "time"),
+    )
+
+    try:
+        recording.append_samples(np.zeros((5, 2, 3), dtype=np.float32))
+    except ValueError as exc:
+        assert "Expected 'channel' axis length 4" in str(exc)
+    else:
+        raise AssertionError("Expected non-time axis resize to fail")
 
 
 def test_recording_open_rejects_invalid_sample_axes(tmp_path) -> None:
@@ -360,6 +676,27 @@ def test_recording_open_rejects_invalid_sample_axes(tmp_path) -> None:
         assert "reserved axis 'item'" in str(exc)
     else:
         raise AssertionError("Expected invalid sample axes to fail open")
+
+
+def test_item_metadata_presence_is_derived_from_array(tmp_path) -> None:
+    """Item metadata presence should not require a redundant global flag.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(
+        np.zeros((1, 2, 4), dtype=np.float32),
+        item_metadata=[None],
+    )
+    assert "sigmf-zarr:has-item-metadata" not in recording.global_metadata
+    assert store.recordings.open("rec").has_item_metadata is True
 
 
 def test_recording_open_rejects_mismatched_channel_groups(tmp_path) -> None:
