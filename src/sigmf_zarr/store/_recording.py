@@ -1821,6 +1821,22 @@ class SigMFRecording:
             exclude_array_values=frozenset({"samples"}),
         )
 
+    def calculate_source_metadata_sha512(self) -> str:
+        """Hash recording metadata while excluding recording indexes.
+
+        Sample values have a separate hash. Selected input indexes must be
+        hashed separately. Excluding indexes lets an output index retain its
+        input binding without including itself in that binding.
+
+        Returns:
+            Lowercase SHA-512 hexadecimal digest.
+        """
+        return calculate_group_metadata_sha512(
+            self._raw_group,
+            exclude_array_values=frozenset({"samples"}),
+            exclude_groups=frozenset({"indexes"}),
+        )
+
     def update_integrity(self) -> JSONObject:
         """Calculate and store current internal sample and metadata hashes.
 

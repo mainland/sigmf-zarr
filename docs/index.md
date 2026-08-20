@@ -12,6 +12,7 @@ The package is organized around `sigmf_zarr.store.SigMFZarrStore`.
 
 usage
 format
+provenance
 sigmf-zarr.sigmf-ext
 api
 ```
