@@ -1,6 +1,8 @@
 # Usage
 
-Use SigMF-Zarr as a Python API for building Zarr-backed signal stores.
+Use SigMF-Zarr as a Python API for building Zarr-backed signal stores or as a
+command-line interface (CLI) for importing and exporting standard SigMF files
+and supported datasets.
 
 ## Installation
 
@@ -20,7 +22,62 @@ Run commands from the repository environment:
 
 ```bash
 .venv/bin/python -m pytest
+.venv/bin/sigmf-zarr --help
 ```
+
+## CLI
+
+The package installs the `sigmf-zarr` command.
+
+All importers are subcommands of `sigmf-zarr import`. List the supported
+formats with:
+
+```bash
+sigmf-zarr import --help
+```
+
+Import a single standard SigMF recording:
+
+```bash
+sigmf-zarr import sigmf input.sigmf-meta store.zarr
+```
+
+Import a standard SigMF archive:
+
+```bash
+sigmf-zarr import sigmf input.sigmf store.zarr
+```
+
+All import commands share `SOURCE`, `STORE`, `--recording-name`,
+`--overwrite-store`, `--overwrite-recording`, and `--zarr-format`. When the
+target store already exists, its Zarr format is detected automatically. New
+stores use Zarr format 3 by default. Pass `--zarr-format 2` when creating a new
+store for a downstream tool that requires the Zarr format 2 layout:
+
+```bash
+sigmf-zarr import sigmf input.sigmf-meta store.zarr --zarr-format 2
+```
+
+Supplying `--zarr-format` for an existing store verifies that the store has the
+requested format.
+
+Export one unbatched recording back to standard SigMF:
+
+```bash
+sigmf-zarr export store.zarr output.sigmf-meta --recording-name myrec
+```
+
+Export a standard SigMF archive:
+
+```bash
+sigmf-zarr export store.zarr output.sigmf --archive --recording rec1
+```
+
+Export targets without a `.sigmf-meta` or `.sigmf` suffix receive one, and dots
+in the target stem are retained.
+
+The import command can infer standard SigMF input from the file suffix. Use
+`--format` when the suffix is ambiguous.
 
 ## Create a recording
 

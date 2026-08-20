@@ -53,6 +53,9 @@ dev = [
   "tox-uv>=1.28",
 ]
 
+[project.scripts]
+sigmf-zarr = "sigmf_zarr.cli.sigmf:main"
+
 [project.urls]
 Documentation = "https://sigmf-zarr.readthedocs.io/"
 Source = "https://github.com/mainland/sigmf-zarr"
