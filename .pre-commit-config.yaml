@@ -1,0 +1,47 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        exclude: ^uv\.lock$
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: debug-statements
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
+      - id: codespell
+        exclude: ^uv\.lock$
+
+  - repo: https://github.com/rvben/rumdl-pre-commit
+    rev: v0.3.0
+    hooks:
+      - id: rumdl
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: .venv/bin/python -m ruff check
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: .venv/bin/python -m ruff format --check
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy
+        entry: .venv/bin/python -m mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: sp-repo-review
+        name: sp-repo-review
+        entry: .venv/bin/sp-repo-review .
+        language: system
+        files: ^(pyproject\.toml|\.pre-commit-config\.yaml|\.readthedocs\.yaml|\.github/.*)$
+        pass_filenames: false
