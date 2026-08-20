@@ -47,8 +47,11 @@ from sigmf_zarr.integrity import (
     INTEGRITY_ALGORITHM,
     INTEGRITY_ATTR,
     INTEGRITY_VERSION,
+    METADATA_DOMAIN,
     calculate_array_sha512,
     calculate_group_metadata_sha512,
+    calculate_payload_sha512,
+    group_metadata_payload,
     integrity_is_supported,
 )
 from sigmf_zarr.json import (
@@ -2065,6 +2068,33 @@ class SigMFRecording:
             self._raw_group,
             exclude_array_values=frozenset({"samples"}),
         )
+
+    def calculate_source_metadata_sha512(self) -> str:
+        """Hash recording metadata while excluding recording indexes.
+
+        Sample values have a separate hash. Selected input indexes must be
+        hashed separately. Excluding indexes lets an output index retain its
+        input binding without including itself in that binding. The global
+        `core:sha512` field is also excluded. It is a digest of the sample
+        values, so `update_sha512()` does not change this hash.
+
+        Returns:
+            Lowercase SHA-512 hexadecimal digest.
+        """
+        payload = group_metadata_payload(
+            self._raw_group,
+            exclude_array_values=frozenset({"samples"}),
+            exclude_groups=frozenset({"indexes"}),
+        )
+        attrs = cast(dict[str, object], payload["attrs"])
+        shared = attrs.get("global")
+        if isinstance(shared, dict):
+            attrs["global"] = {
+                key: value
+                for key, value in shared.items()
+                if key != SHA512_KEY
+            }
+        return calculate_payload_sha512(payload, domain=METADATA_DOMAIN)
 
     def update_integrity(self) -> JSONObject:
         """Calculate and store current internal sample and metadata hashes.

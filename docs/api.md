@@ -38,6 +38,11 @@
    :undoc-members:
 ```
 
+```{eval-rst}
+.. automodule:: sigmf_zarr.provenance
+   :members: capture_inputs, verify_inputs, file_identity
+```
+
 ## Read-only views
 
 ```{eval-rst}
