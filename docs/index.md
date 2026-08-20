@@ -12,6 +12,7 @@ for importing and exporting SigMF datasets.
 :caption: Contents
 
 usage
+comparison
 format
 provenance
 sigmf-zarr.sigmf-ext
