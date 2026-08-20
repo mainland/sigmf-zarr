@@ -1228,6 +1228,7 @@ name = "sigmf-zarr"
 source = { editable = "." }
 dependencies = [
     { name = "crc32c" },
+    { name = "jsonschema" },
     { name = "numcodecs" },
     { name = "numpy" },
     { name = "sigmf" },
@@ -1261,6 +1262,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "crc32c", specifier = ">=2.4" },
+    { name = "jsonschema", specifier = ">=4.0" },
     { name = "numcodecs", specifier = ">=0.14" },
     { name = "numpy", specifier = ">=2.0.2" },
     { name = "sigmf", specifier = ">=1.11.0" },

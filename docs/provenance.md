@@ -39,6 +39,10 @@ In-memory array identities use the logical array hash defined by the
 ranges accompany those identities. This identifies decoded input values rather
 than the bytes of an earlier serialization.
 
+Standard SigMF import retains the source metadata. It does not insert a new
+import record into that metadata. Existing provenance JSON survives interchange
+under the same preservation rules as other extension fields.
+
 ## Bind derived metadata to its inputs
 
 `capture_inputs(recording, indexes=[...])` returns a version-1 object containing

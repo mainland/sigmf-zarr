@@ -132,7 +132,8 @@ Use `sample_axes` to make the tensor layout explicit. Standard SigMF serializes
 a `cf*` signal as interleaved complex samples in its flat `.sigmf-data` byte
 stream. SigMF-Zarr instead stores the components in one real-valued Zarr array
 with an explicit `iq` axis of length `2`: index `0` is I and index `1` is Q.
-They are not separate arrays.
+They are not separate arrays. Import splits standard complex samples along this
+axis, and export combines them into the standard interleaved representation.
 
 ```python
 recording = store.recordings.create(
@@ -537,6 +538,75 @@ An index is marked invalid before the context body runs and restored to valid
 only after successful structural validation. Resizing a sample axis similarly
 invalidates indexes aligned with that axis until they are repaired or replaced.
 Re-run `store.update_integrity()` after completing a series of changes.
+
+## Import and export SigMF
+
+The reusable Python helpers mirror the command line:
+
+```python
+from sigmf_zarr import SigMFZarrStore, export_sigmf, import_sigmf
+
+recording = import_sigmf(
+    "store.zarr",
+    "input.sigmf-meta",
+    recording_name="imported",
+    overwrite_store=True,
+)
+
+export_sigmf(
+    SigMFZarrStore.open("store.zarr"),
+    "imported",
+    "roundtrip.sigmf-meta",
+    overwrite=True,
+)
+```
+
+Standard SigMF export supports only unbatched recordings. Batched recordings
+represent multiple independent items, so exporting them to standard SigMF
+requires an explicit split strategy that the implementation does not provide.
+
+When importing standard SigMF, `core:num_channels` is mapped to an explicit
+SigMF-Zarr `channel` axis. A real two-channel SigMF stream imports as
+`("channel", "time")`. A complex two-channel stream imports as
+`("channel", "iq", "time")`.
+
+Complex floating-point precision is preserved: `cf32_le` and `cf32_be` use
+32-bit I/Q components, while `cf64_le` and `cf64_be` use 64-bit components.
+Export restores the endianness declared by `core:datatype` rather than using
+the host machine's native byte order.
+
+Import verifies that the reconstructed standard dataset bytes match the source
+`core:sha512` and stores that digest. If the declared digest is stale or
+conversion cannot preserve the source bytes exactly, import raises `ValueError`
+instead of retaining a misleading digest. Import also raises `ValueError` for
+an unreadable archive, an archive member that the `tarfile` `data` extraction
+filter rejects, and a recording that sigmf-python cannot read, such as one
+whose `core:dataset` file is missing. Export adds `core:sha512` when it is
+absent and rejects a stored digest that does not match the bytes being written.
+
+A `.sigmf` archive must be an uncompressed tar file. Archive import raises
+`ValueError` for a gzip, bzip2, xz, or Zstandard stream, and checks every member
+before it extracts any. It reads member headers itself and requires each header
+to follow the previous one, so a malformed header cannot make parsing loop. It
+rejects sparse files, members other than regular files and directories, such as
+symbolic links, hard links, and device files, members with an absolute name, a
+`..` component, or a NUL character, two regular files with the same name, a
+name that is both a regular file and a directory, and a directory with a SigMF
+file suffix. A member name that the file system cannot hold, such as one that
+is too long, is also a `ValueError`. Archive import also rejects an archive
+whose regular files declare more bytes than the archive holds, and an archive
+that would create more files and directories, including implied parent
+directories, than it has 512-byte blocks. The extracted file data is therefore
+no larger than the archive. Each directory can still occupy a file-system block
+and an inode, so a directory needs up to about eight times its 512-byte header
+on a file system with 4 KiB blocks.
+
+For multi-channel unbatched recordings, standard SigMF export validates
+`core:num_channels` against the declared `channel` axis. If the field is
+missing and the recording has more than one channel, export fills it from the
+axis length. If the field is present but does not match the axis length, export
+raises `ValueError`. Single-channel exports may still include
+`core:num_channels: 1` because that is normal standard SigMF metadata.
 
 ## Mutation and failure behavior
 
