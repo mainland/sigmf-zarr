@@ -120,6 +120,7 @@ line-length = 79
 
 [tool.mypy]
 files = [
+  "docs/conf.py",
   "src",
   "tests",
 ]
@@ -186,4 +187,3 @@ PC190 = "Ruff runs as a local hook from .venv."
 PC901 = "The project does not use pre-commit.ci."
 PC902 = "The project does not use pre-commit.ci."
 PC903 = "The project does not use pre-commit.ci."
-PY004 = "The documentation is not written yet."
