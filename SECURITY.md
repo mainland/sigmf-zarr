@@ -12,7 +12,11 @@ version, input format, impact, and a minimal reproducer when possible.
 
 ## Untrusted inputs
 
-SigMF archives, JSON metadata, and Zarr stores should be treated as untrusted
-data. Run imports with operating system permissions
+RadioML 2016 files are Python pickle files. Loading a pickle can execute code,
+so the `sigmf-zarr import radioml2016` command must only be used with files
+from a trusted source.
+
+SigMF archives, HDF5 files, JSON metadata, and Zarr stores should also be
+treated as untrusted data. Run imports with operating system permissions
 appropriate for the output location and apply external resource limits when
 processing unknown or unusually large datasets.

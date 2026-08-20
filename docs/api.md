@@ -62,6 +62,18 @@
    :undoc-members:
 ```
 
+## RadioML
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.radioml2016
+   :members:
+   :undoc-members:
+
+.. automodule:: sigmf_zarr.radioml2018
+   :members:
+   :undoc-members:
+```
+
 ## CLI
 
 ```{eval-rst}

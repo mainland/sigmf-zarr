@@ -12,6 +12,7 @@ from sigmf_zarr.radioml2016 import (
     import_radioml2016_dataset,
 )
 from sigmf_zarr.radioml2018 import (
+    RADIOML2018_MODULATION_CLASSES,
     import_radioml2018_dataset,
 )
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
@@ -43,6 +44,7 @@ __all__ = [
     "SigMFRecording",
     "SigMFZarrStore",
     "ZarrFormat",
+    "RADIOML2018_MODULATION_CLASSES",
     "RadioML2016Dict",
     "RadioML2016Key",
     "RadioML2016Value",
