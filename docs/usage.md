@@ -210,6 +210,37 @@ with `core:offset`, or zero when `core:offset` is absent, plus the old time
 sample count. For batched recordings, appends extend the
 leading `item` axis and `core:sample_start` defaults to the old item count.
 
+## Metadata indexes
+
+Indexes are dense one-dimensional arrays aligned with a runtime sample axis.
+They are useful for labels, SNR values, quality scores, frequency bins, or
+other metadata that belongs to each item, channel, or time sample.
+
+```python
+recording = store.recordings.open("snippets")
+
+recording.add_index(
+    "snr_db",
+    np.array([0, 2, 4, 6] * 4, dtype=np.int16),
+    axis="item",
+    field="example:snr",
+    unit="dB",
+    overwrite=True,
+)
+
+recording.add_index(
+    "mod_class_id",
+    np.zeros((16,), dtype=np.int16),
+    axis="item",
+    field="example:mod_class",
+    labels=["BPSK"],
+    overwrite=True,
+)
+```
+
+Index length must match the selected runtime axis. For example, an `item`
+index on a batched recording with `16` items must have length `16`.
+
 ## Integrity
 
 New sample arrays use per-chunk CRC32C checksums by default. Zarr validates the
@@ -239,6 +270,19 @@ with recording.mutate_samples() as samples:
 ```
 
 Use `set_samples()` or `append_samples()` for shape changes.
+
+Recording-level and store-wide indexes are read-only and have explicit
+writable contexts:
+
+```python
+snippets = store.recordings.open("snippets")
+with snippets.mutate_index("snr_db") as index:
+    index[:4] = np.full(4, 10, dtype=np.int16)
+
+store.add_index("fold", np.zeros(4, dtype=np.int8), overwrite=True)
+with store.mutate_index("fold") as index:
+    index[:] = np.array([0, 1, 0, 1], dtype=np.int8)
+```
 
 Recording and collection names must identify immediate child groups. Names
 must be nonempty and must not contain path separators, `.` or `..` path
@@ -270,3 +314,7 @@ Collection creation and `set_recording_ids()` reject identifiers that do not
 name an existing recording or that appear more than once.
 `store.recordings.remove()` rejects a recording that a collection references.
 Update the collection first.
+
+An index is marked invalid before the context body runs and restored to valid
+only after successful structural validation. Resizing a sample axis similarly
+invalidates indexes aligned with that axis until they are repaired or replaced.

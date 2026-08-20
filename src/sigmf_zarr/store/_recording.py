@@ -31,6 +31,7 @@ from zarr.core.array import (
     Array,
     CompressorLike,
     CompressorsLike,
+    SerializerLike,
     ShardsLike,
 )
 from zarr.core.dtype import VariableLengthUTF8
@@ -57,8 +58,11 @@ from sigmf_zarr.store._common import (
     DEFAULT_SAMPLE_CHUNK_BYTES,
     ChecksumName,
     ZarrFormat,
+    _check_array_target,
     _python_dimensions,
+    _require_array,
     _validate_resource_name,
+    index_marker_error,
 )
 
 if TYPE_CHECKING:
@@ -1845,6 +1849,58 @@ class SigMFRecording:
                 f"axis {axis!r} changed"
             )
 
+    def _validate_mutated_index(
+        self, index_name: str, index: Array[Any]
+    ) -> None:
+        """Validate and mark one successfully mutated index as current.
+
+        Args:
+            index_name: Recording-level index name.
+            index: Mutated backing Zarr array.
+
+        Raises:
+            ValueError: If the array is not one-dimensional, its axis is
+                invalid, or its length does not match the indexed axis.
+        """
+        error = self._index_structure_error(index_name, index)
+        if error is not None:
+            raise ValueError(error)
+        if self._INDEX_VALID_FIELD in index.attrs:
+            del index.attrs[self._INDEX_VALID_FIELD]
+        if self._INDEX_INVALID_REASON_FIELD in index.attrs:
+            del index.attrs[self._INDEX_INVALID_REASON_FIELD]
+
+    def _index_structure_error(
+        self,
+        index_name: str,
+        index: Array[Any],
+    ) -> str | None:
+        """Return a structural error for one recording index.
+
+        Args:
+            index_name: Recording-level index name.
+            index: Backing Zarr index array.
+
+        Returns:
+            Error message, or ``None`` when the index is structurally valid.
+        """
+        if index.ndim != 1:
+            return (
+                f"Index {index_name!r} must be one-dimensional, got "
+                f"shape {index.shape}"
+            )
+        axis = index.attrs.get("axis")
+        if not isinstance(axis, str) or axis not in self.runtime_axes:
+            return f"Index {index_name!r} has invalid axis {axis!r}"
+        axis_length = int(self._samples_array.shape[self.axis_index(axis)])
+        index_length = int(index.shape[0])
+        if index_length != axis_length:
+            return (
+                f"Index {index_name!r} length {index_length} does not match "
+                f"axis {axis!r} length {axis_length}"
+            )
+        return None
+
     @contextmanager
     def mutate_samples(self) -> Generator[Array[Any], None, None]:
         """Provide writable sample access with conservative invalidation.
@@ -1883,6 +1939,53 @@ class SigMFRecording:
                 "mutate_samples() cannot resize the sample array. Use "
                 "set_samples() or append_samples()"
             )
+
+    @contextmanager
+    def mutate_extensions(self) -> Generator[Group, None, None]:
+        """Provide writable access to extension-owned structured data.
+
+        Internal recording and store metadata hashes are invalidated before
+        access is granted. Extension code remains responsible for preserving
+        the schema of its own arrays and groups.
+
+        Yields:
+            Writable backing extensions group.
+        """
+        with self._mutation(metadata=True):
+            yield self._extensions_group
+
+    @contextmanager
+    def mutate_index(
+        self,
+        index_name: str,
+    ) -> Generator[Array[Any], None, None]:
+        """Provide writable access to one recording-level index.
+
+        The index is marked invalid before writable access is granted. A
+        successful context exit validates its shape and alignment and marks it
+        current again. If the body raises, the index remains invalid.
+
+        Args:
+            index_name: Recording-level index name.
+
+        Yields:
+            Writable backing Zarr index array.
+
+        Raises:
+            KeyError: If no index array has this name.
+            ValueError: If `index_name` is malformed or the mutated index is
+                structurally invalid.
+        """
+        index = _require_array(self._indexes_group, index_name, kind="Index")
+        self._invalidate_integrity(metadata=True)
+        index.attrs[self._INDEX_VALID_FIELD] = False
+        index.attrs[self._INDEX_INVALID_REASON_FIELD] = (
+            "mutation did not complete"
+        )
+        yield index
+        # Reaching this line means the caller exited normally. Validation
+        # removes the fail-safe invalid marker only after alignment is proven.
+        self._validate_mutated_index(index_name, index)
 
     @property
     def sha512(self) -> str | None:
@@ -2632,3 +2735,204 @@ class SigMFRecording:
             ")",
         ]
         return "\n".join(lines)
+
+    def _create_array(
+        self,
+        group: Group,
+        name: str,
+        data: npt.ArrayLike,
+        *,
+        overwrite: bool,
+        chunks: tuple[int, ...] | None = None,
+        shards: ShardsLike | None = None,
+        compressors: CompressorsLike = "auto",
+        compressor: CompressorLike = "auto",
+        serializer: SerializerLike = "auto",
+    ) -> Array[Any]:
+        """Create one managed array, optionally at a nested path.
+
+        Args:
+            group: Parent group in which to create the array.
+            name: Array name or nested relative path under `group`.
+            data: Array-like values used to initialize the new array.
+            overwrite: Whether an existing array may be replaced.
+            chunks: Optional chunk shape.
+            shards: Optional shard shape passed through to Zarr.
+            compressors: Optional compressors configuration.
+            compressor: Optional single-compressor configuration.
+            serializer: Optional serializer configuration.
+
+        Returns:
+            Created Zarr array.
+
+        Raises:
+            ValueError: If the target exists and `overwrite` is false.
+        """
+        self._invalidate_integrity(metadata=True)
+        return self._store.create_array(
+            group,
+            name,
+            data,
+            overwrite=overwrite,
+            chunks=chunks,
+            shards=shards,
+            compressors=compressors,
+            compressor=compressor,
+            serializer=serializer,
+        )
+
+    def add_extension_array(
+        self,
+        name: str,
+        data: npt.ArrayLike,
+        *,
+        overwrite: bool = False,
+        chunks: tuple[int, ...] | None = None,
+        shards: ShardsLike | None = None,
+        compressors: CompressorsLike = "auto",
+        compressor: CompressorLike = "auto",
+        serializer: SerializerLike = "auto",
+    ) -> ReadOnlyArray:
+        """Create an extension-owned array with integrity invalidation.
+
+        The array may have any rank, including zero. Compressors follow
+        the rules of :meth:`SigMFZarrStore.create_array`.
+
+        Args:
+            name: Array name or nested relative path under `extensions/`.
+            data: Array-like values used to initialize the new array.
+            overwrite: Whether an existing array may be replaced.
+            chunks: Optional chunk shape. When omitted, a one-dimensional
+                array uses chunks of at most 4096 values, and an array of
+                any other rank uses Zarr's automatic chunk shape.
+            shards: Optional Zarr format 3 shard shape.
+            compressors: Optional compressor or compressor pipeline. Zarr
+                format 2 accepts at most one compressor.
+            compressor: Optional single compressor. Specify at most one of
+                `compressors` and `compressor`.
+            serializer: Optional Zarr format 3 serializer.
+
+        Returns:
+            Read-only view of the created array.
+
+        Raises:
+            ValueError: If `name` is empty, starts or ends with `/`, or has
+                an empty, `.`, or `..` segment, `data` has a structured or
+                void dtype, the target exists and `overwrite` is false,
+                `overwrite` targets a group, or an encoding option is not
+                available in the store's format.
+        """
+        _check_array_target(
+            self._extensions_group,
+            name,
+            kind="Extension array",
+            overwrite=overwrite,
+        )
+        array = self._create_array(
+            self._extensions_group,
+            name,
+            data,
+            overwrite=overwrite,
+            chunks=chunks,
+            shards=shards,
+            compressors=compressors,
+            compressor=compressor,
+            serializer=serializer,
+        )
+        return ReadOnlyArray(array)
+
+    def add_index(
+        self,
+        index_name: str,
+        values: npt.ArrayLike,
+        *,
+        axis: str,
+        field: str,
+        kind: str = "metadata",
+        unit: str | None = None,
+        labels: list[JSONValue] | tuple[JSONValue, ...] | None = None,
+        overwrite: bool = False,
+        chunks: tuple[int] | None = None,
+    ) -> ReadOnlyArray:
+        """Create or replace one recording-level metadata index.
+
+        Index arrays are dense one-dimensional metadata arrays aligned
+        with one runtime sample axis such as `item`, `time`, or `channel`.
+
+        Args:
+            index_name: Index array name.
+            values: One-dimensional index values.
+            axis: Runtime sample axis indexed by the values.
+            field: Metadata field represented by the index.
+            kind: Index kind. Defaults to `metadata`.
+            unit: Optional value unit.
+            labels: Optional labels or lookup values for integer indexes.
+            overwrite: Whether an existing index may be replaced.
+            chunks: Optional chunk shape.
+
+        Returns:
+            Created index array.
+
+        Raises:
+            ValueError: If values are not one-dimensional, the axis is not
+                present, or the index length does not match the axis length.
+        """
+        value_array = np.asarray(values)
+        if value_array.ndim != 1:
+            raise ValueError(
+                f"Index {index_name!r} must be one-dimensional, got "
+                f"shape {value_array.shape}"
+            )
+        axis_length = int(self.samples.shape[self.axis_index(axis)])
+        if len(value_array) != axis_length:
+            raise ValueError(
+                f"Index {index_name!r} length {len(value_array)} does not "
+                f"match axis {axis!r} length {axis_length}"
+            )
+
+        index = self._create_array(
+            self._indexes_group,
+            index_name,
+            value_array,
+            overwrite=overwrite,
+            chunks=(
+                chunks or self._store.default_index_chunks(len(value_array))
+            ),
+        )
+        attrs: JSONObject = {
+            "axis": axis,
+            "field": field,
+            "kind": kind,
+        }
+        if unit is not None:
+            attrs["unit"] = unit
+        if labels is not None:
+            attrs["labels"] = list(labels)
+        index.attrs.update(attrs)
+        return ReadOnlyArray(index)
+
+    def index(self, index_name: str) -> ReadOnlyArray:
+        """Return one recording-level metadata index.
+
+        Args:
+            index_name: Index array name.
+
+        Returns:
+            Read-only recording-level index array.
+
+        Raises:
+            KeyError: If no index array has this name.
+            ValueError: If `index_name` is malformed, or the index is
+                structurally invalid or was invalidated by an axis mutation.
+        """
+        index = _require_array(self._indexes_group, index_name, kind="Index")
+        marker_error = index_marker_error(index_name, index.attrs)
+        if marker_error is not None:
+            raise ValueError(
+                f"{marker_error}. Repair it with mutate_index() or replace "
+                "it with add_index()"
+            )
+        error = self._index_structure_error(index_name, index)
+        if error is not None:
+            raise ValueError(error)
+        return ReadOnlyArray(index)
