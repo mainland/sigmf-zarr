@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 from sigmf import DATATYPE_KEY, SAMPLE_COUNT_KEY, SAMPLE_START_KEY, SHA512_KEY
+from sigmf.error import SigMFFileError
+from sigmf.sigmffile import SigMFCollection as StandardSigMFCollection
 from sigmf.sigmffile import SigMFFile, fromfile
 
 import sigmf_zarr.sigmf as sigmf_module
@@ -1261,6 +1264,233 @@ def test_export_sigmf_removes_empty_extensions_after_stripping(
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
 
     assert "core:extensions" not in metadata["global"]
+
+
+def test_import_sigmf_archive_normalizes_collection_stream_names(
+    tmp_path, monkeypatch
+) -> None:
+    """Archive import should store bare recording ids in collections.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    archive_root = tmp_path / "bundle"
+    archive_root.mkdir()
+    (archive_root / "rec-a.sigmf-meta").write_text("{}", encoding="utf-8")
+    (archive_root / "rec-b.sigmf-meta").write_text("{}", encoding="utf-8")
+
+    collection = StandardSigMFCollection(
+        metafiles=["rec-a.sigmf-meta", "rec-b.sigmf-meta"],
+        metadata={StandardSigMFCollection.COLLECTION_KEY: {}},
+        base_path=archive_root,
+        skip_checksums=False,
+    )
+    collection.tofile(archive_root / "paired", overwrite=True)
+
+    archive_path = tmp_path / "bundle.sigmf"
+    with tarfile.open(archive_path, mode="w") as archive:
+        archive.add(archive_root, arcname="bundle")
+
+    store = FakeStore()
+    imported_sources: list[Path] = []
+
+    def fake_import_sigmf(
+        store_path: str | Path,
+        sigmf_path: str | Path,
+        *,
+        recording_name: str | None = None,
+        overwrite_store: bool = False,
+        overwrite_recording: bool = False,
+        zarr_format: int = 3,
+    ) -> FakeRecording:
+        """Capture archive import source paths.
+
+        Args:
+            store_path: Target store path.
+            sigmf_path: Source metadata path.
+            recording_name: Optional recording name override.
+            overwrite_store: Whether to recreate the store.
+            overwrite_recording: Whether to replace a recording.
+            zarr_format: Physical Zarr format.
+
+        Returns:
+            Fake imported recording.
+        """
+        del (
+            store_path,
+            recording_name,
+            overwrite_store,
+            overwrite_recording,
+            zarr_format,
+        )
+        imported_sources.append(Path(sigmf_path))
+        return FakeRecording(name=Path(sigmf_path).stem)
+
+    monkeypatch.setattr(
+        sigmf_module.SigMFZarrStore,
+        "create",
+        lambda *args, **kwargs: store,
+    )
+    monkeypatch.setattr(sigmf_module, "import_sigmf", fake_import_sigmf)
+
+    imported = sigmf_module.import_sigmf_archive(
+        tmp_path / "store.zarr",
+        archive_path,
+    )
+
+    assert imported is store
+    assert sorted(path.name for path in imported_sources) == [
+        "rec-a.sigmf-meta",
+        "rec-b.sigmf-meta",
+    ]
+    assert store.collections.open("paired").recording_ids == ("rec-a", "rec-b")
+
+
+def test_import_sigmf_archive_rejects_stale_metadata_hash(tmp_path) -> None:
+    """Archive import should verify collection metadata-file hashes.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+
+    Raises:
+        AssertionError: If a stale collection stream hash is accepted.
+    """
+    archive_root = tmp_path / "bundle"
+    archive_root.mkdir()
+    meta_path = archive_root / "rec.sigmf-meta"
+    write_standard_sigmf(meta_path, TEST_FLOAT32_DATA, TEST_METADATA)
+    collection = StandardSigMFCollection(
+        metafiles=[meta_path.name],
+        metadata={StandardSigMFCollection.COLLECTION_KEY: {}},
+        base_path=archive_root,
+        skip_checksums=False,
+    )
+    collection.tofile(archive_root / "all", overwrite=True)
+    meta_path.write_text(
+        meta_path.read_text(encoding="utf-8") + " ",
+        encoding="utf-8",
+    )
+    archive_path = tmp_path / "bundle.sigmf"
+    with tarfile.open(archive_path, mode="w") as archive:
+        archive.add(archive_root, arcname="bundle")
+
+    try:
+        sigmf_module.import_sigmf_archive(
+            tmp_path / "store.zarr",
+            archive_path,
+        )
+    except SigMFFileError as exc:
+        assert "hash" in str(exc).lower()
+        assert "does not match" in str(exc)
+    else:
+        raise AssertionError("Expected stale metadata-file hash to fail")
+
+
+def test_export_sigmf_archive_writes_collection_file(
+    tmp_path, monkeypatch
+) -> None:
+    """Archive export should write collection streams as meta filenames.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    store = FakeStore(
+        recordings=FakeRecordings(
+            {
+                "rec-a": FakeRecording(name="rec-a"),
+                "rec-b": FakeRecording(name="rec-b"),
+            }
+        ),
+        collections=FakeCollections(
+            {
+                "paired": FakeCollection(
+                    name="paired",
+                    metadata={"description": "paired recordings"},
+                    recording_ids=("rec-a", "rec-b"),
+                )
+            }
+        ),
+    )
+
+    samples_by_name = {
+        "rec-a": TEST_FLOAT32_DATA.copy(),
+        "rec-b": TEST_FLOAT32_DATA[::-1].copy(),
+    }
+
+    def fake_export_sigmf(
+        _store: object,
+        recording_name: str,
+        output_path: str | Path,
+        *,
+        overwrite: bool = False,
+        pretty: bool = True,
+        force: bool = False,
+    ) -> Path:
+        """Write fake exported SigMF files.
+
+        Args:
+            _store: Source store placeholder.
+            recording_name: Recording name to export.
+            output_path: Target output path.
+            overwrite: Whether to replace existing files.
+            pretty: Whether to pretty-print JSON.
+            force: Whether to bypass stale metadata validation.
+
+        Returns:
+            Written metadata path.
+        """
+        del _store, overwrite, pretty, force
+        meta_path = Path(output_path).with_suffix(".sigmf-meta")
+        write_standard_sigmf(
+            meta_path,
+            samples_by_name[recording_name],
+            metadata_without_hash(),
+        )
+        return meta_path
+
+    monkeypatch.setattr(sigmf_module, "export_sigmf", fake_export_sigmf)
+
+    archive_path = sigmf_module.export_sigmf_archive(
+        store,
+        tmp_path / "bundle.sigmf",
+        collection_name="paired",
+        overwrite=True,
+    )
+
+    with tarfile.open(archive_path, mode="r") as archive:
+        members = archive.getnames()
+        collection_member = next(
+            name
+            for name in members
+            if name.endswith("paired.sigmf-collection")
+        )
+        handle = archive.extractfile(collection_member)
+        assert handle is not None
+        archive_collection = StandardSigMFCollection(
+            metadata=json.load(handle)
+        )
+        streams = archive_collection.get_collection_field(
+            "core:streams", []
+        )
+        for stream in streams:
+            recording_name = stream["name"]
+            meta_member = next(
+                name
+                for name in members
+                if name.endswith(f"/{recording_name}.sigmf-meta")
+            )
+            meta_handle = archive.extractfile(meta_member)
+            assert meta_handle is not None
+            assert stream["hash"] == hashlib.sha512(
+                meta_handle.read()
+            ).hexdigest()
+
+    assert tuple(archive_collection.get_stream_names()) == (
+        "rec-a",
+        "rec-b",
+    )
 
 
 def test_sigmf_dtype_to_zarr_for_real_samples() -> None:
