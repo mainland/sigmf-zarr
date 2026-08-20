@@ -10,6 +10,9 @@ from sigmf_zarr.radioml2016 import (
     flatten_radioml2016_dataset,
     import_radioml2016_dataset,
 )
+from sigmf_zarr.radioml2018 import (
+    import_radioml2018_dataset,
+)
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
 from sigmf_zarr.sigmf import (
     calculate_sha512,
@@ -53,6 +56,7 @@ __all__ = [
     "export_sigmf_archive",
     "flatten_radioml2016_dataset",
     "import_radioml2016_dataset",
+    "import_radioml2018_dataset",
     "import_sigmf",
     "import_sigmf_archive",
     "validate_store",

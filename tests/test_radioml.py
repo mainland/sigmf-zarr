@@ -6,11 +6,13 @@ import pickle
 from pathlib import Path
 from typing import Any
 
+import h5py
 import numpy as np
 import numpy.typing as npt
 import pytest
 
 import sigmf_zarr.radioml2016 as radioml2016
+import sigmf_zarr.radioml2018 as radioml2018
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore
 from sigmf_zarr.store._common import ZarrFormat
 
@@ -78,6 +80,64 @@ def test_import_radioml_dataset_writes_store(tmp_path: Path) -> None:
     assert recording.index("mod_class_id").attrs["labels"] == ["BPSK"]
     np.testing.assert_array_equal(recording.index("snr_db")[:], [0])
     assert store.verify_integrity()
+
+
+def test_import_radioml2018_dataset_streams_hdf5_batches(
+    tmp_path: Path,
+) -> None:
+    """The 2018 importer should transpose and append bounded HDF5 batches.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    source_path = tmp_path / "RML2018.hdf5"
+    store_path = tmp_path / "RML2018.sigmf-zarr"
+    source_samples = np.arange(40, dtype=np.float32).reshape(5, 4, 2)
+    source_labels = np.array(
+        [
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    source_snr = np.array([[-2], [0], [2], [4], [6]], dtype=np.int16)
+    with h5py.File(source_path, "w") as source:
+        source.create_dataset("X", data=source_samples)
+        source.create_dataset("Y", data=source_labels)
+        source.create_dataset("Z", data=source_snr)
+
+    store = radioml2018.import_radioml2018_dataset(
+        store_path,
+        source_path,
+        modulation_classes=("BPSK", "QPSK"),
+        batch_size=2,
+        zarr_format=2,
+    )
+
+    recording = store.recordings["radioml2018"]
+    assert store.zarr_format == 2
+    assert recording.samples.shape == (5, 2, 4)
+    np.testing.assert_array_equal(
+        recording.samples[:],
+        np.moveaxis(source_samples, 2, 1),
+    )
+    np.testing.assert_array_equal(
+        recording.index("mod_class_id")[:],
+        np.array([0, 1, 0, 1, 1], dtype=np.int16),
+    )
+    assert recording.index("mod_class_id").attrs["labels"] == [
+        "BPSK",
+        "QPSK",
+    ]
+    np.testing.assert_array_equal(
+        recording.index("snr_db")[:],
+        source_snr[:, 0],
+    )
+    assert recording.global_metadata["radioml:dataset_version"] == "2018"
+    assert recording.global_metadata["radioml:source_dataset"] == "RML2018"
 
 
 @pytest.mark.parametrize("zarr_format", [2, 3])
