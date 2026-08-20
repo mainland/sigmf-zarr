@@ -2,8 +2,12 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
+
 __all__ = [
     "__version__",
+    "ReadOnlyArray",
+    "ReadOnlyGroup",
 ]
 
 try:
