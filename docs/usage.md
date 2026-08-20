@@ -50,6 +50,9 @@ recording = store.recordings.create(
         }
     ],
 )
+
+samples = np.zeros((1024,), dtype=np.float32)
+recording.set_samples(samples)
 ```
 
 `SigMFZarrStore.create` defaults to Zarr format 3. To create the same logical
@@ -112,6 +115,9 @@ recording = store.recordings.create(
     overwrite=True,
 )
 
+samples = np.zeros((4, 2, 2048), dtype=np.float32)
+recording.set_samples(samples)
+
 assert recording.sample_axes == ("channel", "iq", "time")
 assert recording.runtime_axes == ("channel", "iq", "time")
 assert recording.axis_index("time") == 2
@@ -131,12 +137,37 @@ recording = store.recordings.create(
     overwrite=True,
 )
 
+batch = np.zeros((12, 2, 128), dtype=np.float32)
+recording.append_samples(batch)
+
 assert recording.batched is True
 assert recording.runtime_axes == ("item", "iq", "time")
 ```
 
 Batching is derived from the stored array rank and
 `sigmf-zarr:sample-shape`. There is no separate stored batching flag.
+
+## Append samples with captures
+
+Use `append_samples(..., capture=...)` to grow a recording and attach capture
+metadata to the appended segment.
+
+```python
+segment = np.ones((4, 2, 128), dtype=np.float32)
+
+recording.append_samples(
+    segment,
+    capture={
+        "core:frequency": 916_000_000.0,
+        "core:datetime": "2026-06-02T12:00:00Z",
+    },
+)
+```
+
+For unbatched recordings, appends extend the `time` axis. If
+`core:sample_start` is omitted from the capture metadata, SigMF-Zarr fills it
+with the old time sample count. For batched recordings, appends extend the
+leading `item` axis and `core:sample_start` defaults to the old item count.
 
 ## Integrity
 
@@ -154,6 +185,19 @@ recording = store.recordings.create(
     sample_checksum=None,
 )
 ```
+
+`set_samples()` and `append_samples()` automatically remove a stored
+`core:sha512` digest. Public sample views are read-only. Use a mutation context
+for same-shape value updates. It invalidates hashes before granting writable
+access:
+
+```python
+replacement = np.ones(100, dtype=np.float32)
+with recording.mutate_samples() as samples:
+    samples[100:200] = replacement
+```
+
+Use `set_samples()` or `append_samples()` for shape changes.
 
 Recording and collection names must identify immediate child groups. Names
 must be nonempty and must not contain path separators, `.` or `..` path

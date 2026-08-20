@@ -131,8 +131,8 @@ The extension defines these `global` fields:
 : Chunk-level checksum applied to sample data. Its value is `crc32c` or `null`.
 
 These fields describe the stored `samples` array, and a writer must keep them
-consistent with it. The Python API maintains them during creation and rejects
-direct assignment through `set_global_field()`.
+consistent with it. The Python API maintains them during creation and appends
+and rejects direct assignment through `set_global_field()`.
 
 A recording is treated as batched when
 `samples.ndim == len(sigmf-zarr:sample-shape) + 1`. The leading runtime axis is
@@ -192,7 +192,9 @@ An item metadata object may contain these keys:
 No other top-level keys are permitted. The array is optional, and its presence
 is derived directly from the recording group rather than duplicated in global
 metadata. It is valid only for batched recordings and must always remain
-aligned with the item axis.
+aligned with the item axis. Appending samples extends an existing metadata
+array with `{}` entries unless metadata for the new items is supplied
+explicitly.
 
 Every `item_metadata` chunk is protected by CRC32C. In Zarr format 3, CRC32C
 is the final bytes-to-bytes codec after compression. In Zarr format 2, the
@@ -237,6 +239,23 @@ The implementation can infer default axes for common shapes:
 - Rank 3 with last dimension `2`: `(time, channel, iq)`
 
 For other shapes, writers should provide `sample_axes` explicitly.
+
+## Captures and appends
+
+Capture and annotation metadata follows the SigMF model and is stored in the
+recording `captures` and `annotations` attributes.
+
+When `append_samples(..., capture=...)` receives capture metadata, the writer
+adds a capture entry to `captures`. If the entry does not already include
+`core:sample_start`, SigMF-Zarr fills it in:
+
+- For batched recordings, `core:sample_start` defaults to the old `item` count
+- For unbatched recordings, `core:sample_start` defaults to `core:offset`
+  (zero when absent) plus the old `time` sample count
+
+Unbatched appends extend the explicit `time` axis and update
+`sigmf-zarr:sample-shape`. Batched appends extend the leading runtime `item`
+axis and keep `sigmf-zarr:sample-shape` unchanged.
 
 ## Logical integrity
 
