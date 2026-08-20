@@ -1,0 +1,43 @@
+# Byte-compiled and optimized Python files
+__pycache__/
+*.py[cod]
+
+# C extensions
+*.so
+
+# Distribution and packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+
+# Test, coverage, and type-checking output
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.tox/
+.nox/
+
+# Documentation builds
+docs/_build/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# Editor-generated files
+.vscode/*.log
+
+# Local environment files
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db

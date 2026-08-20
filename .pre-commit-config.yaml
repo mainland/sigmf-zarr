@@ -1,0 +1,31 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff check
+        entry: uv run --locked --extra dev ruff check
+        language: system
+        types_or: [python, pyi]
+
+      - id: docformatter
+        name: Docformatter check
+        entry: uv run --locked --extra dev docformatter --check
+        language: system
+        types: [python]
+
+      - id: mypy
+        name: Mypy
+        entry: uv run --locked --extra dev mypy src
+        language: system
+        pass_filenames: false
+        files: ^(src/.*\.py|pyproject\.toml)$

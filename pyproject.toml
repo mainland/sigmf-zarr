@@ -1,0 +1,129 @@
+[build-system]
+requires = ["setuptools>=69", "setuptools-scm>=8", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sigmf-zarr"
+dynamic = ["version"]
+description = "A Zarr-backed extension model for the SigMF format."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Geoffrey Mainland", email = "mainland@drexel.edu" },
+]
+keywords = ["sigmf", "zarr", "signal-processing", "data-format", "metadata"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "crc32c>=2.4",
+  "numcodecs>=0.12",
+  "numpy>=1.26",
+  "sigmf>=1.11.0",
+  "zarr>=3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "docformatter",
+  "mypy>=1.10",
+  "pre-commit>=4.0",
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.4",
+  "tox>=4.15",
+  "twine>=5.0",
+]
+docs = [
+  "furo>=2024.1.29",
+  "myst-parser>=2.0",
+  "sphinx>=7.2",
+]
+
+[project.urls]
+Documentation = "https://sigmf-zarr.readthedocs.io/"
+Source = "https://github.com/mainland/sigmf-zarr"
+Issues = "https://github.com/mainland/sigmf-zarr/issues"
+Changelog = "https://github.com/mainland/sigmf-zarr/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+sigmf_zarr = ["py.typed"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+fallback_version = "1.0.0a0"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning"]
+addopts = "--cov=sigmf_zarr --cov-report=term-missing --cov-fail-under=80"
+
+[tool.ruff]
+line-length = 79
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+  "E4",   # import and indentation errors
+  "E7",   # statement errors
+  "E9",   # runtime and syntax errors
+  "UP",   # pyupgrade
+  "E501", # line too long
+  "F",    # Pyflakes
+  "B",    # flake8-bugbear
+  "C90",  # mccabe complexity
+  "SIM",  # flake8-simplify
+  "I",    # isort
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["C901"]
+
+[tool.coverage.run]
+branch = true
+source = ["sigmf_zarr"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.docformatter]
+in-place = true
+recursive = true
+wrap-summaries = 79
+wrap-descriptions = 72
+close-quotes-on-newline = true
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["sigmf_zarr"]
+pretty = true
+show_error_codes = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = [
+  "numcodecs",
+  "numcodecs.*",
+  "sigmf.*",
+  "zarr",
+  "zarr.*",
+]
+ignore_missing_imports = true
