@@ -15,6 +15,9 @@ A SigMF-Zarr store is a Zarr group with two required root attributes:
 - The `schema_name` attribute must be the string `sigmf-zarr`.
 - The `schema_version` attribute must be the integer `1`.
 
+The root, recording, and collection groups may also carry an `integrity`
+attribute as described in the logical integrity section below.
+
 The root group has three required child groups:
 
 ```text
@@ -282,8 +285,9 @@ runtime sample axis named by its `axis` attribute. Runtime axes are:
 - For unbatched recordings: `sigmf-zarr:sample-axes`
 - For batched recordings: `("item", *sigmf-zarr:sample-axes)`
 
-Validation and axis invalidation include indexes at every depth below the
-`indexes/` group.
+An index name may be a nested relative path, such as `quality/snr_db`.
+Validation, axis invalidation, and integrity checks include indexes at every
+depth below the `indexes/` group.
 
 Each recording-level index has these attributes:
 
@@ -317,7 +321,8 @@ Each recording-level index has these attributes:
 An index array is a materialized metadata vector, not an automatically
 maintained secondary index. If a writer appends samples after creating an
 axis-aligned index, the index becomes invalid and the writer must update or
-replace it before use.
+replace it before use. Integrity recalculation must reject a store containing
+an invalid index rather than hashing it as current.
 
 ## Logical integrity
 
@@ -332,6 +337,122 @@ format 2 does not support sharding.
 Writers may disable sample checksums explicitly, in which case
 `sigmf-zarr:checksum` is `null`. Readers must verify that this metadata field
 agrees with the sample array codec pipeline.
+
+SigMF-Zarr also defines optional native logical SHA-512 hashes. These hashes
+cover the data model rather than serialized Zarr metadata or encoded chunk
+bytes, so they have the same values for equivalent Zarr format 2 and Zarr
+format 3 stores. Each participating group has an `integrity` attribute with
+`algorithm="sha512"`, `version=1`, and one or more scope-specific fields:
+
+- A recording has `sample_sha512` over the logical `samples` array and
+  `metadata_sha512` over all recording metadata.
+- A collection has `metadata_sha512` over its attributes, arrays, and child
+  groups.
+- The root has `metadata_sha512` over root attributes, store-wide indexes, any
+  other root content, and the digests that each recording and collection
+  declares.
+
+Each `integrity` attribute is excluded from the hash input of its own group.
+JSON values use the canonical encoding defined below.
+
+### Array hashes
+
+An array hash divides the logical array into slabs along one axis, the slab
+axis. A sample array uses its growth axis: `item` for a batched recording and
+`time` otherwise. Every other array uses its first axis. Each slab holds $L$
+consecutive slab-axis positions with the complete extent of every other axis.
+The final slab may be shorter. The slab length is
+
+$$
+L = \max\left(1, \left\lfloor \frac{2^{24}}{s P} \right\rfloor\right),
+$$
+
+where $s$ is the element size in bytes and $P$ is the product of the other
+dimensions, or 1 when that product is zero. Variable-length strings and objects
+use $s = 16$.
+
+Each slab digest is SHA-512 over the slab's values in C order:
+
+- Boolean, integer, floating-point, complex, date-time, and time-delta values
+  use their little-endian bytes.
+- Fixed-width byte strings use their raw bytes.
+- Every other value is encoded as canonical JSON and preceded by its encoded
+  length as an 8-byte big-endian unsigned integer.
+
+The array digest is SHA-512 over the ASCII bytes `sigmf-zarr-array-v1`, a NUL
+byte, the canonical JSON descriptor, a NUL byte, and the concatenated 64-byte
+slab digests. The descriptor has these fields:
+
+- `dtype` is the NumPy dtype string, with little-endian byte order for the
+  types listed above.
+- `shape` is the logical shape.
+- `slab_axis` is the slab axis, or `null` for a zero-dimensional array.
+- `slab_length` is $L$, or 1 for a zero-dimensional array.
+- `version` is the integrity version, 1.
+
+A zero-dimensional array has one slab containing its value. An array without
+elements has no slabs. Slabs depend only on the logical dtype and shape, so a
+reader can hash one slab at a time and decode each physical chunk once, for any
+chunk layout.
+
+### Metadata hashes
+
+A recording or collection metadata hash covers group and array structure,
+group and array attributes, array dtype and shape, and the array hash of each
+metadata array, such as an index. Sample array values are excluded from the
+recording metadata hash because the sample hash covers them. The sample array
+descriptor remains included. The hash input is the ASCII bytes
+`sigmf-zarr-metadata-v1`, a NUL byte, and the canonical JSON payload.
+
+The store-wide metadata hash uses the same payload for root attributes,
+store-wide indexes, and any other root content. In place of each recording and
+collection group, the payload records the digests that the group declares:
+`metadata_sha512` and `sample_sha512` for a recording, and `metadata_sha512`
+for a collection. The hash input is the ASCII bytes `sigmf-zarr-store-v1`, a
+NUL byte, and the canonical JSON payload. Updating the store-wide hash therefore
+requires current hashes for every recording and collection, but it does not
+reread their arrays. Verifying the store-wide hash alone confirms root content
+and the declared digests. Full verification also recalculates every recording
+and collection hash.
+
+### Hash maintenance
+
+Managed API mutations and writable mutation contexts remove every affected
+native hash before writing. A failed index mutation leaves the index explicitly
+invalid. A full `store.update_integrity()` pass recalculates recording,
+collection, and root hashes, while `store.verify_integrity()` requires all of
+those hashes to be present and current. These whole-content hashes complement
+chunk CRC32C. They do not authenticate a store against an attacker who can
+alter both content and stored hashes or bypass the API to modify the backing
+Zarr store directly.
+
+### Canonical JSON encoding
+
+Version 1 hashes encode JSON values with these rules, which an independent
+implementation must reproduce exactly:
+
+- Object members are sorted by key, comparing keys as sequences of Unicode code
+  points. This order differs from RFC 8785, which compares UTF-16 code units,
+  when keys contain characters outside the Basic Multilingual Plane.
+- No whitespace appears between tokens. Members and elements are separated by
+  `,`, and keys are separated from values by `:`.
+- Strings are encoded as UTF-8. `"` and `\` are escaped as `\"` and `\\`.
+  Backspace, form feed, line feed, carriage return, and tab are escaped as
+  `\b`, `\f`, `\n`, `\r`, and `\t`. Other characters from U+0000 through
+  U+001F are escaped as `\u00XX` with lowercase hexadecimal digits. All other
+  characters, including `/`, U+007F, and non-ASCII characters, appear
+  unescaped.
+- Integers are written in decimal without an exponent or leading zeros.
+- Floating-point numbers use the shortest decimal string that rounds to the
+  same binary64 value, as produced by Python `repr()`. The string always
+  contains a decimal point or an exponent. Values whose decimal exponent is
+  less than -4 or at least 16 use exponent notation with a sign and at least
+  two exponent digits, such as `1e-05`, `2.5e-07`, and `1e+16`. Other values use
+  positional notation, such as `0.0001`, `1.0`, and `-0.0`.
+- Integers and floating-point numbers remain distinct, so `1` and `1.0` hash
+  differently.
+- Literals are written as `true`, `false`, and `null`. Non-finite numbers are
+  rejected.
 
 ## Store-wide indexes
 
@@ -352,7 +473,7 @@ recording-level indexes.
 ## Collections
 
 Collections live at `collections/<collection_name>/`. A collection group has
-two required attributes:
+two required attributes and may have the optional `integrity` attribute:
 
 - The `metadata` attribute is a JSON object that describes the collection.
 - The `recording_ids` attribute is a list of recording names that the collection

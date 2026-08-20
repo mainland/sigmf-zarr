@@ -27,7 +27,13 @@ from zarr.core.group import Group
 from zarr.storage import StoreLike
 
 from sigmf_zarr.integrity import (
+    INTEGRITY_ALGORITHM,
     INTEGRITY_ATTR,
+    INTEGRITY_VERSION,
+    STORE_DOMAIN,
+    calculate_payload_sha512,
+    group_metadata_payload,
+    integrity_is_supported,
 )
 from sigmf_zarr.json import JSONObject, json_object
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
@@ -582,7 +588,7 @@ class SigMFZarrStore:
 
     @property
     def metadata_sha512(self) -> str | None:
-        """Internal hash of all logical metadata in the store.
+        """Hash of store-wide metadata and child resource digests.
 
         Returns:
             Declared metadata SHA-512 digest, or ``None`` when absent.
@@ -597,6 +603,165 @@ class SigMFZarrStore:
         attrs = self._refresh_root().attrs
         if INTEGRITY_ATTR in attrs:
             del attrs[INTEGRITY_ATTR]
+
+    @staticmethod
+    def _child_digest_payload(
+        group: Group, *, kind: str, fields: tuple[str, ...]
+    ) -> dict[str, object]:
+        """Describe a resource container by its children's declared digests.
+
+        Args:
+            group: Recordings or collections group.
+            kind: Resource kind used in error messages.
+            fields: Integrity fields each child must declare.
+
+        Returns:
+            Payload with the container's own metadata and child digests.
+
+        Raises:
+            ValueError: If a child lacks supported integrity metadata.
+        """
+        child_names = tuple(sorted(group.group_keys()))
+        payload = group_metadata_payload(
+            group, exclude_groups=frozenset(child_names)
+        )
+        digests: dict[str, object] = {}
+        for name in child_names:
+            child = group[name]
+            integrity = child.attrs.get(INTEGRITY_ATTR)
+            if not integrity_is_supported(integrity) or not all(
+                isinstance(cast(JSONObject, integrity).get(field), str)
+                for field in fields
+            ):
+                raise ValueError(
+                    f"{kind} {name!r} has no current integrity hashes. Call "
+                    "update_integrity() to calculate them"
+                )
+            digests[name] = {
+                field: cast(JSONObject, integrity)[field] for field in fields
+            }
+        payload["groups"] = digests
+        return payload
+
+    def calculate_metadata_sha512(self) -> str:
+        """Calculate the store-wide metadata hash.
+
+        The hash covers root attributes, store-wide indexes, any other root
+        content, and the declared digests of every recording and collection.
+        Recording and collection content is bound through those digests, so
+        this hash does not reread their arrays.
+
+        Returns:
+            Lowercase SHA-512 hexadecimal digest.
+
+        Raises:
+            ValueError: If a recording or collection has no current supported
+                integrity hashes.
+        """
+        root = self._refresh_root()
+        payload = group_metadata_payload(
+            root, exclude_groups=frozenset({"recordings", "collections"})
+        )
+        groups = cast(dict[str, object], payload["groups"])
+        groups["recordings"] = type(self)._child_digest_payload(
+            self._recordings_group,
+            kind="Recording",
+            fields=("metadata_sha512", "sample_sha512"),
+        )
+        groups["collections"] = type(self)._child_digest_payload(
+            self._collections_group,
+            kind="Collection",
+            fields=("metadata_sha512",),
+        )
+        return calculate_payload_sha512(payload, domain=STORE_DOMAIN)
+
+    def update_integrity(self) -> JSONObject:
+        """Calculate and store all recording, collection, and store hashes.
+
+        Returns:
+            Updated store integrity metadata object.
+        """
+        for recording in self.recordings.values():
+            recording.update_integrity()
+        for collection in self.collections.values():
+            collection.update_integrity()
+        return self.update_metadata_integrity()
+
+    def update_metadata_integrity(self) -> JSONObject:
+        """Calculate and store the store-wide metadata hash.
+
+        Every recording and collection must already declare current hashes.
+        Use :meth:`update_integrity` to calculate all hashes together.
+
+        Returns:
+            Updated store integrity metadata object.
+
+        Raises:
+            ValueError: If a store-wide index is invalid, or a recording or
+                collection has no current integrity hashes.
+        """
+        invalid_index = self._invalid_store_index_reason()
+        if invalid_index is not None:
+            raise ValueError(f"Cannot update store integrity: {invalid_index}")
+        integrity: JSONObject = {
+            "algorithm": INTEGRITY_ALGORITHM,
+            "version": INTEGRITY_VERSION,
+            self._INTEGRITY_METADATA_FIELD: self.calculate_metadata_sha512(),
+        }
+        self._refresh_root().attrs[INTEGRITY_ATTR] = integrity
+        return self.integrity
+
+    def _update_metadata_integrity_when_complete(self) -> None:
+        """Update the store-wide hash when every input is hashable.
+
+        Importers call this after hashing the resource they wrote.
+        Another resource without hashes, or an invalid store-wide index,
+        leaves the store-wide hash absent instead of failing the import.
+        """
+        try:
+            self.update_metadata_integrity()
+        except ValueError:
+            self._invalidate_metadata_integrity()
+
+    def verify_metadata_integrity(self) -> bool:
+        """Verify the store-wide hash without rereading child content.
+
+        Returns:
+            True when the store-wide hash is present and matches root
+            metadata, store-wide indexes, and the declared child digests.
+        """
+        integrity = self.integrity
+        declared = integrity.get(self._INTEGRITY_METADATA_FIELD)
+        if (
+            not integrity_is_supported(integrity)
+            or not isinstance(declared, str)
+            or self._invalid_store_index_reason() is not None
+        ):
+            return False
+        try:
+            current = self.calculate_metadata_sha512()
+        except ValueError:
+            return False
+        return declared == current
+
+    def verify_integrity(self) -> bool:
+        """Verify every stored internal integrity hash.
+
+        Returns:
+            True only when all resource hashes and the store-wide hash are
+            present and match current logical content.
+        """
+        return (
+            self.verify_metadata_integrity()
+            and all(
+                recording.verify_integrity()
+                for recording in self.recordings.values()
+            )
+            and all(
+                collection.verify_integrity()
+                for collection in self.collections.values()
+            )
+        )
 
     @classmethod
     def _required_groups_present(cls, group: Group) -> bool:
@@ -1093,6 +1258,30 @@ class SigMFZarrStore:
                 f"shape {index.shape}"
             )
         return ReadOnlyArray(index)
+
+    def _invalid_store_index_reason(self) -> str | None:
+        """Return the reason that any store-wide index is invalid.
+
+        Returns:
+            Error message for the first invalid index, or ``None``.
+        """
+        for index_name, index in sorted(
+            self._indexes_group.members(max_depth=None)
+        ):
+            if not isinstance(index, Array):
+                continue
+            if index.attrs.get(self._INDEX_VALID_FIELD, True) is not True:
+                reason = index.attrs.get(
+                    self._INDEX_INVALID_REASON_FIELD,
+                    "unknown reason",
+                )
+                return f"Index {index_name!r} is invalid: {reason}"
+            if index.ndim != 1:
+                return (
+                    f"Index {index_name!r} must be one-dimensional, got "
+                    f"shape {index.shape}"
+                )
+        return None
 
     @contextmanager
     def mutate_index(

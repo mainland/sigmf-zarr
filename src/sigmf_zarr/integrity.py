@@ -6,13 +6,14 @@ import hashlib
 import json
 import math
 from collections.abc import Iterator
-from itertools import product
 from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
 from zarr.core.array import Array
 from zarr.core.group import Group
+
+from sigmf_zarr.readonly import ReadOnlyArray
 
 INTEGRITY_ATTR = "integrity"
 """Group attribute containing SigMF-Zarr-native integrity hashes."""
@@ -22,6 +23,18 @@ INTEGRITY_ALGORITHM = "sha512"
 
 INTEGRITY_VERSION = 1
 """Canonical integrity payload version."""
+
+ARRAY_SLAB_BYTES = 16 * 1024 * 1024
+"""Nominal uncompressed size of one hashed array slab."""
+
+VARIABLE_LENGTH_ITEMSIZE = 16
+"""Nominal element size used to size slabs of variable-length values."""
+
+METADATA_DOMAIN = b"sigmf-zarr-metadata-v1\0"
+"""Domain separator for recording and collection metadata hashes."""
+
+STORE_DOMAIN = b"sigmf-zarr-store-v1\0"
+"""Domain separator for the store-wide metadata hash."""
 
 
 def integrity_is_supported(value: object) -> bool:
@@ -85,55 +98,127 @@ def _canonical_dtype(dtype: object) -> str:
     return str(numpy_dtype.str)
 
 
-def _iter_array_blocks(array: Array[Any]) -> Iterator[npt.NDArray[Any]]:
-    """Yield array values in bounded C-order blocks.
+def _nominal_itemsize(dtype: object) -> int:
+    """Return the element size used to choose a slab length.
 
     Args:
-        array: Zarr array to read.
+        dtype: Zarr or NumPy dtype object.
+
+    Returns:
+        Fixed element size in bytes, or the nominal size for variable-length
+        strings and objects.
+    """
+    try:
+        numpy_dtype = np.dtype(cast(Any, dtype))
+    except TypeError:
+        return VARIABLE_LENGTH_ITEMSIZE
+    # NumPy kinds O and T are Python objects and variable-width strings.
+    if numpy_dtype.kind in {"O", "T"} or numpy_dtype.itemsize == 0:
+        return VARIABLE_LENGTH_ITEMSIZE
+    return int(numpy_dtype.itemsize)
+
+
+def array_slab_length(dtype: object, shape: tuple[int, ...], axis: int) -> int:
+    """Return the number of slab-axis positions hashed per slab.
+
+    The length depends only on the logical dtype and shape, so equivalent
+    arrays use the same slabs regardless of their physical chunks.
+
+    Args:
+        dtype: Zarr or NumPy dtype object.
+        shape: Logical array shape.
+        axis: Nonnegative slab axis.
+
+    Returns:
+        Positive slab length.
+    """
+    position_elements = math.prod(
+        size for dimension, size in enumerate(shape) if dimension != axis
+    )
+    position_bytes = _nominal_itemsize(dtype) * max(position_elements, 1)
+    return max(1, ARRAY_SLAB_BYTES // position_bytes)
+
+
+def _axis_key(
+    ndim: int, axis: int, start: int, stop: int
+) -> tuple[slice, ...]:
+    """Select a contiguous range along one axis and all of every other axis.
+
+    Args:
+        ndim: Array rank.
+        axis: Selected axis.
+        start: First selected position.
+        stop: Exclusive stop position.
+
+    Returns:
+        Basic selection key.
+    """
+    key = [slice(None)] * ndim
+    key[axis] = slice(start, stop)
+    return tuple(key)
+
+
+def _iter_slabs(
+    array: Array[Any] | ReadOnlyArray | npt.NDArray[Any],
+    *,
+    axis: int,
+    length: int,
+) -> Iterator[npt.NDArray[Any]]:
+    """Yield consecutive slabs along one axis, reading each chunk once.
+
+    Reads extend to the next physical chunk boundary along the slab axis.
+    The unused remainder is carried into the next slab, so a chunk that
+    straddles a slab boundary is decoded only once. Memory is bounded by one
+    slab plus one chunk.
+
+    Args:
+        array: Zarr, read-only, or NumPy array with at least one dimension.
+        axis: Nonnegative slab axis.
+        length: Positions per slab.
 
     Yields:
-        NumPy arrays whose concatenated elements follow logical C order.
+        Slab values, each with the complete extent of every other axis.
     """
     shape = tuple(int(size) for size in array.shape)
-    if not shape:
-        yield np.asarray(array[()])
-        return
-    if any(size == 0 for size in shape):
-        return
-
-    try:
-        itemsize = max(int(np.dtype(cast(Any, array.dtype)).itemsize), 1)
-    except TypeError:
-        itemsize = 16
-    # Bound temporary allocations without making the digest depend on Zarr's
-    # physical chunks, which may differ across equivalent stores.
-    target_bytes = 16 * 1024 * 1024
-    trailing_elements = math.prod(shape[1:])
-    trailing_bytes = trailing_elements * itemsize
-    if trailing_bytes <= target_bytes:
-        rows_per_block = max(target_bytes // max(trailing_bytes, 1), 1)
-        for start in range(0, shape[0], rows_per_block):
-            key: tuple[slice, ...] = (
-                slice(start, min(start + rows_per_block, shape[0])),
-                *(slice(None) for _ in shape[1:]),
-            )
-            yield np.asarray(array[key])
-        return
-
-    # A complete trailing plane may exceed the target. Read bounded segments
-    # of the final axis while preserving logical C order.
+    ndim = len(shape)
+    total = shape[axis]
     chunks = getattr(array, "chunks", None)
-    block_size = shape[-1]
-    if isinstance(chunks, tuple) and chunks:
-        block_size = max(int(chunks[-1]), 1)
-    prefixes = product(*(range(size) for size in shape[:-1]))
-    for prefix in prefixes:
-        for start in range(0, shape[-1], block_size):
-            block_key: tuple[int | slice, ...] = (
-                *prefix,
-                slice(start, min(start + block_size, shape[-1])),
+    chunk = (
+        max(int(chunks[axis]), 1)
+        if isinstance(chunks, tuple) and len(chunks) == ndim
+        else length
+    )
+    buffered: npt.NDArray[Any] | None = None
+    buffered_start = 0
+    buffered_stop = 0
+    for start in range(0, total, length):
+        stop = min(start + length, total)
+        if buffered_stop < stop:
+            read_stop = min(total, -(-stop // chunk) * chunk)
+            block = np.asarray(
+                array[_axis_key(ndim, axis, buffered_stop, read_stop)]
             )
-            yield np.asarray(array[block_key])
+            buffered = (
+                block
+                if buffered is None
+                else np.concatenate((buffered, block), axis=axis)
+            )
+            buffered_stop = read_stop
+        assert buffered is not None
+        yield buffered[
+            _axis_key(
+                ndim, axis, start - buffered_start, stop - buffered_start
+            )
+        ]
+        buffered = buffered[
+            _axis_key(
+                ndim,
+                axis,
+                stop - buffered_start,
+                buffered_stop - buffered_start,
+            )
+        ]
+        buffered_start = stop
 
 
 def _update_array_values(
@@ -166,22 +251,44 @@ def _update_array_values(
         digest.update(encoded)
 
 
-def calculate_array_sha512(array: Array[Any]) -> str:
-    """Hash one logical Zarr array independently of chunk encoding.
+def calculate_array_sha512(
+    array: Array[Any] | ReadOnlyArray | npt.NDArray[Any],
+    *,
+    axis: int = 0,
+) -> str:
+    """Hash one logical array independently of chunk encoding.
 
-    The digest includes logical shape and dtype, then values in C order.
-    Numeric values use little-endian bytes so the result is independent of
-    host byte order and physical Zarr format.
+    The array is divided into consecutive slabs along `axis`. Each slab
+    holds `array_slab_length()` positions with the complete extent of every
+    other axis, and its values are hashed in C order. The digest covers the
+    logical dtype, shape, slab layout, and the ordered slab digests. Numeric
+    values use little-endian bytes, so the result is independent of host
+    byte order, physical chunks, and Zarr format.
 
     Args:
-        array: Zarr array to hash.
+        array: Zarr, read-only, or NumPy array to hash.
+        axis: Slab axis. Sample arrays use their growth axis, which is
+            `item` for batched recordings and `time` otherwise.
 
     Returns:
         Lowercase SHA-512 hexadecimal digest.
+
+    Raises:
+        ValueError: If `axis` is outside a nonscalar array.
     """
+    shape = tuple(int(size) for size in array.shape)
+    slab_axis: int | None = None
+    slab_length = 1
+    if shape:
+        if not -len(shape) <= axis < len(shape):
+            raise ValueError(f"axis {axis} is outside array shape {shape}")
+        slab_axis = axis % len(shape)
+        slab_length = array_slab_length(array.dtype, shape, slab_axis)
     descriptor = {
         "dtype": _canonical_dtype(array.dtype),
-        "shape": [int(size) for size in array.shape],
+        "shape": list(shape),
+        "slab_axis": slab_axis,
+        "slab_length": slab_length,
         "version": INTEGRITY_VERSION,
     }
     digest = hashlib.sha512()
@@ -190,16 +297,24 @@ def calculate_array_sha512(array: Array[Any]) -> str:
     digest.update(b"sigmf-zarr-array-v1\0")
     digest.update(canonical_json_bytes(descriptor))
     digest.update(b"\0")
-    for block in _iter_array_blocks(array):
-        _update_array_values(digest, block)
+    if slab_axis is None:
+        slabs: Iterator[npt.NDArray[Any]] = iter((np.asarray(array[()]),))
+    elif math.prod(shape) == 0:
+        slabs = iter(())
+    else:
+        slabs = _iter_slabs(array, axis=slab_axis, length=slab_length)
+    for slab in slabs:
+        slab_digest = hashlib.sha512()
+        _update_array_values(slab_digest, slab)
+        digest.update(slab_digest.digest())
     return digest.hexdigest()
 
 
-def _group_metadata_payload(
+def group_metadata_payload(
     group: Group,
     *,
-    exclude_array_values: frozenset[str],
-    exclude_groups: frozenset[str],
+    exclude_array_values: frozenset[str] = frozenset(),
+    exclude_groups: frozenset[str] = frozenset(),
     prefix: str = "",
 ) -> dict[str, object]:
     """Build a canonical logical metadata payload for a Zarr group.
@@ -239,7 +354,7 @@ def _group_metadata_payload(
         child = group[name]
         assert isinstance(child, Group)
         child_prefix = f"{prefix}/{name}" if prefix else name
-        groups[name] = _group_metadata_payload(
+        groups[name] = group_metadata_payload(
             child,
             exclude_array_values=exclude_array_values,
             exclude_groups=frozenset(),
@@ -271,23 +386,43 @@ def calculate_group_metadata_sha512(
     Returns:
         Lowercase SHA-512 hexadecimal digest.
     """
-    payload = _group_metadata_payload(
+    payload = group_metadata_payload(
         group,
         exclude_array_values=exclude_array_values,
         exclude_groups=exclude_groups,
     )
+    return calculate_payload_sha512(payload, domain=METADATA_DOMAIN)
+
+
+def calculate_payload_sha512(payload: object, *, domain: bytes) -> str:
+    """Hash a canonical JSON payload under a domain separator.
+
+    Args:
+        payload: JSON-compatible payload.
+        domain: Prefix identifying the payload kind.
+
+    Returns:
+        Lowercase SHA-512 hexadecimal digest.
+    """
     digest = hashlib.sha512()
-    digest.update(b"sigmf-zarr-metadata-v1\0")
+    digest.update(domain)
     digest.update(canonical_json_bytes(payload))
     return digest.hexdigest()
 
 
 __all__ = [
+    "ARRAY_SLAB_BYTES",
     "INTEGRITY_ALGORITHM",
     "INTEGRITY_ATTR",
     "INTEGRITY_VERSION",
+    "METADATA_DOMAIN",
+    "STORE_DOMAIN",
+    "VARIABLE_LENGTH_ITEMSIZE",
+    "array_slab_length",
     "calculate_array_sha512",
     "calculate_group_metadata_sha512",
+    "calculate_payload_sha512",
     "canonical_json_bytes",
+    "group_metadata_payload",
     "integrity_is_supported",
 ]
