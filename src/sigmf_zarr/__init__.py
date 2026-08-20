@@ -19,6 +19,11 @@ from sigmf_zarr.store import (
     SigMFZarrStore,
     ZarrFormat,
 )
+from sigmf_zarr.validation import (
+    ValidationIssue,
+    ValidationReport,
+    validate_store,
+)
 
 __all__ = [
     "__version__",
@@ -37,6 +42,9 @@ __all__ = [
     "import_sigmf_archive",
     "verify_sha512",
     "verify_inputs",
+    "ValidationIssue",
+    "ValidationReport",
+    "validate_store",
 ]
 
 try:
