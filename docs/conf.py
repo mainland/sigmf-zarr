@@ -53,14 +53,19 @@ nitpick_ignore = [
     # type checking, so it leaves these names unqualified.
     ("py:class", "AccessModeLiteral"),
     ("py:class", "Array"),
+    ("py:class", "CompressorLike"),
     ("py:class", "Group"),
     ("py:class", "PathLike"),
+    ("py:class", "ShardsLike"),
     ("py:class", "StoreLike"),
+    ("py:class", "npt.DTypeLike"),
     # Public signatures name these types by their private defining module.
     # The API reference documents their public names.
     ("py:class", "sigmf_zarr.readonly._ReadOnlyIndexer"),
+    ("py:class", "sigmf_zarr.store._common.ChecksumName"),
     ("py:class", "sigmf_zarr.store._common.ZarrFormat"),
     ("py:class", "sigmf_zarr.store._container.SigMFCollections"),
+    ("py:class", "sigmf_zarr.store._container.SigMFRecordings"),
 ]
 
 intersphinx_mapping = {

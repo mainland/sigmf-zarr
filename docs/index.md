@@ -10,6 +10,8 @@ The package is organized around `sigmf_zarr.store.SigMFZarrStore`.
 :maxdepth: 2
 :caption: Contents
 
+usage
 format
+sigmf-zarr.sigmf-ext
 api
 ```

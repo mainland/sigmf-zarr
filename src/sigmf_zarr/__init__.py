@@ -5,6 +5,7 @@ from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
 from sigmf_zarr.store import (
     ChecksumName,
     SigMFCollection,
+    SigMFRecording,
     SigMFZarrStore,
     ZarrFormat,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "ReadOnlyArray",
     "ReadOnlyGroup",
     "SigMFCollection",
+    "SigMFRecording",
     "SigMFZarrStore",
     "ZarrFormat",
     "__version__",

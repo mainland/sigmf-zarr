@@ -18,6 +18,7 @@ from sigmf_zarr.integrity import (
 )
 from sigmf_zarr.json import JSONObject, json_object
 from sigmf_zarr.readonly import ReadOnlyGroup
+from sigmf_zarr.store._common import _validate_resource_name
 
 if TYPE_CHECKING:
     from sigmf_zarr.store._container import SigMFZarrStore
@@ -69,6 +70,7 @@ class SigMFCollection:
         """
         if overwrite and not create:
             raise ValueError("overwrite requires create=True")
+        _validate_resource_name(collection_name, kind="Collection")
         self._store = store
         self._collection_name = collection_name
         self._ensure_exists(
