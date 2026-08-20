@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
   "crc32c>=2.4",
+  "jsonschema>=4.0",
   "numcodecs>=0.12",
   "numpy>=2.0.2",
   "sigmf>=1.11.0",
@@ -131,6 +132,7 @@ pretty = true
 
 [[tool.mypy.overrides]]
 module = [
+  "jsonschema",
   "numcodecs",
   "numcodecs.*",
   "sigmf.*",

@@ -272,6 +272,21 @@ The implementation can infer default axes for common shapes:
 
 For other shapes, writers should provide `sample_axes` explicitly.
 
+When importing standard SigMF, `core:num_channels` is mapped into an explicit
+`channel` axis. Real multi-channel streams import as `(channel, time)`.
+Complex multi-channel streams import as `(channel, iq, time)`. The flat
+standard SigMF stream is interpreted as time-major, channel-interleaved data.
+Complex `cf32_*` datasets use 32-bit floating-point I/Q components in Zarr,
+while `cf64_*` datasets retain 64-bit components. Export applies the byte order
+declared by `core:datatype`, so conforming `cf64_le` and `cf64_be` dataset bytes
+round-trip exactly through either Zarr physical format.
+
+When exporting an unbatched recording to standard SigMF, the declared
+`channel` axis is mapped to `core:num_channels`. If `core:num_channels` is
+already present, it must be a positive integer that matches the `channel` axis
+length, or `1` when no `channel` axis is declared. If it is absent and the
+recording has more than one channel, export fills it from the axis length.
+
 ## Captures and appends
 
 Capture and annotation metadata follows the SigMF model and is stored in the
@@ -504,10 +519,20 @@ Managed API mutations and writable mutation contexts remove every affected
 native hash before writing. A failed index mutation leaves the index explicitly
 invalid. A full `store.update_integrity()` pass recalculates recording,
 collection, and root hashes, while `store.verify_integrity()` requires all of
-those hashes to be present and current. These whole-content hashes complement
-chunk CRC32C. They do not authenticate a store against an attacker who can
-alter both content and stored hashes or bypass the API to modify the backing
-Zarr store directly.
+those hashes to be present and current. Importers hash the resource they write.
+They also update the store-wide hash when every other recording and collection
+has current hashes, and otherwise leave it absent. These whole-content hashes
+complement chunk CRC32C. They do not authenticate a store against an attacker
+who can alter both content and stored hashes or bypass the API to modify the
+backing Zarr store directly.
+
+At the standard SigMF boundary, import verifies every available standard hash
+and creates native hashes for content that passes its checks. `core:sha512`
+checks each `.sigmf-data` byte stream. Standalone `.sigmf-meta` files have no
+standard field that hashes their own metadata, so there is nothing external to
+verify in that case. Export always calculates `core:sha512` from the emitted
+data bytes. If a native internal hash is present but stale, export fails rather
+than silently blessing changed content.
 
 ### Canonical JSON encoding
 

@@ -97,7 +97,8 @@ Use `sample_axes` to make the tensor layout explicit. Standard SigMF serializes
 a `cf*` signal as interleaved complex samples in its flat `.sigmf-data` byte
 stream. SigMF-Zarr instead stores the components in one real-valued Zarr array
 with an explicit `iq` axis of length `2`: index `0` is I and index `1` is Q.
-They are not separate arrays.
+They are not separate arrays. Import splits standard complex samples along this
+axis, and export combines them into the standard interleaved representation.
 
 ```python
 recording = store.recordings.create(
@@ -452,6 +453,55 @@ An index is marked invalid before the context body runs and restored to valid
 only after successful structural validation. Resizing a sample axis similarly
 invalidates indexes aligned with that axis until they are repaired or replaced.
 Re-run `store.update_integrity()` after completing a series of changes.
+
+## Import and export SigMF
+
+The reusable Python helpers mirror the CLI:
+
+```python
+from sigmf_zarr import SigMFZarrStore, export_sigmf, import_sigmf
+
+recording = import_sigmf(
+    "store.zarr",
+    "input.sigmf-meta",
+    recording_name="imported",
+    overwrite_store=True,
+)
+
+export_sigmf(
+    SigMFZarrStore.open("store.zarr"),
+    "imported",
+    "roundtrip.sigmf-meta",
+    overwrite=True,
+)
+```
+
+Standard SigMF export supports only unbatched recordings. Batched recordings
+represent multiple independent items, so exporting them to standard SigMF
+requires an explicit split strategy that the implementation does not provide.
+
+When importing standard SigMF, `core:num_channels` is mapped to an explicit
+SigMF-Zarr `channel` axis. A real two-channel SigMF stream imports as
+`("channel", "time")`. A complex two-channel stream imports as
+`("channel", "iq", "time")`.
+
+Complex floating-point precision is preserved: `cf32_le` and `cf32_be` use
+32-bit I/Q components, while `cf64_le` and `cf64_be` use 64-bit components.
+Export restores the endianness declared by `core:datatype` rather than using
+the host machine's native byte order.
+
+Import verifies that the reconstructed standard dataset bytes match the source
+`core:sha512` and stores that digest. If conversion cannot preserve the source
+bytes exactly, import fails instead of retaining a misleading digest. Export
+adds `core:sha512` when it is absent and rejects a stored digest that does not
+match the bytes being written.
+
+For multi-channel unbatched recordings, standard SigMF export validates
+`core:num_channels` against the declared `channel` axis. If the field is
+missing and the recording has more than one channel, export fills it from the
+axis length. If the field is present but does not match the axis length, export
+raises `ValueError`. Single-channel exports may still include
+`core:num_channels: 1` because that is normal standard SigMF metadata.
 
 ## Mutation and failure behavior
 
