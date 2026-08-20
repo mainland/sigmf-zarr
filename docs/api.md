@@ -88,4 +88,8 @@
    :members:
    :undoc-members:
 
+.. automodule:: sigmf_zarr.cli.store
+   :members:
+   :undoc-members:
+
 ```

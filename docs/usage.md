@@ -27,7 +27,29 @@ Run commands from the repository environment:
 
 ## CLI
 
-The package installs the `sigmf-zarr` command.
+The package installs the `sigmf-zarr` command. Its resource-oriented commands
+inspect a store and its recordings and collections:
+
+```bash
+sigmf-zarr store store.zarr info
+sigmf-zarr store store.zarr recordings
+sigmf-zarr store store.zarr recording myrec info --format json
+sigmf-zarr store store.zarr collections
+sigmf-zarr store store.zarr collection paired info
+sigmf-zarr store store.zarr validate
+sigmf-zarr store store.zarr integrity verify
+```
+
+Inspection commands produce human-readable text by default and accept
+`--format json` for scripts. Store locations remain strings so compatible Zarr
+URLs are not coerced into local filesystem paths.
+
+`validate` checks store structure and verifies every declared hash, including
+`core:sha512`. It reads each sample array once for each declared sample hash.
+Pass `--skip-integrity` to check structure only, or `--require-integrity` to
+also require hashes for the store and every recording and collection.
+`integrity update` recalculates every hash, then checks structure and hash
+presence without reading the samples again.
 
 All importers are subcommands of `sigmf-zarr import`. List the supported
 formats with:
@@ -65,6 +87,12 @@ Export one unbatched recording back to standard SigMF:
 
 ```bash
 sigmf-zarr export store.zarr output.sigmf-meta --recording-name myrec
+```
+
+The equivalent resource-oriented form is:
+
+```bash
+sigmf-zarr store store.zarr recording myrec export output.sigmf-meta
 ```
 
 Export a standard SigMF archive:
