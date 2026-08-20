@@ -10,6 +10,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from zarr.abc.store import Store
 from zarr.core.buffer import default_buffer_prototype
@@ -20,6 +21,9 @@ from zarr.core.sync import sync
 from zarr.storage import LocalStore
 
 from sigmf_zarr._consolidated import open_group
+
+if TYPE_CHECKING:
+    from sigmf_zarr.store._container import SigMFZarrStore
 
 _OPERATION: ContextVar[object | None] = ContextVar(
     "sigmf_zarr_operation", default=None
@@ -108,6 +112,146 @@ def retained_backup_directory(parent: Path) -> Iterator[Path]:
         raise
     else:
         shutil.rmtree(backup_dir)
+
+
+@contextmanager
+def recording_import_transaction(
+    store: SigMFZarrStore,
+    recording_name: str,
+    *,
+    overwrite: bool,
+) -> Iterator[None]:
+    """Restore a local recording when its replacement import fails.
+
+    Callers must serialize writes to the store for the entire context. A
+    backup stays outside the store until successful completion. Replacing an
+    existing recording requires a local directory store.
+
+    Args:
+        store: Destination store.
+        recording_name: Recording being created or replaced.
+        overwrite: Whether to permit replacing an existing recording.
+
+    Yields:
+        Control to the importer after preserving any existing recording.
+
+    Raises:
+        ValueError: If a recording already exists and replacement is disabled
+            or its backend does not support local rollback.
+    """
+    exists = recording_name in store.recordings
+    if exists and not overwrite:
+        raise ValueError(
+            f"Recording {recording_name!r} already exists. Pass "
+            "overwrite_recording=True to replace it"
+        )
+    if not exists:
+        try:
+            with _settled_on_failure():
+                yield
+        except BaseException:
+            if recording_name in store.recordings:
+                store.recordings._discard(recording_name)
+            raise
+        return
+
+    with _existing_group_import_transaction(
+        store,
+        store._recordings_group[recording_name].path,
+        backup_name="recording",
+    ):
+        yield
+
+
+@contextmanager
+def collection_import_transaction(
+    store: SigMFZarrStore, collection_name: str
+) -> Iterator[None]:
+    """Restore an archive collection when any part of its import fails.
+
+    Args:
+        store: Destination store with serialized writes.
+        collection_name: Collection being created or replaced.
+
+    Yields:
+        Control to the importer after preserving any existing collection.
+
+    Raises:
+        ValueError: If replacement uses a nonlocal backend.
+    """
+    if collection_name not in store.collections:
+        try:
+            with _settled_on_failure():
+                yield
+        except BaseException:
+            if collection_name in store.collections:
+                store._invalidate_metadata_integrity()
+                delete_node(store._collections_group, collection_name)
+            raise
+        return
+    with _existing_group_import_transaction(
+        store,
+        store._collections_group[collection_name].path,
+        backup_name="collection",
+    ):
+        yield
+
+
+@contextmanager
+def _existing_group_import_transaction(
+    store: SigMFZarrStore,
+    group_path: str,
+    *,
+    backup_name: str,
+) -> Iterator[None]:
+    """Preserve one existing local group until its import completes.
+
+    The group moves to a backup directory on the same filesystem, so the
+    importer sees the resource as absent and creates it without copying
+    the previous data.
+
+    Args:
+        store: Destination store with serialized writes.
+        group_path: Existing recording or collection path in the store.
+        backup_name: Directory name identifying the backed-up resource.
+
+    Yields:
+        Control to the importer after the group moves to its backup.
+
+    Raises:
+        ValueError: If the backend is not a local directory store.
+    """
+    backend = store._group.store
+    if not isinstance(backend, LocalStore):
+        raise ValueError(
+            "Replacing an existing resource during import requires a "
+            "local directory store"
+        )
+    group_dir = backend.root / group_path
+    # Importers update store-level integrity as well as the resource. Restore
+    # both together so rollback does not leave hashes for the failed import.
+    original_attrs = store._refresh_root().attrs.asdict()
+    with retained_backup_directory(_backup_parent(backend)) as backup_dir:
+        backup_path = backup_dir / backup_name
+        attrs_path = backup_dir / "root-attributes.json"
+        try:
+            attrs_path.write_text(json.dumps(original_attrs), encoding="ascii")
+            group_dir.rename(backup_path)
+        except BaseException:
+            # A failed rename leaves the original group in place.
+            attrs_path.unlink(missing_ok=True)
+            raise
+        try:
+            with _settled_on_failure():
+                yield
+        except BaseException:
+            if group_dir.exists():
+                shutil.rmtree(group_dir)
+            # Retain the backup until both data and root metadata are restored.
+            backup_path.rename(group_dir)
+            store._refresh_root().attrs.put(original_attrs)
+            attrs_path.unlink()
+            raise
 
 
 async def _copy_prefix(
