@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from sigmf_zarr.cli.sigmf import SigMFCommand
 from sigmf_zarr.integrity import INTEGRITY_ATTR
 from sigmf_zarr.json import json_object, json_object_list, json_value
 from sigmf_zarr.store import SigMFZarrStore
@@ -77,6 +79,43 @@ def test_validate_store_reports_dtype_and_index_corruption(tmp_path) -> None:
     assert report.valid is False
     assert any(issue.path == "recordings/rec" for issue in report.issues)
     assert "dtype" in report.format()
+
+
+def test_validation_and_integrity_commands_support_json(
+    tmp_path, capsys
+) -> None:
+    """CLI commands should validate and refresh hashes for scripts.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        capsys: Pytest output capture fixture.
+    """
+    store_path, store = _validation_store(tmp_path)
+    recording = store.recordings.open("rec")
+    recording.set_global_field("core:description", "changed")
+
+    status = SigMFCommand().run(
+        [
+            "store",
+            str(store_path),
+            "integrity",
+            "update",
+            "--format",
+            "json",
+        ]
+    )
+    update_result = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert update_result["valid"] is True
+
+    status = SigMFCommand().run(
+        ["store", str(store_path), "validate", "--format", "json"]
+    )
+    validate_result = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert validate_result["valid"] is True
 
 
 def test_validation_reports_missing_stale_and_unsupported_integrity(
