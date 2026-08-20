@@ -9,6 +9,7 @@ import pytest
 
 import sigmf_zarr
 import sigmf_zarr._version as version_module
+from sigmf_zarr.cli.command import Command, package_version
 
 
 def test_version_matches_installed_metadata() -> None:
@@ -43,3 +44,34 @@ def test_version_falls_back_without_metadata(
     finally:
         monkeypatch.undo()
         importlib.reload(version_module)
+
+
+def test_command_line_reports_package_version(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The `--version` option reports the package version.
+
+    Args:
+        capsys: Pytest capture fixture.
+    """
+
+    class Noop(Command):
+        """Command used only to parse common arguments."""
+
+        def handle(self, args: object) -> int:
+            """Do nothing.
+
+            Args:
+                args: Parsed arguments.
+
+            Returns:
+                Zero.
+            """
+            del args
+            return 0
+
+    assert package_version() == sigmf_zarr.__version__
+    with pytest.raises(SystemExit) as exit_info:
+        Noop("noop").run(["--version"])
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.split()[-1] == sigmf_zarr.__version__

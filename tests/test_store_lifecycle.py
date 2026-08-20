@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 from zarr.storage import LocalStore
 
+from sigmf_zarr.cli.context import StoreContext
 from sigmf_zarr.store import SigMFCollection, SigMFZarrStore, ZarrFormat
 from sigmf_zarr.store._common import is_store_url, store_location
 from sigmf_zarr.validation import validate_store
@@ -101,6 +102,89 @@ def test_requested_format_must_match_existing_store(
     assert sorted(entry.name for entry in path.iterdir()) == before
     reopened = SigMFZarrStore(path, zarr_format=cast(ZarrFormat, existing))
     assert reopened.zarr_format == existing
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_path_location_is_never_parsed_as_url(
+    tmp_path: Path, zarr_format: int
+) -> None:
+    """A path-like location names its directory, including `#` and `?`.
+
+    Zarr parses a string as a URL and drops the fragment and query, which
+    would select and replace the sibling directory `run`.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format.
+    """
+    sibling = tmp_path / "run"
+    sibling.mkdir()
+    (sibling / "precious.txt").write_text("unrelated data")
+    path = tmp_path / "run#2.zarr?x=1"
+
+    SigMFZarrStore.create(
+        path, overwrite=True, zarr_format=cast(ZarrFormat, zarr_format)
+    ).collections.create("kept")
+
+    assert sorted(child.name for child in sibling.iterdir()) == [
+        "precious.txt"
+    ]
+    assert (path / "collections").is_dir()
+    with SigMFZarrStore.open(path) as store:
+        assert store.zarr_format == zarr_format
+        assert store.list_collections() == ("kept",)
+    assert validate_store(path).issues == ()
+    assert StoreContext().open(path).list_collections() == ("kept",)
+    assert sorted(child.name for child in sibling.iterdir()) == [
+        "precious.txt"
+    ]
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+@pytest.mark.parametrize(
+    ("location", "sibling", "overwrite"),
+    [("run#2.zarr", "run", True), ("a?b.zarr", "a", False)],
+)
+def test_string_location_without_scheme_is_local_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    zarr_format: int,
+    location: str,
+    sibling: str,
+    overwrite: bool,
+) -> None:
+    """A string without a URL scheme names its directory literally.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Working-directory fixture.
+        zarr_format: Physical Zarr format.
+        location: Relative store path with a URL delimiter.
+        sibling: Directory that URL parsing would select instead.
+        overwrite: Whether creation may replace existing content.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / sibling).mkdir()
+    (tmp_path / sibling / "precious.txt").write_text("unrelated data")
+
+    SigMFZarrStore.create(
+        location,
+        overwrite=overwrite,
+        zarr_format=cast(ZarrFormat, zarr_format),
+    ).collections.create("kept")
+
+    assert sorted(child.name for child in tmp_path.iterdir()) == sorted(
+        [location, sibling]
+    )
+    assert [child.name for child in (tmp_path / sibling).iterdir()] == [
+        "precious.txt"
+    ]
+    assert (tmp_path / location / "collections" / "kept").is_dir()
+    with SigMFZarrStore.open(location) as store:
+        assert store.zarr_format == zarr_format
+        assert store.list_collections() == ("kept",)
+    assert validate_store(location).issues == ()
+    assert StoreContext().open(location).list_collections() == ("kept",)
 
 
 @pytest.mark.parametrize(
