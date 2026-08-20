@@ -1,0 +1,189 @@
+[build-system]
+requires = ["setuptools>=69", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sigmf-zarr"
+dynamic = ["version"]
+description = "A Zarr-backed extension model for the SigMF format."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Geoffrey Mainland", email = "mainland@drexel.edu" },
+]
+keywords = ["sigmf", "zarr", "signal-processing", "data-format", "metadata"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "crc32c>=2.4",
+  "numcodecs>=0.14",
+  "numpy>=2.0.2",
+  "sigmf>=1.11.0",
+  "zarr>=3.2",
+]
+
+[dependency-groups]
+test = [
+  "pytest>=9.0",
+  "pytest-cov>=7.0",
+]
+docs = [
+  "furo>=2024.1.29",
+  "myst-parser>=2.0",
+  "sphinx==9.1.0",
+]
+dev = [
+  { include-group = "test" },
+  { include-group = "docs" },
+  "mypy==2.1.0",
+  "pre-commit==4.6.2",
+  "ruff==0.15.15",
+  "sp-repo-review[cli]==2026.8.14",
+  "tox>=4.30",
+  "tox-uv>=1.28",
+]
+
+[project.urls]
+Documentation = "https://sigmf-zarr.readthedocs.io/"
+Source = "https://github.com/mainland/sigmf-zarr"
+Issues = "https://github.com/mainland/sigmf-zarr/issues"
+Changelog = "https://github.com/mainland/sigmf-zarr/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+sigmf_zarr = ["py.typed"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+fallback_version = "0+unknown"
+
+[tool.pytest]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+xfail_strict = true
+filterwarnings = ["error"]
+log_level = "INFO"
+
+[tool.coverage.run]
+branch = true
+source = ["sigmf_zarr"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.ruff.lint]
+extend-select = [
+  "B",    # flake8-bugbear
+  "C4",   # flake8-comprehensions
+  "C90",  # mccabe complexity
+  "D",    # pydocstyle
+  "E",    # pycodestyle errors
+  "I",    # isort
+  "PT",   # flake8-pytest-style
+  "RUF",  # Ruff-specific rules
+  "SIM",  # flake8-simplify
+  "UP",   # pyupgrade
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["C901"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.rumdl]
+line-length = 79
+
+[tool.rumdl.per-file-flavor]
+"docs/**/*.md" = "myst"
+
+[tool.mypy]
+files = [
+  "src",
+  "tests",
+]
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+pretty = true
+
+[[tool.mypy.overrides]]
+module = [
+  "numcodecs",
+  "numcodecs.*",
+  "sigmf.*",
+  "zarr",
+  "zarr.*",
+]
+ignore_missing_imports = true
+
+[tool.tox]
+requires = ["tox>=4.30", "tox-uv>=1.28"]
+env_list = [
+  "3.12",
+  "3.13",
+  "3.14",
+  "min",
+  "lint",
+  "docs",
+]
+
+[tool.tox.env_run_base]
+description = "Run the tests and coverage without the lock"
+dependency_groups = ["test"]
+extras = []
+commands = [["pytest", "--cov", "--cov-report=term-missing", { replace = "posargs", extend = true }]]
+
+[tool.tox.env.min]
+description = "Run the tests with the lowest direct dependency versions"
+uv_resolution = "lowest-direct"
+extras = []
+
+[tool.tox.env.lint]
+description = "Run the pre-commit hooks, which use the .venv environment"
+skip_install = true
+dependency_groups = []
+deps = ["pre-commit==4.6.2"]
+commands = [["pre-commit", "run", "--all-files", "--show-diff-on-failure"]]
+
+[tool.tox.env.docs]
+description = "Build the documentation, failing on any warning"
+dependency_groups = ["docs"]
+commands = [["sphinx-build", "-W", "--keep-going", "-b", "html", "docs", "docs/_build/html"]]
+
+[tool.tox.env.linkcheck]
+description = "Check the documentation's external links"
+dependency_groups = ["docs"]
+commands = [["sphinx-build", "-b", "linkcheck", "docs", "docs/_build/linkcheck"]]
+
+[tool.repo-review.ignore]
+GH100 = "Continuous integration is not set up yet."
+PC110 = "Ruff format runs as a local hook from .venv."
+PC140 = "Mypy runs as a local hook from .venv."
+PC170 = "The documentation is Markdown and has no reStructuredText."
+PC190 = "Ruff runs as a local hook from .venv."
+PC901 = "The project does not use pre-commit.ci."
+PC902 = "The project does not use pre-commit.ci."
+PC903 = "The project does not use pre-commit.ci."
+PY004 = "The documentation is not written yet."
