@@ -16,6 +16,9 @@ A SigMF-Zarr store is a Zarr group with two required root attributes:
 - The `schema_version` attribute must be the integer `1`. Neither the JSON
   value `true` nor the floating-point value `1.0` is the integer `1`.
 
+The root, recording, and collection groups may also carry an `integrity`
+attribute as described in the logical integrity section below.
+
 The root group has three required child groups:
 
 ```text
@@ -366,8 +369,12 @@ runtime sample axis named by its `axis` attribute. Runtime axes are:
 - For unbatched recordings: `sigmf-zarr:sample-axes`
 - For batched recordings: `("item", *sigmf-zarr:sample-axes)`
 
-Validation and axis invalidation include indexes at every depth below the
-`indexes/` group.
+An index name may be a nested relative path, such as `quality/snr_db`. Each
+`/`-separated segment must be nonempty, must not be `.` or `..`, and must not
+be a reserved Zarr metadata document name. The name must not contain NUL. An
+index name identifies an array, never a group.
+Validation, axis invalidation, and integrity checks include indexes at every
+depth below the `indexes/` group.
 
 Each recording-level index has these attributes:
 
@@ -411,7 +418,8 @@ Each recording-level index has these attributes:
 An index array is a materialized metadata vector, not an automatically
 maintained secondary index. If a writer appends samples after creating an
 axis-aligned index, the index becomes invalid and the writer must update or
-replace it before use.
+replace it before use. Integrity recalculation must reject a store containing
+an invalid index rather than hashing it as current.
 
 ## Logical integrity
 
@@ -426,6 +434,175 @@ format 2 does not support sharding.
 Writers may disable sample checksums explicitly, in which case
 `sigmf-zarr:checksum` is `null`. Readers must verify that this metadata field
 agrees with the sample array codec pipeline.
+
+SigMF-Zarr also defines optional native logical SHA-512 hashes. These hashes
+cover the data model rather than serialized Zarr metadata or encoded chunk
+bytes, so they have the same values for equivalent Zarr format 2 and Zarr
+format 3 stores. Each participating group has an `integrity` attribute with
+`algorithm="sha512"`, `version=1`, and one or more scope-specific fields. The
+`version` value must be the JSON integer `1`, not `1.0`. The attribute, when
+present, must be a JSON object:
+
+- A recording has `sample_sha512` over the logical `samples` array and
+  `metadata_sha512` over all recording metadata.
+- A collection has `metadata_sha512` over its attributes, arrays, and child
+  groups.
+- The root has `metadata_sha512` over root attributes, store-wide indexes, any
+  other root content, and the digests that each recording and collection
+  declares.
+
+A hash excludes only the `integrity` attribute of the group that it covers.
+An attribute named `integrity` on any other group, such as a channel group or
+the `recordings` group, is ordinary content and is hashed. JSON values use the
+canonical encoding defined below.
+
+### Array hashes
+
+An array hash divides the logical array into slabs along one axis, the slab
+axis. A sample array uses its growth axis: `item` for a batched recording and
+`time` otherwise. Every other array uses its first axis. Each slab holds $L$
+consecutive slab-axis positions with the complete extent of every other axis.
+The final slab may be shorter. The slab length is
+
+$$
+L = \max\left(1, \left\lfloor \frac{2^{24}}{s P} \right\rfloor\right),
+$$
+
+where $s$ is the NumPy item size in bytes and $P$ is the product of the other
+dimensions, or 1 when that product is zero. Variable-length strings and objects
+use $s = 16$. A fixed-width Unicode string of width $n$ uses $s = 4n$.
+
+Each slab digest is SHA-512 over the slab's values in C order:
+
+- Boolean, integer, floating-point, complex, date-time, and time-delta values
+  use their little-endian bytes. A Boolean value is one byte, 0 or 1.
+- A fixed-width byte string uses its raw bytes, padded with NUL bytes to the
+  declared width.
+- Every other value is converted to a JSON value, encoded as canonical JSON,
+  and preceded by its encoded length as an 8-byte big-endian unsigned integer.
+  Each element of a variable-length or fixed-width Unicode string array is a
+  JSON string. For example, the string `bc` contributes the length
+  `00 00 00 00 00 00 00 04` followed by the four bytes `"bc"`. A fixed-width
+  Unicode value excludes trailing U+0000 code points, as NumPy reads it. Each
+  element of an object array is the JSON value that it holds.
+
+The array digest is SHA-512 over the ASCII bytes `sigmf-zarr-array-v1`, a NUL
+byte, the canonical JSON digest descriptor, a NUL byte, and the concatenated
+64-byte slab digests. The digest descriptor has these fields:
+
+- `dtype` identifies the logical element type as described below.
+- `shape` is the logical shape.
+- `slab_axis` is the slab axis, or `null` for a zero-dimensional array.
+- `slab_length` is $L$, or 1 for a zero-dimensional array.
+- `version` is the integrity version, 1.
+
+The `dtype` field of the digest descriptor depends only on the element type,
+not on the NumPy release, host byte order, or stored byte order:
+
+- Boolean, integer, floating-point, complex, date-time, and time-delta types
+  use the NumPy type string with little-endian byte order, such as `<i4`,
+  `<f8`, `<c8`, and `<M8[ns]`. One-byte types use `|`, as in `|b1`, `|i1`, and
+  `|u1`.
+- Fixed-width byte strings use `|S` followed by the width in bytes, such as
+  `|S3`.
+- Fixed-width Unicode strings use `<U` followed by the width in code points,
+  such as `<U2`, for either stored byte order.
+- Variable-length UTF-8 strings use `string`, the Zarr format 3 data type name.
+  This descriptor applies to Zarr format 3 `string` arrays, to Zarr format 2
+  arrays with dtype `|O` and the `vlen-utf8` filter, and to NumPy `StringDType`
+  arrays. It does not depend on how NumPy spells `StringDType`, which is `|T16`
+  in NumPy 2.0 and `StringDType()` in later releases.
+- Object arrays use `|O`. An object array that holds strings therefore hashes
+  differently from a variable-length string array with the same values.
+
+No array in a store may have a structured or void dtype, which is NumPy kind
+`V`. The `dtype` descriptor does not describe field names, field dtypes, or
+field offsets, so a hash could not detect a change to them. Writers reject such
+arrays, and `validate_store()` reports them.
+
+A zero-dimensional array has one slab containing its value with the array's
+declared dtype. For example, a zero-dimensional `|S3` array holding `ab`
+contributes the bytes `ab` and one NUL byte. An array without elements has no
+slabs. Slabs depend only on the logical dtype and shape, so a reader can hash
+one slab at a time and decode each physical chunk once, for any chunk layout.
+
+### Metadata hashes
+
+A recording or collection metadata hash covers group and array structure,
+group and array attributes, array dtype and shape, and the array hash of each
+metadata array, such as an index. Sample array values are excluded from the
+recording metadata hash because the sample hash covers them. The `samples`
+entry still records the array's `attrs`, `dtype`, and `shape`. The hash input
+is the ASCII bytes `sigmf-zarr-metadata-v1`, a NUL byte, and the canonical
+JSON payload.
+
+The payload of a group is a JSON object with these members:
+
+- `arrays` maps each child array name to an object with four members. `attrs`
+  holds the array attributes, `dtype` is the `dtype` field of the array's
+  digest descriptor, such as `<f4` or `string`, `shape` is the logical shape,
+  and `sha512` is the array hash. The recording `samples` entry omits `sha512`
+  rather than setting it to `null`.
+- `attrs` holds the group attributes. The hashed group omits its own
+  `integrity` attribute.
+- `groups` maps each child group name to the payload of that group, built by
+  the same rule. A child group payload keeps every attribute, including one
+  named `integrity`.
+
+The store-wide metadata hash uses the same payload for root attributes,
+store-wide indexes, and any other root content. In place of each recording and
+collection group, the payload records the digests that the group declares:
+`metadata_sha512` and `sample_sha512` for a recording, and `metadata_sha512`
+for a collection. Specifically, `groups.recordings.groups` maps each recording
+name to an object with the members `metadata_sha512` and `sample_sha512`, and
+`groups.collections.groups` maps each collection name to an object with the
+member `metadata_sha512`. The `recordings` and `collections` payloads keep
+their own `arrays` and `attrs`, including any `integrity` attribute. The hash
+input is the ASCII bytes `sigmf-zarr-store-v1`, a NUL byte, and the canonical
+JSON payload. Updating the store-wide hash therefore requires current hashes
+for every recording and collection, but it does not reread their arrays.
+Verifying the store-wide hash alone confirms root content and the declared
+digests. Full verification also recalculates every recording and collection
+hash.
+
+### Hash maintenance
+
+Managed API mutations and writable mutation contexts remove every affected
+native hash before writing. A failed index mutation leaves the index explicitly
+invalid. A full `store.update_integrity()` pass recalculates recording,
+collection, and root hashes, while `store.verify_integrity()` requires all of
+those hashes to be present and current. These whole-content hashes complement
+chunk CRC32C. They do not authenticate a store against an attacker who can
+alter both content and stored hashes or bypass the API to modify the backing
+Zarr store directly.
+
+### Canonical JSON encoding
+
+Version 1 hashes encode JSON values with these rules, which an independent
+implementation must reproduce exactly:
+
+- Object members are sorted by key, comparing keys as sequences of Unicode code
+  points. This order differs from RFC 8785, which compares UTF-16 code units,
+  when keys contain characters outside the Basic Multilingual Plane.
+- No whitespace appears between tokens. Members and elements are separated by
+  `,`, and keys are separated from values by `:`.
+- Strings are encoded as UTF-8. `"` and `\` are escaped as `\"` and `\\`.
+  Backspace, form feed, line feed, carriage return, and tab are escaped as
+  `\b`, `\f`, `\n`, `\r`, and `\t`. Other characters from U+0000 through
+  U+001F are escaped as `\u00XX` with lowercase hexadecimal digits. All other
+  characters, including `/`, U+007F, and non-ASCII characters, appear
+  unescaped.
+- Integers are written in decimal without an exponent or leading zeros.
+- Floating-point numbers use the shortest decimal string that rounds to the
+  same binary64 value, as produced by Python `repr()`. The string always
+  contains a decimal point or an exponent. Values whose decimal exponent is
+  less than -4 or at least 16 use exponent notation with a sign and at least
+  two exponent digits, such as `1e-05`, `2.5e-07`, and `1e+16`. Other values use
+  positional notation, such as `0.0001`, `1.0`, and `-0.0`.
+- Integers and floating-point numbers remain distinct, so `1` and `1.0` hash
+  differently.
+- Literals are written as `true`, `false`, and `null`. Non-finite numbers are
+  rejected.
 
 ## Store-wide indexes
 
@@ -446,7 +623,7 @@ recording-level indexes.
 ## Collections
 
 Collections live at `collections/<collection_name>/`. A collection group has
-two required attributes:
+two required attributes and may have the optional `integrity` attribute:
 
 - The `metadata` attribute is a JSON object that describes the collection.
 - The `recording_ids` attribute is a list of recording names that the collection

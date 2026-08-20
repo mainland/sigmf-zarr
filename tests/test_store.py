@@ -97,6 +97,8 @@ def test_resource_names_reject_paths_before_writing(
     store = SigMFZarrStore.create(
         tmp_path / "store.zarr", zarr_format=zarr_format
     )
+    store.update_metadata_integrity()
+    original_hash = store.metadata_sha512
     if kind == "recording":
         with pytest.raises(
             ValueError, match="single nonempty Zarr group name"
@@ -109,6 +111,8 @@ def test_resource_names_reject_paths_before_writing(
             store.collections.create(name, overwrite=True)
     assert store.list_recordings() == ()
     assert store.list_collections() == ()
+    assert store.metadata_sha512 == original_hash
+    assert store.verify_integrity()
 
 
 @pytest.mark.parametrize("zarr_format", [2, 3])
@@ -128,12 +132,14 @@ def test_resource_aliases_cannot_bypass_collection_references(
     )
     store.recordings.create("rec", sample_shape=(1,))
     store.collections.create("rec", recording_ids=["rec"])
+    store.update_integrity()
     assert alias not in store.recordings
     assert alias not in store.collections
     with pytest.raises(KeyError):
         store.recordings.remove(alias)
     assert store.collections["rec"].recording_ids == ("rec",)
     assert store.list_recordings() == ("rec",)
+    assert store.verify_integrity()
 
 
 def test_schema_version_is_initial_draft() -> None:
@@ -845,6 +851,37 @@ def test_item_metadata_entry_and_slice_setters(tmp_path: Path) -> None:
     assert recording.get_item_metadata(-1) == {"global": {"example:value": 3}}
 
 
+def test_item_metadata_setters_validate_before_mutation(
+    tmp_path: Path,
+) -> None:
+    """Rejected setter values should not change content or integrity.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(
+        np.zeros((2, 2, 4), dtype=np.float32),
+        item_metadata=[None, None],
+    )
+    store.update_integrity()
+    integrity = recording.integrity
+
+    with pytest.raises(ValueError, match="cannot override storage fields"):
+        recording.set_item_metadata_entry(
+            0,
+            {"global": {"sigmf-zarr:dtype": "<i2"}},
+        )
+
+    assert recording.get_item_metadata(0) == {}
+    assert recording.integrity == integrity
+
+
 def test_item_metadata_slice_setter_validates_selection(
     tmp_path: Path,
 ) -> None:
@@ -1369,8 +1406,13 @@ def test_extension_updates_preserve_the_managed_declaration(
             store.recordings["rec"].global_metadata
             == recording.global_metadata
         )
+        store.update_integrity()
+        assert store.verify_integrity()
+    original_hash = store.metadata_sha512
     with pytest.raises(ValueError, match="core:extensions"):
         recording.set_global_field("core:extensions", ["invalid"])
+    assert store.metadata_sha512 == original_hash
+    assert store.verify_integrity()
 
 
 @pytest.mark.parametrize("zarr_format", [2, 3])
@@ -1387,7 +1429,7 @@ def test_extension_updates_preserve_the_managed_declaration(
 def test_open_rejects_invalid_storage_extension_declarations(
     tmp_path: Path, zarr_format: ZarrFormat, declarations: list[JSONValue]
 ) -> None:
-    """Opening rejects missing or contradictory storage declarations.
+    """A matching integrity hash does not establish schema conformance.
 
     Args:
         tmp_path: Pytest temporary path fixture.
@@ -1401,6 +1443,8 @@ def test_open_rejects_invalid_storage_extension_declarations(
     metadata = dict(recording.global_metadata)
     metadata["core:extensions"] = declarations
     recording._raw_group.attrs["global"] = metadata
+    recording.update_integrity()
+    store.update_metadata_integrity()
     with pytest.raises(ValueError, match="core:extensions must declare"):
         store.recordings.open("rec")
 
@@ -1684,6 +1728,37 @@ def test_recording_creation_rejects_non_numeric_sample_dtypes(
     with pytest.raises(ValueError, match="floating-point, or complex"):
         store.recordings.create("rec", sample_shape=(4,), sample_dtype=dtype)
     assert "rec" not in store.recordings
+
+
+@pytest.mark.parametrize("position", [True, np.bool_(False), 1.0, "0", None])
+def test_item_metadata_positions_must_be_integers(
+    tmp_path: Path, position: object
+) -> None:
+    """Item positions must be checked before any read or write.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        position: Non-integer or Boolean item position.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr")
+    recording = store.recordings.create("rec", batched=True, sample_shape=(4,))
+    recording.append_samples(np.zeros((2, 4), dtype=np.float32))
+    recording.set_item_metadata([{"global": {"test:x": 1}}, None])
+    store.update_integrity()
+    loose = cast(Any, recording)
+    with pytest.raises(TypeError, match="non-Boolean integers"):
+        loose.get_item_metadata(position)
+    with pytest.raises(TypeError, match="non-Boolean integers"):
+        loose.set_item_metadata_entry(position, {"global": {"test:x": 2}})
+    with pytest.raises(TypeError, match="non-Boolean integers"):
+        loose.resolved_item_metadata(position)
+    with pytest.raises(TypeError, match="must be a slice"):
+        loose.set_item_metadata_slice(position, [None])
+    assert recording.get_item_metadata(np.int64(-2)) == {
+        "global": {"test:x": 1}
+    }
+    assert recording.get_item_metadata(1) == {}
+    assert store.verify_integrity()
 
 
 def test_set_global_field_rejects_unencodable_keys(tmp_path: Path) -> None:

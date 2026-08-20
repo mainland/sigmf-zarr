@@ -370,8 +370,28 @@ with recording.mutate_samples() as samples:
 
 Use `set_samples()` or `append_samples()` for shape changes.
 
-Recording-level and store-wide indexes are read-only and have explicit
-writable contexts:
+SigMF-Zarr can additionally maintain logical SHA-512 hashes for samples and
+metadata. Unlike `core:sha512`, these native hashes describe the logical Zarr
+data model and therefore also work for batched recordings and metadata arrays:
+
+```python
+store.update_integrity()
+
+print(recording.sample_sha512)
+print(recording.metadata_sha512)
+print(store.metadata_sha512)
+assert store.verify_integrity()
+```
+
+The store-wide hash covers root metadata, store-wide indexes, and the digests
+that each recording and collection declares. `store.update_metadata_integrity()`
+therefore requires current hashes for every recording and collection.
+`store.verify_metadata_integrity()` checks only the store-wide hash, without
+reading any recording arrays. `store.verify_integrity()` also recalculates
+every recording and collection hash.
+
+Managed mutations invalidate the affected hashes. Recording-level and
+store-wide indexes are also read-only and have explicit writable contexts:
 
 ```python
 snippets = store.recordings.open("snippets")
@@ -382,6 +402,17 @@ store.add_index("fold", np.zeros(4, dtype=np.int8), overwrite=True)
 with store.mutate_index("fold") as index:
     index[:] = np.array([0, 1, 0, 1], dtype=np.int8)
 ```
+
+The same rule applies to other mutable recording and collection structures.
+Use `mutate_extensions()`, `mutate_item_metadata()`,
+`set_channel_metadata()`, `SigMFCollection.mutate()`, and the collection
+setters instead of reaching through a public Zarr handle. These paths validate
+JSON metadata and invalidate the recording, collection, and root digests they
+affect. `set_global_field()` rejects the `sigmf-zarr` storage fields, which the
+recording maintains from its sample array. It also rejects a value that
+violates the SigMF schema that `validate_store()` applies, such as a string
+`core:sample_rate`. Updates to `core:extensions` retain one canonical
+SigMF-Zarr declaration and preserve other namespace declarations.
 
 Recording and collection names must identify immediate child groups. Names
 must be nonempty and must not contain path separators, `.` or `..` path
@@ -417,3 +448,4 @@ Update the collection first.
 An index is marked invalid before the context body runs and restored to valid
 only after successful structural validation. Resizing a sample axis similarly
 invalidates indexes aligned with that axis until they are repaired or replaced.
+Re-run `store.update_integrity()` after completing a series of changes.
