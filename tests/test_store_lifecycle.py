@@ -9,6 +9,7 @@ import pytest
 from zarr.storage import LocalStore
 
 from sigmf_zarr.store import SigMFCollection, SigMFZarrStore, ZarrFormat
+from sigmf_zarr.store._common import is_store_url, store_location
 
 
 def test_create_refuses_existing_store(tmp_path: Path) -> None:
@@ -99,6 +100,34 @@ def test_requested_format_must_match_existing_store(
     assert sorted(entry.name for entry in path.iterdir()) == before
     reopened = SigMFZarrStore(path, zarr_format=cast(ZarrFormat, existing))
     assert reopened.zarr_format == existing
+
+
+@pytest.mark.parametrize(
+    ("location", "url"),
+    [
+        ("s3://bucket/store.zarr", True),
+        ("file:///data/store.zarr", True),
+        ("memory://store", True),
+        ("simplecache::s3://bucket/store.zarr", True),
+        ("run#2.zarr", False),
+        ("a?b.zarr", False),
+        ("/data/run#2.zarr", False),
+        ("memory:store", False),
+        ("C://data/store.zarr", False),
+        ("data/s3://store.zarr", False),
+    ],
+)
+def test_only_explicit_schemes_make_store_urls(
+    location: str, url: bool
+) -> None:
+    """A string is a store URL only when it starts with a scheme.
+
+    Args:
+        location: Store location string.
+        url: Whether Zarr should parse the location as a URL.
+    """
+    assert is_store_url(location) is url
+    assert isinstance(store_location(location), str) is url
 
 
 def test_append_mode_initializes_empty_target_as_format_3(

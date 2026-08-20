@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from os import PathLike, fspath
+from collections.abc import Iterator, Sequence
+from os import PathLike
+from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
 import zarr
+from zarr.core.array import (
+    CompressorLike,
+    ShardsLike,
+)
 from zarr.core.common import AccessModeLiteral
 from zarr.core.group import Group
 from zarr.storage import StoreLike
@@ -21,9 +26,225 @@ from sigmf_zarr.integrity import (
     INTEGRITY_ATTR,
 )
 from sigmf_zarr.json import JSONObject
-from sigmf_zarr.readonly import ReadOnlyGroup
+from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
+from sigmf_zarr.store._backend import backend_store
 from sigmf_zarr.store._collection import SigMFCollection
-from sigmf_zarr.store._common import ZarrFormat
+from sigmf_zarr.store._common import (
+    ChecksumName,
+    ZarrFormat,
+    _validate_resource_name,
+    store_location,
+)
+from sigmf_zarr.store._recording import SigMFRecording
+
+
+class SigMFRecordings:
+    """Proxy view over the recordings in a SigMF-Zarr store."""
+
+    _store: SigMFZarrStore
+    """Parent SigMF-Zarr store."""
+
+    def __init__(self, store: SigMFZarrStore) -> None:
+        """Initialize a recordings view for one store.
+
+        Args:
+            store: Parent SigMF-Zarr store.
+        """
+        self._store = store
+
+    def __iter__(self) -> Iterator[SigMFRecording]:
+        """Iterate over recordings in sorted name order.
+
+        Returns:
+            Iterator over recording wrappers.
+        """
+        return self.values()
+
+    def __getitem__(self, recording_name: str) -> SigMFRecording:
+        """Return one recording by name.
+
+        Args:
+            recording_name: Recording name to open.
+
+        Returns:
+            Recording wrapper.
+
+        Raises:
+            KeyError: If no recording has the requested name.
+        """
+        return self.open(recording_name)
+
+    def __contains__(self, recording_name: object) -> bool:
+        """Return whether a recording with this name exists.
+
+        Args:
+            recording_name: Candidate recording name.
+
+        Returns:
+            True when a recording with this name exists.
+        """
+        if not isinstance(recording_name, str):
+            return False
+        try:
+            _validate_resource_name(recording_name, kind="Recording")
+        except ValueError:
+            return False
+        return recording_name in self._store._recordings_group
+
+    def __len__(self) -> int:
+        """Return the number of recordings in the store.
+
+        Returns:
+            Number of recordings.
+        """
+        return len(self._store.list_recordings())
+
+    def names(self) -> tuple[str, ...]:
+        """Return recording identifiers in sorted order.
+
+        Returns:
+            Recording names.
+        """
+        return self._store.list_recordings()
+
+    def values(
+        self,
+        *,
+        recording_cls: type[SigMFRecording] = SigMFRecording,
+    ) -> Iterator[SigMFRecording]:
+        """Iterate over recordings in sorted name order.
+
+        Args:
+            recording_cls: Recording wrapper class to instantiate.
+
+        Returns:
+            Iterator over recording wrappers.
+        """
+        for recording_name in self.names():
+            yield self.open(recording_name, recording_cls=recording_cls)
+
+    def open(
+        self,
+        recording_name: str,
+        *,
+        recording_cls: type[SigMFRecording] = SigMFRecording,
+    ) -> SigMFRecording:
+        """Open one existing recording.
+
+        Args:
+            recording_name: Recording name.
+            recording_cls: Recording wrapper class to instantiate.
+
+        Returns:
+            Recording wrapper.
+
+        Raises:
+            KeyError: If the recording does not exist.
+            ValueError: If stored metadata is invalid.
+        """
+        return recording_cls(self._store, recording_name)
+
+    def create(
+        self,
+        recording_name: str,
+        *,
+        sample_shape: tuple[int, ...],
+        overwrite: bool = False,
+        batched: bool = False,
+        recording_cls: type[SigMFRecording] = SigMFRecording,
+        sample_dtype: npt.DTypeLike = np.float32,
+        sample_axes: tuple[str, ...] | None = None,
+        global_metadata: JSONObject | None = None,
+        captures: list[JSONObject] | None = None,
+        annotations: list[JSONObject] | None = None,
+        channel_metadata: Sequence[JSONObject] | None = None,
+        sample_chunks: tuple[int, ...] | None = None,
+        sample_shards: ShardsLike | None = None,
+        sample_compressor: CompressorLike = "auto",
+        sample_checksum: ChecksumName | None = "crc32c",
+    ) -> SigMFRecording:
+        """Create one recording.
+
+        Args:
+            recording_name: Recording name.
+            sample_shape: Per-item shape for a batched recording, or the
+                complete sample array shape for an unbatched recording.
+            overwrite: Whether to replace an existing recording.
+            batched: Whether the sample array has a leading item axis.
+            recording_cls: Recording wrapper class to instantiate.
+            sample_dtype: Element dtype of the sample array.
+            sample_axes: Optional axis names for `sample_shape`.
+            global_metadata: SigMF-like global metadata.
+            captures: Capture metadata.
+            annotations: Annotation metadata.
+            channel_metadata: Optional metadata for each channel.
+            sample_chunks: Optional sample chunk shape.
+            sample_shards: Optional sample shard shape.
+            sample_compressor: Optional sample compressor.
+            sample_checksum: Optional chunk-level sample checksum.
+
+        Returns:
+            Recording wrapper.
+
+        Raises:
+            ValueError: If the recording exists and `overwrite` is false, or
+                the requested layout or metadata is invalid.
+        """
+        return recording_cls(
+            self._store,
+            recording_name,
+            create=True,
+            overwrite=overwrite,
+            batched=batched,
+            sample_dtype=sample_dtype,
+            sample_shape=sample_shape,
+            sample_axes=sample_axes,
+            global_metadata=global_metadata,
+            captures=captures,
+            annotations=annotations,
+            channel_metadata=channel_metadata,
+            sample_chunks=sample_chunks,
+            sample_shards=sample_shards,
+            sample_compressor=sample_compressor,
+            sample_checksum=sample_checksum,
+        )
+
+    def remove(self, recording_name: str) -> None:
+        """Remove a recording through the managed mutation boundary.
+
+        Args:
+            recording_name: Recording name to remove.
+
+        Raises:
+            KeyError: If the recording does not exist.
+            ValueError: If a collection references the recording. Update
+                those collections first so removal cannot leave dangling
+                references.
+        """
+        if recording_name not in self:
+            raise KeyError(recording_name)
+        referencing = [
+            collection.name
+            for collection in self._store.collections
+            if recording_name in collection.recording_ids
+        ]
+        if referencing:
+            raise ValueError(
+                f"Recording {recording_name!r} is referenced by collections "
+                f"{referencing!r}"
+            )
+        self._discard(recording_name)
+
+    def _discard(self, recording_name: str) -> None:
+        """Delete a recording without checking collection references.
+
+        Import rollback uses this to remove a recording that it created.
+
+        Args:
+            recording_name: Existing recording name.
+        """
+        self._store._invalidate_metadata_integrity()
+        del self._store._recordings_group[recording_name]
 
 
 class SigMFCollections:
@@ -71,10 +292,13 @@ class SigMFCollections:
         Returns:
             True when a collection with this name exists.
         """
-        return (
-            isinstance(collection_name, str)
-            and collection_name in self._store._collections_group
-        )
+        if not isinstance(collection_name, str):
+            return False
+        try:
+            _validate_resource_name(collection_name, kind="Collection")
+        except ValueError:
+            return False
+        return collection_name in self._store._collections_group
 
     def __len__(self) -> int:
         """Return the number of collections in the store.
@@ -246,7 +470,12 @@ class SigMFZarrStore:
         store, and `"w"` replaces existing content.
 
         Args:
-            store: Optional Zarr store backend.
+            store: Optional Zarr store backend, path, or URL. A string is
+                a URL only when it starts with an explicit scheme, as in
+                `s3://bucket/key`, `file:///data/a.zarr`, `memory://a`, or
+                the chained `simplecache::s3://bucket/key`. Any other
+                string or path-like object names a local directory, so `#`
+                and `?` in it are literal characters.
             overwrite: When true, recreate the target store.
             mode: Optional Zarr access mode. If omitted, defaults to
                 `"w"` when `overwrite` is true and `"a"` otherwise.
@@ -264,9 +493,17 @@ class SigMFZarrStore:
         resolved_mode: AccessModeLiteral = (
             ("w" if overwrite else "a") if mode is None else mode
         )
-        self._store = (
-            fspath(store) if isinstance(store, str | PathLike) else store
-        )
+        if isinstance(store, str | PathLike):
+            self._store = backend_store(
+                store_location(store),
+                read_only=resolved_mode == "r",
+                storage_options=storage_options,
+            )
+            if not isinstance(self._store, str | Path):
+                # The options configured the backend that was just opened.
+                storage_options = None
+        else:
+            self._store = store
         self._mode = resolved_mode
         resolved_format = zarr_format
         if resolved_mode not in {"w", "w-"}:
@@ -689,6 +926,53 @@ class SigMFZarrStore:
         """
         self.close()
 
+    def __repr__(self) -> str:
+        """Return a concise debug representation.
+
+        Returns:
+            Debug representation string.
+        """
+        return (
+            f"{type(self).__name__}("
+            f"num_recordings={len(self.list_recordings())}, "
+            f"num_collections={len(self.list_collections())})"
+        )
+
+    def __iter__(self) -> Iterator[SigMFRecording]:
+        """Iterate over recordings in sorted name order.
+
+        Returns:
+            Iterator over recording wrappers.
+        """
+        return iter(self.recordings)
+
+    def __getitem__(self, name: str) -> SigMFRecording | SigMFCollection:
+        """Return a recording or collection by name.
+
+        Args:
+            name: Recording or collection name.
+
+        Returns:
+            Recording or collection wrapper.
+
+        Raises:
+            KeyError: If `name` matches neither object type, or if it
+                matches both a recording and a collection.
+        """
+        has_recording = name in self.recordings
+        has_collection = name in self.collections
+
+        if has_recording and has_collection:
+            raise KeyError(
+                f"Name {name!r} is ambiguous: it matches both a "
+                "recording and a collection"
+            )
+        if has_recording:
+            return self.recordings.open(name)
+        if has_collection:
+            return self.collections.open(name)
+        raise KeyError(name)
+
     @property
     def _recordings_group(self) -> Group:
         """Top-level Zarr group containing recording subgroups.
@@ -710,6 +994,15 @@ class SigMFZarrStore:
         return without_consolidated_metadata(
             cast(Group, self._group["collections"])
         )
+
+    @property
+    def recordings(self) -> SigMFRecordings:
+        """Proxy view over recordings in this store.
+
+        Returns:
+            Recordings proxy view.
+        """
+        return SigMFRecordings(self)
 
     @property
     def collections(self) -> SigMFCollections:
@@ -743,6 +1036,30 @@ class SigMFZarrStore:
             Root attributes copied into a dictionary.
         """
         return dict(self._refresh_root().attrs)
+
+    def info(self) -> str:
+        """Return a human-readable summary of the container.
+
+        Returns:
+            Multiline store summary.
+        """
+        index_names = sorted(
+            name
+            for name, member in self.indexes.members(max_depth=None)
+            if isinstance(member, ReadOnlyArray)
+        )
+        lines = [
+            f"{type(self).__name__}(",
+            f"  schema_name={self.SCHEMA_NAME!r},",
+            f"  schema_version={self.SCHEMA_VERSION!r},",
+            f"  zarr_format={self.zarr_format!r},",
+            f"  metadata_sha512={self.metadata_sha512!r},",
+            f"  recordings={list(self.list_recordings())!r},",
+            f"  collections={list(self.list_collections())!r},",
+            f"  indexes={index_names},",
+            ")",
+        ]
+        return "\n".join(lines)
 
 
 __all__ = ["SigMFZarrStore"]
