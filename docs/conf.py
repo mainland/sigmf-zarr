@@ -47,6 +47,10 @@ napoleon_preprocess_types = True
 # Each entry is a reference that cannot resolve, grouped by cause.
 nitpick_ignore = [
     # zarr does not document these configuration types and aliases.
+    ("py:class", "zarr.core.array.CompressorLike"),
+    ("py:class", "zarr.core.array.CompressorsLike"),
+    ("py:class", "zarr.core.array.SerializerLike"),
+    ("py:class", "zarr.core.array.ShardsLike"),
     ("py:class", "zarr.core.array_spec.ArrayConfig"),
     ("py:class", "zarr.core.array_spec.ArrayConfigParams"),
     # Autodoc cannot evaluate annotations that name imports made only for

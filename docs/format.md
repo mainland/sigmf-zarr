@@ -257,6 +257,68 @@ Unbatched appends extend the explicit `time` axis and update
 `sigmf-zarr:sample-shape`. Batched appends extend the leading runtime `item`
 axis and keep `sigmf-zarr:sample-shape` unchanged.
 
+## Metadata indexes
+
+Indexes are dense one-dimensional Zarr arrays that materialize metadata values
+along a sample axis. They are useful for labels, quality metrics, frequency
+bins, time-varying parameters, and ML dataset metadata.
+
+SigMF-Zarr has two index scopes:
+
+- Recording-level indexes under `recordings/<recording_name>/indexes/`
+- Store-wide indexes under root `indexes/`
+
+### Recording-level indexes
+
+A recording-level index lives at:
+
+```text
+recordings/<recording_name>/indexes/<index_name>
+```
+
+The array must be one-dimensional. Its length must match the length of the
+runtime sample axis named by its `axis` attribute. Runtime axes are:
+
+- For unbatched recordings: `sigmf-zarr:sample-axes`
+- For batched recordings: `("item", *sigmf-zarr:sample-axes)`
+
+Validation and axis invalidation include indexes at every depth below the
+`indexes/` group.
+
+Each recording-level index has these attributes:
+
+`axis`
+: Required. Runtime sample axis indexed by the array, such as `item`, `time`,
+  `channel`, or a custom sample axis.
+
+`field`
+: Required. Metadata field represented by the index, such as
+  `example:snr`, `example:mod_class`, or an application-specific namespaced
+  field.
+
+`kind`
+: Required. Describes the index kind. The default value is `metadata`.
+
+`unit`
+: Optional. Unit string for numeric values, such as `dB` or `Hz`.
+
+`labels`
+: Optional. Lookup values for encoded indexes. For example, an integer label
+  index can store human-readable class names in `labels`.
+
+`sigmf-zarr:valid`
+: Optional. The value `false` marks an index whose mutation did not complete or
+  whose aligned axis changed. Absence means valid. Readers must reject an
+  invalid index until a writer repairs or replaces it.
+
+`sigmf-zarr:invalid-reason`
+: Optional explanation accompanying `sigmf-zarr:valid=false`.
+
+An index array is a materialized metadata vector, not an automatically
+maintained secondary index. If a writer appends samples after creating an
+axis-aligned index, the index becomes invalid and the writer must update or
+replace it before use.
+
 ## Logical integrity
 
 Sample chunks use CRC32C by default. In Zarr format 3, CRC32C is the final
@@ -270,6 +332,22 @@ format 2 does not support sharding.
 Writers may disable sample checksums explicitly, in which case
 `sigmf-zarr:checksum` is `null`. Readers must verify that this metadata field
 agrees with the sample array codec pipeline.
+
+## Store-wide indexes
+
+Store-wide indexes live under root `indexes/`:
+
+```text
+indexes/<index_name>
+```
+
+These arrays are also one-dimensional, but schema version 1 does not require
+standard attributes for them. They are intended for cross-recording lookup
+data, manifests, or other container-level query aids. String values are stored
+as variable-length UTF-8 arrays, and JSON object indexes can be stored as JSON
+strings and decoded by the Python API. Store-wide indexes use the same optional
+`sigmf-zarr:valid` and `sigmf-zarr:invalid-reason` mutation markers as
+recording-level indexes.
 
 ## Collections
 
@@ -287,3 +365,10 @@ dangling references written by other tools.
 
 Collections are useful for representing relationships among recordings without
 moving or duplicating sample arrays.
+
+## Dataset-specific metadata
+
+Dataset-specific metadata should use namespaced fields. Prefer generic
+recording-level indexes when the data is dense and aligned with a sample axis.
+Use `extensions/` only when the data is structured in a way that does not fit a
+one-dimensional axis-aligned index.

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import numpy.typing as npt
 import pytest
 from numcodecs import CRC32C, Blosc
-from zarr.codecs import BloscCodec
+from zarr.codecs import BloscCodec, VLenUTF8Codec
+from zarr.core.group import Group
 
 from sigmf_zarr.json import JSONValue
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
@@ -723,6 +725,116 @@ def test_append_samples_rejects_unbatched_non_time_axis_change(
         recording.append_samples(np.zeros((5, 2, 3), dtype=np.float32))
 
 
+def test_recording_add_index_records_axis_metadata(tmp_path: Path) -> None:
+    """Recording indexes should describe the metadata they materialize.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 8),
+    )
+    recording.append_samples(np.zeros((3, 2, 8), dtype=np.float32))
+
+    index = recording.add_index(
+        "snr_db",
+        np.array([0, 2, 4], dtype=np.int16),
+        axis="item",
+        field="example:snr",
+        unit="dB",
+    )
+
+    np.testing.assert_array_equal(
+        index[:],
+        np.array([0, 2, 4], dtype=np.int16),
+    )
+    assert dict(index.attrs) == {
+        "axis": "item",
+        "field": "example:snr",
+        "kind": "metadata",
+        "unit": "dB",
+    }
+    np.testing.assert_array_equal(recording.index("snr_db")[:], index[:])
+
+
+def test_recording_add_index_stores_label_metadata(tmp_path: Path) -> None:
+    """Recording indexes should support label lookup metadata.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(np.zeros((2, 2, 4), dtype=np.float32))
+
+    index = recording.add_index(
+        "mod_class_id",
+        np.array([0, 1], dtype=np.int16),
+        axis="item",
+        field="example:mod_class",
+        labels=["AM-DSB", "BPSK"],
+    )
+
+    assert dict(index.attrs) == {
+        "axis": "item",
+        "field": "example:mod_class",
+        "kind": "metadata",
+        "labels": ["AM-DSB", "BPSK"],
+    }
+
+
+def test_recording_add_index_rejects_axis_length_mismatch(
+    tmp_path: Path,
+) -> None:
+    """Recording indexes should match the indexed axis length.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=False,
+        sample_shape=(2, 8),
+    )
+
+    with pytest.raises(
+        ValueError, match="does not match axis 'time' length 8"
+    ):
+        recording.add_index(
+            "snr_db",
+            np.array([0, 2], dtype=np.int16),
+            axis="time",
+            field="example:snr",
+        )
+
+
+def test_decode_json_index_rejects_non_object_entries(tmp_path: Path) -> None:
+    """Decoded index entries must be finite JSON objects.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr")
+    store.add_index("good", np.array(['{"a": 1}', "{}"]))
+    assert store.decode_json_index("good") == [{"a": 1}, {}]
+    for name, entries in (
+        ("list", ['{"a": 1}', "[1, 2]"]),
+        ("nan", ['{"a": NaN}']),
+        ("text", ["not json"]),
+    ):
+        store.add_index(name, np.array(entries))
+        with pytest.raises(ValueError, match=f"index '{name}' entry"):
+            store.decode_json_index(name)
+
+
 def test_recording_open_rejects_invalid_sample_axes(tmp_path: Path) -> None:
     """Opening should reject invalid sample-axis metadata.
 
@@ -959,3 +1071,203 @@ def test_recording_open_rejects_invalid_sample_shape_rank(
 
     with pytest.raises(ValueError, match="same length as sample_shape"):
         store.recordings.open("rec")
+
+
+def test_create_array_uses_utf8_serializer_for_unicode_data() -> None:
+    """Unicode arrays should be normalized for UTF-8-backed storage."""
+
+    class FakeStore:
+        def __init__(self) -> None:
+            """Initialize a fake store."""
+            self.created: dict[str, object] | None = None
+
+        @staticmethod
+        def default_index_chunks(num_values: int) -> tuple[int]:
+            """Choose fake index chunks.
+
+            Args:
+                num_values: Number of index values.
+
+            Returns:
+                One-dimensional chunk shape.
+            """
+            return (min(4096, max(1, num_values)),)
+
+        def create_array(
+            self,
+            group: object,
+            name: str,
+            data: object,
+            *,
+            overwrite: bool,
+            chunks: tuple[int, ...] | None = None,
+            shards: object = None,
+            compressors: object = "auto",
+            compressor: object = "auto",
+            serializer: object = "auto",
+        ) -> dict[str, object]:
+            """Create a fake array.
+
+            Args:
+                group: Parent group placeholder.
+                name: Array name.
+                data: Array data.
+                overwrite: Whether replacement is allowed.
+                chunks: Optional chunk shape.
+                shards: Optional shard shape.
+                compressors: Optional compressors configuration.
+                compressor: Optional single-compressor configuration.
+                serializer: Optional serializer configuration.
+
+            Returns:
+                Created array details.
+            """
+            del group, overwrite, shards, compressors, compressor
+            value_array = np.asarray(data)
+            if value_array.dtype.kind in {"U", "O"} and serializer == "auto":
+                value_array = value_array.astype(str).astype(object)
+                serializer = VLenUTF8Codec()
+            self.created = {
+                "name": name,
+                "data": value_array,
+                "chunks": chunks
+                or self.default_index_chunks(len(value_array)),
+                "serializer": serializer,
+            }
+            return self.created
+
+    recording = object.__new__(SigMFRecording)
+    # The fake stands in for the store and records the creation arguments.
+    recording._store = cast(SigMFZarrStore, FakeStore())
+
+    # The fake returns its record of the arguments instead of an array.
+    created = cast(
+        "dict[str, object]",
+        recording._create_array(
+            cast(Group, object()),
+            "labels",
+            np.array(["AM-DSB", "BPSK"]),
+            overwrite=False,
+        ),
+    )
+
+    assert isinstance(created["serializer"], VLenUTF8Codec)
+    assert np.asarray(created["data"]).dtype.kind == "O"
+    np.testing.assert_array_equal(
+        np.asarray(created["data"], dtype=object),
+        np.array(["AM-DSB", "BPSK"], dtype=object),
+    )
+
+
+def test_create_array_normalizes_object_arrays_to_strings() -> None:
+    """Object arrays of strings should be normalized before creation."""
+
+    class FakeStore:
+        def __init__(self) -> None:
+            """Initialize a fake store."""
+            self.created: dict[str, object] | None = None
+
+        @staticmethod
+        def default_index_chunks(num_values: int) -> tuple[int]:
+            """Choose fake index chunks.
+
+            Args:
+                num_values: Number of index values.
+
+            Returns:
+                One-dimensional chunk shape.
+            """
+            return (min(4096, max(1, num_values)),)
+
+        def create_array(
+            self,
+            group: object,
+            name: str,
+            data: object,
+            *,
+            overwrite: bool,
+            chunks: tuple[int, ...] | None = None,
+            shards: object = None,
+            compressors: object = "auto",
+            compressor: object = "auto",
+            serializer: object = "auto",
+        ) -> dict[str, object]:
+            """Create a fake array.
+
+            Args:
+                group: Parent group placeholder.
+                name: Array name.
+                data: Array data.
+                overwrite: Whether replacement is allowed.
+                chunks: Optional chunk shape.
+                shards: Optional shard shape.
+                compressors: Optional compressors configuration.
+                compressor: Optional single-compressor configuration.
+                serializer: Optional serializer configuration.
+
+            Returns:
+                Created array details.
+            """
+            del group, overwrite, shards, compressors, compressor
+            value_array = np.asarray(data)
+            if value_array.dtype.kind in {"U", "O"} and serializer == "auto":
+                value_array = value_array.astype(str).astype(object)
+                serializer = VLenUTF8Codec()
+            self.created = {
+                "name": name,
+                "data": value_array,
+                "chunks": chunks
+                or self.default_index_chunks(len(value_array)),
+                "serializer": serializer,
+            }
+            return self.created
+
+    recording = object.__new__(SigMFRecording)
+    # The fake stands in for the store and records the creation arguments.
+    recording._store = cast(SigMFZarrStore, FakeStore())
+
+    # The fake returns its record of the arguments instead of an array.
+    created = cast(
+        "dict[str, object]",
+        recording._create_array(
+            cast(Group, object()),
+            "labels",
+            np.array(["AM-DSB", "BPSK"], dtype=object),
+            overwrite=False,
+        ),
+    )
+
+    assert isinstance(created["serializer"], VLenUTF8Codec)
+    assert np.asarray(created["data"]).dtype.kind == "O"
+    np.testing.assert_array_equal(
+        np.asarray(created["data"], dtype=object),
+        np.array(["AM-DSB", "BPSK"], dtype=object),
+    )
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_store_string_index_uses_variable_length_utf8(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """Store-wide string indexes should use variable-length UTF-8 storage.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=zarr_format
+    )
+
+    index = store.add_index("labels", np.array(["AM-DSB", "BPSK"]))
+
+    assert index.shape == (2,)
+    assert index.chunks == (2,)
+    assert list(index[:]) == ["AM-DSB", "BPSK"]
+    if zarr_format == 3:
+        assert isinstance(index.serializer, VLenUTF8Codec)
+    else:
+        assert any(
+            codec.codec_id == "vlen-utf8"
+            for codec in index.metadata.filters or ()
+        )
