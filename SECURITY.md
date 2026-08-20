@@ -12,10 +12,10 @@ version, input format, impact, and a minimal reproducer when possible.
 
 ## Untrusted inputs
 
-SigMF archives, JSON metadata, and Zarr stores should be treated as untrusted
-data. Run imports with operating system permissions appropriate for the output
-location and apply external resource limits when processing unknown or
-unusually large datasets.
+SigMF archives, HDF5 files, JSON metadata, and Zarr stores should be treated
+as untrusted data. Run imports with operating system permissions appropriate
+for the output location and apply external resource limits when processing
+unknown or unusually large datasets.
 
 SigMF archive import extracts the complete archive into the system temporary
 directory, which must have space for the extracted files.

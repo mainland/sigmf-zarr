@@ -8,11 +8,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import h5py
 import numpy as np
 import numpy.typing as npt
 import pytest
 
+import sigmf_zarr._import_limits as import_limits
 import sigmf_zarr.radioml2016 as radioml2016
+import sigmf_zarr.radioml2018 as radioml2018
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore
 from sigmf_zarr.store._common import ZarrFormat
 
@@ -79,6 +82,304 @@ def test_import_radioml_dataset_writes_store(tmp_path: Path) -> None:
     np.testing.assert_array_equal(recording.index("mod_class_id")[:], [0])
     assert recording.index("mod_class_id").attrs["labels"] == ["BPSK"]
     np.testing.assert_array_equal(recording.index("snr_db")[:], [0])
+    assert store.verify_integrity()
+
+
+def test_import_radioml2018_dataset_streams_hdf5_batches(
+    tmp_path: Path,
+) -> None:
+    """The 2018 importer should transpose and append bounded HDF5 batches.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    source_path = tmp_path / "RML2018.hdf5"
+    store_path = tmp_path / "RML2018.sigmf-zarr"
+    source_samples = np.arange(40, dtype=np.float32).reshape(5, 4, 2)
+    source_labels = np.array(
+        [
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    source_snr = np.array([[-2], [0], [2], [4], [6]], dtype=np.int16)
+    with h5py.File(source_path, "w") as source:
+        source.create_dataset("X", data=source_samples)
+        source.create_dataset("Y", data=source_labels)
+        source.create_dataset("Z", data=source_snr)
+
+    store = radioml2018.import_radioml2018_dataset(
+        store_path,
+        source_path,
+        modulation_classes=("BPSK", "QPSK"),
+        batch_size=2,
+        zarr_format=2,
+    )
+
+    recording = store.recordings["radioml2018"]
+    assert store.zarr_format == 2
+    assert recording.samples.shape == (5, 2, 4)
+    np.testing.assert_array_equal(
+        recording.samples[:],
+        np.moveaxis(source_samples, 2, 1),
+    )
+    np.testing.assert_array_equal(
+        recording.index("mod_class_id")[:],
+        np.array([0, 1, 0, 1, 1], dtype=np.int16),
+    )
+    assert recording.index("mod_class_id").attrs["labels"] == [
+        "BPSK",
+        "QPSK",
+    ]
+    np.testing.assert_array_equal(
+        recording.index("snr_db")[:],
+        source_snr[:, 0],
+    )
+    assert recording.global_metadata["radioml:dataset_version"] == "2018"
+    assert recording.global_metadata["radioml:source_dataset"] == "RML2018"
+
+
+def _write_radioml2018_labels(
+    path: Path,
+    *,
+    item_count: int,
+    num_classes: int = 2,
+) -> None:
+    """Write valid RadioML 2018 `Y` and `Z` datasets to an HDF5 file.
+
+    Args:
+        path: HDF5 file to create.
+        item_count: Number of items.
+        num_classes: Number of one-hot columns.
+    """
+    labels = np.zeros((item_count, num_classes), dtype=np.float32)
+    labels[:, 0] = 1.0
+    with h5py.File(path, "w") as source:
+        source.create_dataset("Y", data=labels)
+        source.create_dataset("Z", data=np.zeros((item_count, 1), np.int64))
+
+
+def _write_external_samples(directory: Path, kind: str) -> Path:
+    """Write an HDF5 file whose `X` data lives in another file.
+
+    Args:
+        directory: Directory for the input and the other file.
+        kind: Way in which `X` refers to the other file.
+
+    Returns:
+        Path of the HDF5 input file.
+    """
+    other_path = directory / "other.h5"
+    secret_path = directory / "secret.bin"
+    samples = np.arange(8, dtype=np.float32).reshape(1, 4, 2)
+    secret_path.write_bytes(samples.tobytes())
+    with h5py.File(other_path, "w") as other:
+        other.create_dataset("data/X", data=samples)
+    source_path = directory / "input.h5"
+    _write_radioml2018_labels(source_path, item_count=1)
+    with h5py.File(source_path, "a") as source:
+        if kind == "external-storage":
+            source.create_dataset(
+                "X",
+                shape=(1, 4, 2),
+                dtype=np.float32,
+                external=[(str(secret_path), 0, samples.nbytes)],
+            )
+        elif kind == "external-link":
+            source["X"] = h5py.ExternalLink(str(other_path), "data/X")
+        elif kind == "external-group-link":
+            source["data"] = h5py.ExternalLink(str(other_path), "data")
+            source["X"] = h5py.SoftLink("/data/X")
+        elif kind == "soft-link-through-external-link":
+            source["remote"] = h5py.ExternalLink(str(other_path), "/")
+            source["X"] = h5py.SoftLink("remote/data/X")
+        else:
+            layout = h5py.VirtualLayout(shape=(1, 4, 2), dtype=np.float32)
+            layout[:] = h5py.VirtualSource(
+                str(other_path), "data/X", shape=(1, 4, 2)
+            )
+            source.create_virtual_dataset("X", layout)
+    return source_path
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "external-storage",
+        "external-link",
+        "external-group-link",
+        "soft-link-through-external-link",
+        "virtual-dataset",
+    ],
+)
+def test_radioml2018_reads_only_its_input_file(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    """Reject samples stored in, or linked from, any other file.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        kind: Way in which `X` refers to another file.
+    """
+    source_path = _write_external_samples(tmp_path, kind)
+    store_path = tmp_path / "store.zarr"
+
+    with pytest.raises(ValueError, match="input file"):
+        radioml2018.import_radioml2018_dataset(
+            store_path, source_path, modulation_classes=("A", "B")
+        )
+
+    assert not store_path.exists()
+
+
+@pytest.mark.parametrize("target", ["/data/X", "X", "./X"])
+def test_radioml2018_follows_soft_links_within_its_input_file(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    """Resolve absolute and relative soft links inside the input file.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        target: Soft-link target of `data/samples`.
+    """
+    source_path = tmp_path / "input.h5"
+    _write_radioml2018_labels(source_path, item_count=1)
+    samples = np.arange(8, dtype=np.float32).reshape(1, 4, 2)
+    with h5py.File(source_path, "a") as source:
+        source.create_dataset("data/X", data=samples)
+        source["data/samples"] = h5py.SoftLink(target)
+
+    store = radioml2018.import_radioml2018_dataset(
+        tmp_path / "store.zarr",
+        source_path,
+        modulation_classes=("A", "B"),
+        samples_dataset="/data/samples",
+    )
+
+    np.testing.assert_array_equal(
+        store.recordings["radioml2018"].samples[:],
+        np.moveaxis(samples, 2, 1),
+    )
+
+
+def test_radioml2018_rejects_soft_link_cycles(tmp_path: Path) -> None:
+    """Stop resolving a soft-link cycle with `ValueError`.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    source_path = tmp_path / "input.h5"
+    _write_radioml2018_labels(source_path, item_count=1)
+    with h5py.File(source_path, "a") as source:
+        source["X"] = h5py.SoftLink("/X")
+
+    with pytest.raises(ValueError, match="soft links"):
+        radioml2018.import_radioml2018_dataset(
+            tmp_path / "store.zarr",
+            source_path,
+            modulation_classes=("A", "B"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("shape", "chunks", "message"),
+    [
+        ((1, 2**24, 2), None, "per item"),
+        ((64, 2**18, 2), (64, 2**18, 2), "chunks"),
+    ],
+    ids=["item", "chunk"],
+)
+def test_radioml2018_rejects_large_items_before_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shape: tuple[int, int, int],
+    chunks: tuple[int, int, int] | None,
+    message: str,
+) -> None:
+    """Reject 128 MiB declared items or chunks without reading samples.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Pytest patch fixture.
+        shape: Declared sample shape, stored only as fill values.
+        chunks: Declared HDF5 chunk shape.
+        message: Expected error text.
+    """
+    source_path = tmp_path / "input.h5"
+    _write_radioml2018_labels(source_path, item_count=shape[0])
+    with h5py.File(source_path, "a") as source:
+        source.create_dataset("X", shape=shape, dtype="<f4", chunks=chunks)
+    store_path = tmp_path / "store.zarr"
+
+    def read(*_args: object) -> None:
+        """Fail if the importer reads any HDF5 data.
+
+        Args:
+            *_args: Ignored selection arguments.
+        """
+        raise AssertionError("HDF5 data was read")
+
+    monkeypatch.setattr(h5py.Dataset, "__getitem__", read)
+    with pytest.raises(ValueError, match=message):
+        radioml2018.import_radioml2018_dataset(
+            store_path, source_path, modulation_classes=("A", "B")
+        )
+
+    assert not store_path.exists()
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_radioml2018_bounds_sample_batches_by_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    zarr_format: ZarrFormat,
+) -> None:
+    """Split reads by the byte budget when `batch_size` allows more.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Pytest patch fixture.
+        zarr_format: Physical Zarr format to exercise.
+    """
+    source_path = tmp_path / "input.h5"
+    _write_radioml2018_labels(source_path, item_count=7)
+    samples = np.arange(7 * 4 * 2, dtype=np.float32).reshape(7, 4, 2)
+    with h5py.File(source_path, "a") as source:
+        source.create_dataset("X", data=samples)
+    # One item holds 32 bytes, so a 100-byte budget allows three items.
+    monkeypatch.setattr(import_limits, "IMPORT_BATCH_BYTES", 100)
+    batches: list[int] = []
+    original_append = SigMFRecording.append_samples
+
+    def append(recording: SigMFRecording, batch: npt.ArrayLike) -> None:
+        """Record each batch length before a real append.
+
+        Args:
+            recording: Destination recording.
+            batch: Sample batch passed by the importer.
+        """
+        batches.append(len(np.asarray(batch)))
+        original_append(recording, batch)
+
+    monkeypatch.setattr(SigMFRecording, "append_samples", append)
+    store = radioml2018.import_radioml2018_dataset(
+        tmp_path / "store.zarr",
+        source_path,
+        modulation_classes=("A", "B"),
+        zarr_format=zarr_format,
+    )
+
+    assert batches == [3, 3, 1]
+    np.testing.assert_array_equal(
+        store.recordings["radioml2018"].samples[:],
+        np.moveaxis(samples, 2, 1),
+    )
     assert store.verify_integrity()
 
 
