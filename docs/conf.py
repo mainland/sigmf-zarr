@@ -51,11 +51,16 @@ nitpick_ignore = [
     ("py:class", "zarr.core.array_spec.ArrayConfigParams"),
     # Autodoc cannot evaluate annotations that name imports made only for
     # type checking, so it leaves every name in them unqualified.
+    ("py:class", "AccessModeLiteral"),
     ("py:class", "Array"),
     ("py:class", "Group"),
+    ("py:class", "PathLike"),
+    ("py:class", "StoreLike"),
     # Public signatures name these types by their private defining module.
     # The API reference documents their public names.
     ("py:class", "sigmf_zarr.readonly._ReadOnlyIndexer"),
+    ("py:class", "sigmf_zarr.store._common.ZarrFormat"),
+    ("py:class", "sigmf_zarr.store._container.SigMFCollections"),
 ]
 
 intersphinx_mapping = {
