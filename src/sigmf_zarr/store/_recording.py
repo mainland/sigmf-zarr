@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
 from numcodecs import CRC32C as NumcodecsCRC32C
 from numcodecs import Blosc as NumcodecsBlosc
+from numcodecs import VLenUTF8 as NumcodecsVLenUTF8
 from numcodecs import Zstd as NumcodecsZstd
 from numcodecs.abc import Codec as NumcodecsCodec
 from sigmf import SHA512_KEY
@@ -17,6 +19,7 @@ from sigmf.sigmffile import SigMFAccessError, SigMFFile
 from zarr.codecs import (
     BloscCodec,
     Crc32cCodec,
+    VLenUTF8Codec,
     ZstdCodec,
 )
 from zarr.core.array import (
@@ -25,6 +28,7 @@ from zarr.core.array import (
     CompressorsLike,
     ShardsLike,
 )
+from zarr.core.dtype import VariableLengthUTF8
 from zarr.core.group import Group
 
 from sigmf_zarr.integrity import (
@@ -1393,6 +1397,86 @@ class SigMFRecording:
             return
         self._raw_group.attrs[INTEGRITY_ATTR] = integrity
 
+    @contextmanager
+    def _mutation(
+        self,
+        *,
+        metadata: bool = False,
+        samples: bool = False,
+    ) -> Generator[None, None, None]:
+        """Invalidate affected hashes before a managed mutation.
+
+        Args:
+            metadata: Whether logical metadata may change.
+            samples: Whether logical sample values may change.
+
+        Yields:
+            Control to the mutation body after invalidation.
+        """
+        # Invalidate before yielding so an exception can never leave a stale
+        # hash that still claims to describe partially mutated content.
+        self._invalidate_integrity(metadata=metadata, samples=samples)
+        if samples:
+            self.clear_sha512()
+        yield
+
+    def _invalidate_axis_indexes(self, axis: str) -> None:
+        """Mark every index aligned with an axis as invalid.
+
+        Args:
+            axis: Runtime axis whose length or positions changed.
+        """
+        self._invalidate_integrity(metadata=True)
+        for _, index in self._indexes_group.members(max_depth=None):
+            if not isinstance(index, Array):
+                continue
+            if index.attrs.get("axis") != axis:
+                continue
+            index.attrs[self._INDEX_VALID_FIELD] = False
+            index.attrs[self._INDEX_INVALID_REASON_FIELD] = (
+                f"axis {axis!r} changed"
+            )
+
+
+    @contextmanager
+    def mutate_samples(self) -> Generator[Array, None, None]:
+        """Provide writable sample access with conservative invalidation.
+
+        The context is intended for value updates that do not resize or
+        otherwise reconfigure the sample array. Use :meth:`set_samples` or
+        :meth:`append_samples` for shape changes so aligned metadata can be
+        maintained.
+
+        Yields:
+            Writable backing Zarr sample array.
+
+        Raises:
+            ValueError: If the mutation changes the sample array shape.
+        """
+        samples = self._samples_array
+        original_shape = tuple(int(size) for size in samples.shape)
+        try:
+            with self._mutation(metadata=True, samples=True):
+                yield samples
+        finally:
+            # Shape changes must invalidate aligned indexes even when the
+            # caller exits the context by raising an exception.
+            current_shape = tuple(int(size) for size in samples.shape)
+            if current_shape != original_shape:
+                for axis, old_size, new_size in zip(
+                    self.runtime_axes,
+                    original_shape,
+                    current_shape,
+                    strict=False,
+                ):
+                    if old_size != new_size:
+                        self._invalidate_axis_indexes(axis)
+        if current_shape != original_shape:
+            raise ValueError(
+                "mutate_samples() cannot resize the sample array. Use "
+                "set_samples() or append_samples()"
+            )
+
 
     @property
     def sha512(self) -> str | None:
@@ -1573,6 +1657,54 @@ class SigMFRecording:
             )
         return normalized
 
+    @classmethod
+    def _encode_item_metadata(
+        cls,
+        values: Sequence[JSONObject | None],
+    ) -> list[str]:
+        """Encode per-item metadata bundles as canonical JSON strings.
+
+        Args:
+            values: Item metadata bundles.
+
+        Returns:
+            Compact JSON object strings in item order.
+        """
+        return [
+            cls._encode_item_metadata_entry(
+                value,
+                item_index=index,
+            )
+            for index, value in enumerate(values)
+        ]
+
+    @classmethod
+    def _encode_item_metadata_entry(
+        cls,
+        value: JSONObject | None,
+        *,
+        item_index: int,
+    ) -> str:
+        """Validate and encode one per-item metadata bundle.
+
+        Args:
+            value: Metadata bundle or `None` for an empty bundle.
+            item_index: Item-axis index used in validation errors.
+
+        Returns:
+            Canonical compact JSON object string.
+        """
+        # Canonical JSON prevents insignificant formatting differences from
+        # changing logical metadata hashes.
+        return json.dumps(
+            cls._normalize_item_metadata_entry(
+                value,
+                name=f"item_metadata[{item_index}]",
+            ),
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     @classmethod
     def _decode_item_metadata_entry(
@@ -1602,6 +1734,58 @@ class SigMFRecording:
             json_object(decoded, name=name),
             name=name,
         )
+
+    def _create_item_metadata_array(
+        self,
+        encoded: npt.NDArray[np.object_],
+        *,
+        overwrite: bool,
+    ) -> Array:
+        """Create the checksummed per-item metadata array.
+
+        Args:
+            encoded: Canonical JSON strings in item order.
+            overwrite: Whether an existing array may be replaced.
+
+        Returns:
+            Writable backing item metadata array.
+
+        Raises:
+            ValueError: If the array already exists and overwrite is false.
+        """
+        self._invalidate_integrity(metadata=True)
+        group = self._raw_group
+        if "item_metadata" in group:
+            if not overwrite:
+                raise ValueError(
+                    "Array 'item_metadata' already exists. Pass "
+                    "overwrite=True to replace it"
+                )
+            del group["item_metadata"]
+
+        chunks = self._store.default_index_chunks(len(encoded))
+        # Both physical formats store the same logical UTF-8 JSON strings, but
+        # their serializer and codec APIs are intentionally different.
+        if self._store.zarr_format == 2:
+            array = group.create_array(
+                "item_metadata",
+                shape=encoded.shape,
+                dtype=cast(Any, VariableLengthUTF8()),
+                chunks=chunks,
+                compressor=NumcodecsZstd(),
+                filters=[NumcodecsVLenUTF8(), NumcodecsCRC32C()],
+            )
+        else:
+            array = group.create_array(
+                "item_metadata",
+                shape=encoded.shape,
+                dtype=cast(Any, VariableLengthUTF8()),
+                chunks=chunks,
+                serializer=VLenUTF8Codec(),
+                compressors=(ZstdCodec(), Crc32cCodec()),
+            )
+        array[:] = encoded
+        return array
 
 
     def get_item_metadata(self, item_index: int) -> JSONObject:
@@ -1653,6 +1837,254 @@ class SigMFRecording:
         channel = cast(Group, self._channels_group[str(channel_index)])
         return cast(JSONObject, dict(channel.attrs))
 
+
+    def _append_capture(
+        self,
+        capture: JSONObject | None,
+        *,
+        sample_start: int,
+    ) -> None:
+        """Append one optional capture metadata entry.
+
+        Args:
+            capture: Optional capture metadata to append.
+            sample_start: Default `core:sample_start` value.
+        """
+        if capture is None:
+            return
+        self._invalidate_integrity(metadata=True)
+        entry = dict(capture)
+        entry.setdefault("core:sample_start", sample_start)
+        self._raw_group.attrs["captures"] = list(self.captures) + [entry]
+
+    def _append_batched_samples(
+        self,
+        sample_array: npt.NDArray[Any],
+        *,
+        capture: JSONObject | None,
+        item_metadata: Sequence[JSONObject | None] | None,
+    ) -> None:
+        """Append one batch of samples to a batched recording.
+
+        Args:
+            sample_array: Batch of samples with shape `(N, *sample_shape)`.
+            capture: Optional capture metadata for the appended batch.
+            item_metadata: Optional metadata bundle for each appended item.
+
+        Raises:
+            ValueError: If rank differs from the sample array rank or the
+                per-item sample shape does not match.
+        """
+        if sample_array.ndim != self.samples.ndim:
+            raise ValueError(
+                f"Expected samples with ndim {self.samples.ndim}, got "
+                f"{sample_array.ndim}"
+            )
+        tail_shape = tuple(int(dim) for dim in sample_array.shape[1:])
+        if tail_shape != self.sample_shape:
+            raise ValueError(
+                f"Expected sample shape {self.sample_shape}, got {tail_shape}"
+            )
+
+        append_count = int(sample_array.shape[0])
+        if item_metadata is not None and len(item_metadata) != append_count:
+            raise ValueError(
+                f"Expected metadata for {append_count} appended items, got "
+                f"{len(item_metadata)}"
+            )
+        encoded_item_metadata = (
+            None
+            if item_metadata is None
+            else type(self)._encode_item_metadata(item_metadata)
+        )
+
+        start = len(self)
+        stop = start + append_count
+        if append_count:
+            # Existing item indexes no longer align after the axis grows.
+            self._invalidate_axis_indexes("item")
+        with self._mutation(metadata=True, samples=True):
+            samples = self._samples_array
+            samples.resize((stop, *self.sample_shape))
+            samples[start:stop] = sample_array
+
+        if self.has_item_metadata:
+            values = encoded_item_metadata or ["{}"] * append_count
+            self._item_metadata_array.resize((stop,))
+            self._item_metadata_array[start:stop] = np.asarray(
+                values,
+                dtype=object,
+            )
+        elif encoded_item_metadata is not None:
+            self._create_item_metadata_array(
+                np.asarray(
+                    ["{}"] * start + encoded_item_metadata, dtype=object
+                ),
+                overwrite=False,
+            )
+        self._append_capture(capture, sample_start=start)
+
+    def _append_unbatched_samples(
+        self,
+        sample_array: npt.NDArray[Any],
+        *,
+        capture: JSONObject | None,
+    ) -> None:
+        """Append samples along the explicit time axis.
+
+        Args:
+            sample_array: Samples to append along the `time` axis.
+            capture: Optional capture metadata for the appended time segment.
+
+        Raises:
+            ValueError: If rank differs from the sample array rank or any
+                non-time axis changes size.
+        """
+        if sample_array.ndim != self.samples.ndim:
+            raise ValueError(
+                f"Expected samples with ndim {self.samples.ndim}, got "
+                f"{sample_array.ndim}"
+            )
+
+        for axis_name in self.sample_axes:
+            if axis_name == "time":
+                continue
+            axis = self.axis_index(axis_name)
+            if sample_array.shape[axis] != self.samples.shape[axis]:
+                raise ValueError(
+                    f"Expected {axis_name!r} axis length "
+                    f"{self.samples.shape[axis]}, got "
+                    f"{sample_array.shape[axis]}"
+                )
+
+        time_axis = self.axis_index("time")
+        start = self.sample_count
+        capture_start = start
+        if capture is not None and "core:sample_start" not in capture:
+            offset = self.global_metadata.get("core:offset", 0)
+            if type(offset) is not int or offset < 0:
+                raise ValueError("core:offset must be a nonnegative integer")
+            capture_start += offset
+        stop = start + int(sample_array.shape[time_axis])
+        shape = list(int(dim) for dim in self._samples_array.shape)
+        shape[time_axis] = stop
+        if stop != start:
+            # A longer time axis invalidates every dense time-aligned index.
+            self._invalidate_axis_indexes("time")
+        with self._mutation(metadata=True, samples=True):
+            samples = self._samples_array
+            samples.resize(tuple(shape))
+
+            key: list[slice] = [slice(None)] * samples.ndim
+            key[time_axis] = slice(start, stop)
+            samples[tuple(key)] = sample_array
+
+        metadata = dict(self.global_metadata)
+        metadata[f"{self.ZARR_EXTENSION_NAMESPACE}:sample-shape"] = [
+            int(dim) for dim in shape
+        ]
+        self._raw_group.attrs["global"] = metadata
+        self._append_capture(capture, sample_start=capture_start)
+
+    def append_samples(
+        self,
+        samples: npt.ArrayLike,
+        *,
+        capture: JSONObject | None = None,
+        item_metadata: Sequence[JSONObject | None] | None = None,
+    ) -> None:
+        """Append samples to a recording.
+
+        Batched recordings append along the leading `item` axis. Unbatched
+        recordings append along the explicit `time` axis.
+
+        Args:
+            samples: Samples to append.
+            capture: Optional capture metadata for the appended samples. When
+                provided, `core:sample_start` defaults to the old item index
+                for batched recordings or the old time sample count for
+                unbatched recordings.
+            item_metadata: Optional metadata bundle for each appended item.
+                Only valid for batched recordings.
+
+        Raises:
+            ValueError: If rank differs from the sample array rank or any
+                fixed axis changes size, the samples cannot be converted to
+                the stored dtype, or metadata is invalid.
+        """
+        # Conversion and metadata validation must finish before any shape,
+        # index validity, or integrity state changes.
+        sample_array = np.asarray(samples, dtype=self._samples_array.dtype)
+        if capture is not None:
+            capture = json_object(capture, name="capture metadata")
+        if self.batched:
+            self._append_batched_samples(
+                sample_array,
+                capture=capture,
+                item_metadata=item_metadata,
+            )
+            return
+        if item_metadata is not None:
+            raise ValueError(
+                "item_metadata is only supported for batched recordings"
+            )
+        self._append_unbatched_samples(sample_array, capture=capture)
+
+    def set_samples(self, samples: npt.ArrayLike) -> None:
+        """Set the full sample array for an unbatched recording.
+
+        Args:
+            samples: Full sample array to write.
+
+        Raises:
+            ValueError: If the recording is batched, rank differs from the
+                sample array rank, any non-time axis changes size, the time
+                axis is empty, or conversion to the stored dtype fails.
+        """
+        if self.batched:
+            raise ValueError(
+                "set_samples is only supported for unbatched recordings"
+            )
+        sample_array = np.asarray(samples)
+        if sample_array.ndim != self.samples.ndim:
+            raise ValueError(
+                f"Expected samples with ndim {self.samples.ndim}, got "
+                f"{sample_array.ndim}"
+            )
+
+        for axis_name in self.sample_axes:
+            if axis_name == "time":
+                continue
+            axis = self.axis_index(axis_name)
+            if sample_array.shape[axis] != self.samples.shape[axis]:
+                raise ValueError(
+                    f"Expected {axis_name!r} axis length "
+                    f"{self.samples.shape[axis]}, got "
+                    f"{sample_array.shape[axis]}"
+                )
+
+        sample_shape = tuple(int(dim) for dim in sample_array.shape)
+        old_time_length = int(
+            self._samples_array.shape[self.axis_index("time")]
+        )
+        new_time_length = int(sample_shape[self.axis_index("time")])
+        if new_time_length == 0:
+            raise ValueError("The time axis must contain at least one sample")
+        sample_array = np.asarray(
+            sample_array, dtype=self._samples_array.dtype
+        )
+        if new_time_length != old_time_length:
+            self._invalidate_axis_indexes("time")
+        with self._mutation(metadata=True, samples=True):
+            samples_array = self._samples_array
+            samples_array.resize(sample_shape)
+            samples_array[:] = sample_array
+
+        metadata = dict(self.global_metadata)
+        metadata[f"{self.ZARR_EXTENSION_NAMESPACE}:sample-shape"] = [
+            int(dim) for dim in sample_shape
+        ]
+        self._raw_group.attrs["global"] = metadata
 
     def info(self) -> str:
         """Return a human-readable summary of one recording.
