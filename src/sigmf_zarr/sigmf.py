@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+import tarfile
 import tempfile
 from collections.abc import Iterator
 from os import PathLike
@@ -13,6 +15,7 @@ from typing import Any, cast
 import numpy as np
 import numpy.typing as npt
 from sigmf import SHA512_KEY
+from sigmf.sigmffile import SigMFCollection as StandardSigMFCollection
 from sigmf.sigmffile import SigMFFile, dtype_info, fromfile
 
 from sigmf_zarr.integrity import integrity_is_supported
@@ -23,6 +26,7 @@ from sigmf_zarr.json import (
     json_object_list,
 )
 from sigmf_zarr.store import (
+    SigMFCollection,
     SigMFRecording,
     SigMFZarrStore,
     ZarrFormat,
@@ -349,6 +353,21 @@ def strip_zarr_metadata(global_metadata: JSONObject) -> JSONObject:
             stripped[key] = cast(JSONValue, extensions)
 
     return stripped
+
+
+def archive_path(path: str | PathLike[str]) -> Path:
+    """Normalize a target path to the standard `.sigmf` suffix.
+
+    Args:
+        path: User-provided archive target path.
+
+    Returns:
+        Path ending with `.sigmf`.
+    """
+    target = Path(path)
+    return (
+        target if target.suffix == ".sigmf" else target.with_suffix(".sigmf")
+    )
 
 
 def _metadata_integer(value: JSONValue, *, field: str, label: str) -> int:
@@ -921,12 +940,228 @@ def export_sigmf(
     return meta_path
 
 
+def import_sigmf_archive(
+    store_path: str | PathLike[str],
+    archive_source: str | PathLike[str],
+    *,
+    overwrite_store: bool = False,
+    overwrite_recordings: bool = False,
+    zarr_format: ZarrFormat | None = None,
+) -> SigMFZarrStore:
+    """Import a standard SigMF archive into a SigMF-Zarr store.
+
+    Args:
+        store_path: Target SigMF-Zarr store path.
+        archive_source: Source `.sigmf` archive path.
+        overwrite_store: Whether to recreate the target store root.
+        overwrite_recordings: Whether to replace existing recordings.
+        zarr_format: Optional physical Zarr format requirement. Existing
+            stores are auto-detected when omitted. New stores default to Zarr
+            format 3.
+
+    Returns:
+        Updated SigMF-Zarr store.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        with tarfile.open(archive_source, mode="r") as archive:
+            # The data filter rejects archive members that could escape the
+            # temporary extraction directory.
+            archive.extractall(tmp_path, filter="data")
+
+        meta_files = sorted(tmp_path.rglob("*.sigmf-meta"))
+        collection_files = sorted(tmp_path.rglob("*.sigmf-collection"))
+        collection_name: str | None = None
+        collection_metadata: JSONObject | None = None
+        recording_ids: tuple[str, ...] = ()
+        if collection_files:
+            collection_file = collection_files[0]
+            with collection_file.open("r", encoding="utf-8") as handle:
+                metadata = cast(dict[str, object], json.load(handle))
+            collection_obj = StandardSigMFCollection(
+                metadata=metadata,
+                base_path=collection_file.parent,
+            )
+            collection_info = cast(
+                JSONObject, collection_obj.get_collection_info()
+            )
+            recording_ids = tuple(
+                Path(stream_name).stem.replace(".sigmf", "")
+                for stream_name in collection_obj.get_stream_names()
+            )
+            collection_metadata = dict(collection_info)
+            collection_metadata.pop("core:streams", None)
+            collection_name = collection_file.stem.replace(".sigmf", "")
+
+        store = SigMFZarrStore.create(
+            store_path,
+            overwrite=overwrite_store,
+            zarr_format=zarr_format,
+        )
+        imported_names: list[str] = []
+        try:
+            for meta_file in meta_files:
+                recording = import_sigmf(
+                    store_path,
+                    meta_file,
+                    overwrite_store=False,
+                    overwrite_recording=overwrite_recordings,
+                    zarr_format=zarr_format,
+                )
+                imported_names.append(recording.name)
+
+            if collection_name is not None:
+                collection = store.collections.open(
+                    collection_name,
+                    create=True,
+                    metadata=collection_metadata,
+                    recording_ids=recording_ids,
+                    overwrite=True,
+                )
+                collection.update_integrity()
+            store.update_metadata_integrity()
+        except Exception:
+            # Remove only recordings created by this archive operation.
+            for imported_name in reversed(imported_names):
+                if imported_name in store.recordings:
+                    store.recordings.remove(imported_name)
+            raise
+
+    return store
+
+
+def export_sigmf_archive(
+    store: SigMFZarrStore,
+    archive_target: str | PathLike[str],
+    *,
+    recording_names: list[str] | tuple[str, ...] | None = None,
+    collection_name: str | None = None,
+    overwrite: bool = False,
+    pretty: bool = True,
+    force: bool = False,
+) -> Path:
+    """Export recordings from a SigMF-Zarr store to a standard archive.
+
+    Args:
+        store: Source SigMF-Zarr store.
+        archive_target: Target `.sigmf` archive path.
+        recording_names: Optional recording names to export. When omitted,
+            all recordings are exported.
+        collection_name: Optional collection to include in the archive.
+        overwrite: Whether to replace an existing archive.
+        pretty: Whether to pretty-print metadata JSON.
+        force: Whether to export recordings even when sample-indexed metadata
+            appears stale.
+
+    Returns:
+        Written archive path.
+
+    Raises:
+        ValueError: If the target exists, no recordings are selected, or the
+            selected collection references recordings outside the export set.
+    """
+    target = archive_path(archive_target)
+    if target.exists() and not overwrite:
+        raise ValueError(
+            "Target SigMF archive already exists. Pass overwrite=True to "
+            "replace it"
+        )
+
+    selected_recordings = tuple(
+        recording_names
+        if recording_names is not None
+        else store.list_recordings()
+    )
+    if not selected_recordings:
+        raise ValueError("No recordings selected for export")
+
+    collection: SigMFCollection | None = None
+    if collection_name is not None:
+        collection = store.collections.open(collection_name)
+        if collection.integrity and not integrity_is_supported(
+            collection.integrity
+        ):
+            raise ValueError(
+                "Collection uses an unsupported internal integrity "
+                "algorithm or version"
+            )
+        if (
+            collection.metadata_sha512 is not None
+            and collection.metadata_sha512
+            != collection.calculate_metadata_sha512()
+        ):
+            raise ValueError(
+                "Collection internal metadata SHA-512 does not match current "
+                "metadata"
+            )
+        missing = sorted(
+            set(collection.recording_ids) - set(selected_recordings)
+        )
+        if missing:
+            raise ValueError(
+                "Selected collection references recordings not "
+                f"included in the archive export: {missing}"
+            )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    root_name = target.stem
+    # Place the temporary archive beside the target so the final rename stays
+    # on one filesystem and is atomic where the platform supports it.
+    with tempfile.TemporaryDirectory(
+        dir=target.parent,
+        prefix=".sigmf-zarr-archive-",
+    ) as tmpdir:
+        tmp_path = Path(tmpdir)
+        archive_root = tmp_path / root_name
+        archive_root.mkdir()
+        temporary_target = tmp_path / target.name
+
+        metafiles: list[str] = []
+        for recording_name in selected_recordings:
+            exported_meta = export_sigmf(
+                store,
+                recording_name,
+                archive_root / recording_name,
+                overwrite=True,
+                pretty=pretty,
+                force=force,
+            )
+            metafiles.append(exported_meta.name)
+
+        if collection is not None:
+            metadata = {
+                StandardSigMFCollection.COLLECTION_KEY: dict(
+                    collection.metadata
+                )
+            }
+            collection_obj = StandardSigMFCollection(
+                metafiles=metafiles,
+                metadata=metadata,
+                base_path=archive_root,
+                skip_checksums=False,
+            )
+            collection_obj.tofile(
+                archive_root / collection.name,
+                pretty=pretty,
+                overwrite=True,
+            )
+
+        with tarfile.open(temporary_target, mode="w") as archive:
+            archive.add(archive_root, arcname=root_name)
+        temporary_target.replace(target)
+
+    return target
+
+
 __all__ = [
+    "archive_path",
     "calculate_sha512",
     "coerce_samples_for_sigmf",
     "coerce_sigmf_samples",
     "export_sigmf",
+    "export_sigmf_archive",
     "import_sigmf",
+    "import_sigmf_archive",
     "sigmf_sample_axes",
     "sigmf_dtype_to_zarr",
     "strip_zarr_metadata",

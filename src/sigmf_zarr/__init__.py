@@ -6,7 +6,9 @@ from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
 from sigmf_zarr.sigmf import (
     calculate_sha512,
     export_sigmf,
+    export_sigmf_archive,
     import_sigmf,
+    import_sigmf_archive,
     verify_sha512,
 )
 from sigmf_zarr.store import (
@@ -28,7 +30,9 @@ __all__ = [
     "ReadOnlyGroup",
     "calculate_sha512",
     "export_sigmf",
+    "export_sigmf_archive",
     "import_sigmf",
+    "import_sigmf_archive",
     "verify_sha512",
 ]
 
