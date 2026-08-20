@@ -33,7 +33,12 @@ from zarr.core.dtype import VariableLengthUTF8
 from zarr.core.group import Group
 
 from sigmf_zarr.integrity import (
+    INTEGRITY_ALGORITHM,
     INTEGRITY_ATTR,
+    INTEGRITY_VERSION,
+    calculate_array_sha512,
+    calculate_group_metadata_sha512,
+    integrity_is_supported,
 )
 from sigmf_zarr.json import (
     JSONObject,
@@ -1359,6 +1364,22 @@ class SigMFRecording:
         value = self.integrity.get(self._INTEGRITY_METADATA_FIELD)
         return value if isinstance(value, str) else None
 
+    def _set_integrity_hash(self, field: str, value: str) -> None:
+        """Store one internal integrity hash.
+
+        Args:
+            field: Integrity object field to set.
+            value: Lowercase SHA-512 digest.
+        """
+        integrity = dict(self.integrity)
+        integrity.update(
+            {
+                "algorithm": INTEGRITY_ALGORITHM,
+                "version": INTEGRITY_VERSION,
+                field: value,
+            }
+        )
+        self._raw_group.attrs[INTEGRITY_ATTR] = integrity
 
     def _invalidate_integrity(
         self,
@@ -1488,6 +1509,27 @@ class SigMFRecording:
             )
         return None
 
+    def _invalid_index_reason(self) -> str | None:
+        """Return the reason that any recording index is invalid.
+
+        Returns:
+            Error message for the first invalid index, or ``None``.
+        """
+        for index_name, index in sorted(
+            self._indexes_group.members(max_depth=None)
+        ):
+            if not isinstance(index, Array):
+                continue
+            if index.attrs.get(self._INDEX_VALID_FIELD, True) is not True:
+                reason = index.attrs.get(
+                    self._INDEX_INVALID_REASON_FIELD,
+                    "unknown reason",
+                )
+                return f"Index {index_name!r} is invalid: {reason}"
+            error = self._index_structure_error(index_name, index)
+            if error is not None:
+                return error
+        return None
 
     @contextmanager
     def mutate_samples(self) -> Generator[Array, None, None]:
@@ -1576,6 +1618,64 @@ class SigMFRecording:
         # removes the fail-safe invalid marker only after alignment is proven.
         self._validate_mutated_index(index_name, index)
 
+    def calculate_sample_sha512(self) -> str:
+        """Calculate the internal hash of the logical sample array.
+
+        Returns:
+            Lowercase SHA-512 hexadecimal digest.
+        """
+        return calculate_array_sha512(self._samples_array)
+
+    def calculate_metadata_sha512(self) -> str:
+        """Calculate the internal hash of logical recording metadata.
+
+        The sample array descriptor is included, but its values are covered by
+        :meth:`calculate_sample_sha512` and omitted here.
+
+        Returns:
+            Lowercase SHA-512 hexadecimal digest.
+        """
+        # Sample values have a separate digest. Including them here would make
+        # every sample mutation require two full-array hashes.
+        return calculate_group_metadata_sha512(
+            self._raw_group,
+            exclude_array_values=frozenset({"samples"}),
+        )
+
+    def update_integrity(self) -> JSONObject:
+        """Calculate and store current internal sample and metadata hashes.
+
+        Returns:
+            Updated integrity metadata object.
+        """
+        invalid_index = self._invalid_index_reason()
+        if invalid_index is not None:
+            raise ValueError(
+                f"Cannot update recording integrity: {invalid_index}"
+            )
+        sample_hash = self.calculate_sample_sha512()
+        self._set_integrity_hash(self._INTEGRITY_SAMPLE_FIELD, sample_hash)
+        metadata_hash = self.calculate_metadata_sha512()
+        self._set_integrity_hash(
+            self._INTEGRITY_METADATA_FIELD,
+            metadata_hash,
+        )
+        return self.integrity
+
+    def verify_integrity(self) -> bool:
+        """Verify both internal recording hashes.
+
+        Returns:
+            True only when both hashes are present and match current content.
+        """
+        return (
+            integrity_is_supported(self.integrity)
+            and self._invalid_index_reason() is None
+            and self.sample_sha512 is not None
+            and self.metadata_sha512 is not None
+            and self.sample_sha512 == self.calculate_sample_sha512()
+            and self.metadata_sha512 == self.calculate_metadata_sha512()
+        )
 
     @property
     def sha512(self) -> str | None:
