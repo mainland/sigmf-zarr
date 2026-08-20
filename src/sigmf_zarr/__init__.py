@@ -5,6 +5,8 @@ from importlib.metadata import PackageNotFoundError, version
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
 from sigmf_zarr.sigmf import (
     calculate_sha512,
+    export_sigmf,
+    import_sigmf,
     verify_sha512,
 )
 from sigmf_zarr.store import (
@@ -25,6 +27,8 @@ __all__ = [
     "ReadOnlyArray",
     "ReadOnlyGroup",
     "calculate_sha512",
+    "export_sigmf",
+    "import_sigmf",
     "verify_sha512",
 ]
 
