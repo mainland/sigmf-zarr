@@ -69,5 +69,5 @@ complete.
 
 ### Command line
 
-- Provide the `sigmf-zarr` command for store inspection, validation,
-  integrity updates, and SigMF interchange.
+- Provide the `sigmf-zarr` command for store inspection, validation, integrity
+  updates, SigMF interchange, and dataset import.

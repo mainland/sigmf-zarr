@@ -1158,7 +1158,7 @@ def test_recording_add_index_records_axis_metadata(tmp_path: Path) -> None:
         "snr_db",
         np.array([0, 2, 4], dtype=np.int16),
         axis="item",
-        field="example:snr",
+        field="radioml:snr",
         unit="dB",
     )
 
@@ -1168,7 +1168,7 @@ def test_recording_add_index_records_axis_metadata(tmp_path: Path) -> None:
     )
     assert dict(index.attrs) == {
         "axis": "item",
-        "field": "example:snr",
+        "field": "radioml:snr",
         "kind": "metadata",
         "unit": "dB",
     }
@@ -1193,13 +1193,13 @@ def test_recording_add_index_stores_label_metadata(tmp_path: Path) -> None:
         "mod_class_id",
         np.array([0, 1], dtype=np.int16),
         axis="item",
-        field="example:mod_class",
+        field="radioml:mod_class",
         labels=["AM-DSB", "BPSK"],
     )
 
     assert dict(index.attrs) == {
         "axis": "item",
-        "field": "example:mod_class",
+        "field": "radioml:mod_class",
         "kind": "metadata",
         "labels": ["AM-DSB", "BPSK"],
     }
@@ -1227,7 +1227,7 @@ def test_recording_add_index_rejects_axis_length_mismatch(
             "snr_db",
             np.array([0, 2], dtype=np.int16),
             axis="time",
-            field="example:snr",
+            field="radioml:snr",
         )
 
 

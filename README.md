@@ -7,6 +7,7 @@ typed Zarr arrays for sample data and related recording metadata.
 ## Documentation
 
 - [Usage](docs/usage.md)
+- [RadioML](docs/radioml.md)
 - [Format model](docs/format.md)
 - [Development](docs/development.md)
 - [API reference](docs/api.md)
@@ -58,6 +59,9 @@ Version 1.0.0a1 is an alpha of the initial format draft. The storage format and
 Python API may change incompatibly until the initial draft is complete. See the
 [changelog](CHANGELOG.md) and the normative
 [`sigmf-zarr` extension](docs/sigmf-zarr.sigmf-ext.md).
+
+RadioML 2016 uses Python pickle input. Only import pickle files obtained from a
+trusted source because loading a malicious pickle can execute code.
 
 ## Project information
 

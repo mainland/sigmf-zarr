@@ -8,6 +8,8 @@ from typing import Literal, cast, get_args
 
 from sigmf_zarr import SigMFZarrStore
 from sigmf_zarr.cli import Command, CommandGroup, ImportCommand, StoreContext
+from sigmf_zarr.cli.import_radioml2016 import ImportRadioML2016Command
+from sigmf_zarr.cli.import_radioml2018 import ImportRadioML2018Command
 from sigmf_zarr.cli.store import StoreCommand
 from sigmf_zarr.sigmf import (
     export_sigmf,
@@ -256,7 +258,11 @@ class ImportGroup(CommandGroup):
         """Initialize the import command group."""
         super().__init__(
             "Import a supported dataset into a SigMF-Zarr store.",
-            (ImportSigMFCommand(),),
+            (
+                ImportSigMFCommand(),
+                ImportRadioML2016Command(),
+                ImportRadioML2018Command(),
+            ),
             destination="import_name",
         )
 

@@ -46,6 +46,9 @@ napoleon_preprocess_types = True
 
 # Each entry is a reference that cannot resolve, grouped by cause.
 nitpick_ignore = [
+    # NumPy documents its scalar types as attributes, not classes.
+    ("py:class", "numpy.float32"),
+    ("py:class", "numpy.int16"),
     # zarr does not document these configuration types and aliases.
     ("py:class", "zarr.core.array.CompressorLike"),
     ("py:class", "zarr.core.array.CompressorsLike"),

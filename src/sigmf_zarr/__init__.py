@@ -11,6 +11,7 @@ from sigmf_zarr.radioml2016 import (
     import_radioml2016_dataset,
 )
 from sigmf_zarr.radioml2018 import (
+    RADIOML2018_MODULATION_CLASSES,
     import_radioml2018_dataset,
 )
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
@@ -36,6 +37,7 @@ from sigmf_zarr.validation import (
 )
 
 __all__ = [
+    "RADIOML2018_MODULATION_CLASSES",
     "ChecksumName",
     "RadioML2016Dict",
     "RadioML2016Key",
