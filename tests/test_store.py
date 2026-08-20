@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from numcodecs import CRC32C, Blosc
-from zarr.codecs import BloscCodec
+from zarr.codecs import BloscCodec, VLenUTF8Codec
 
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore
 
@@ -650,6 +650,105 @@ def test_append_samples_rejects_unbatched_non_time_axis_change(
         raise AssertionError("Expected non-time axis resize to fail")
 
 
+def test_recording_add_index_records_axis_metadata(tmp_path) -> None:
+    """Recording indexes should describe the metadata they materialize.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=True,
+        sample_shape=(2, 8),
+    )
+    recording.append_samples(np.zeros((3, 2, 8), dtype=np.float32))
+
+    index = recording.add_index(
+        "snr_db",
+        np.array([0, 2, 4], dtype=np.int16),
+        axis="item",
+        field="example:snr",
+        unit="dB",
+    )
+
+    np.testing.assert_array_equal(
+        index[:],
+        np.array([0, 2, 4], dtype=np.int16),
+    )
+    assert dict(index.attrs) == {
+        "axis": "item",
+        "field": "example:snr",
+        "kind": "metadata",
+        "unit": "dB",
+    }
+    np.testing.assert_array_equal(recording.index("snr_db")[:], index[:])
+
+
+def test_recording_add_index_stores_label_metadata(tmp_path) -> None:
+    """Recording indexes should support label lookup metadata.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(np.zeros((2, 2, 4), dtype=np.float32))
+
+    index = recording.add_index(
+        "mod_class_id",
+        np.array([0, 1], dtype=np.int16),
+        axis="item",
+        field="example:mod_class",
+        labels=["AM-DSB", "BPSK"],
+    )
+
+    assert dict(index.attrs) == {
+        "axis": "item",
+        "field": "example:mod_class",
+        "kind": "metadata",
+        "labels": ["AM-DSB", "BPSK"],
+    }
+
+
+def test_recording_add_index_rejects_axis_length_mismatch(
+    tmp_path,
+) -> None:
+    """Recording indexes should match the indexed axis length.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+
+    Raises:
+        AssertionError: If mismatched index length is accepted.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=False,
+        sample_shape=(2, 8),
+    )
+
+    try:
+        recording.add_index(
+            "snr_db",
+            np.array([0, 2], dtype=np.int16),
+            axis="time",
+            field="example:snr",
+        )
+    except ValueError as exc:
+        assert "does not match axis 'time' length 8" in str(exc)
+    else:
+        raise AssertionError("Expected mismatched index length to fail")
+
+
 def test_recording_open_rejects_invalid_sample_axes(tmp_path) -> None:
     """Opening should reject invalid sample-axis metadata.
 
@@ -831,3 +930,227 @@ def test_recording_open_rejects_invalid_sample_shape_rank(tmp_path) -> None:
         assert "same length as sample_shape" in str(exc)
     else:
         raise AssertionError("Expected invalid sample shape to fail open")
+
+
+def test_create_array_uses_utf8_serializer_for_unicode_data() -> None:
+    """Unicode arrays should be normalized for UTF-8-backed storage."""
+
+    class FakeStore:
+        def __init__(self) -> None:
+            """Initialize a fake store."""
+            self.created: dict[str, object] | None = None
+
+        @staticmethod
+        def default_index_chunks(num_values: int) -> tuple[int]:
+            """Choose fake index chunks.
+
+            Args:
+                num_values: Number of index values.
+
+            Returns:
+                One-dimensional chunk shape.
+            """
+            return (min(4096, max(1, num_values)),)
+
+        def create_array(
+            self,
+            group: object,
+            name: str,
+            data: object,
+            *,
+            overwrite: bool,
+            chunks: tuple[int, ...] | None = None,
+            shards: object = None,
+            compressors: object = "auto",
+            compressor: object = "auto",
+            serializer: object = "auto",
+        ) -> dict[str, object]:
+            """Create a fake array.
+
+            Args:
+                group: Parent group placeholder.
+                name: Array name.
+                data: Array data.
+                overwrite: Whether replacement is allowed.
+                chunks: Optional chunk shape.
+                shards: Optional shard shape.
+                compressors: Optional compressors configuration.
+                compressor: Optional single-compressor configuration.
+                serializer: Optional serializer configuration.
+
+            Returns:
+                Created array details.
+            """
+            del group, overwrite, shards, compressors, compressor
+            value_array = np.asarray(data)
+            if value_array.dtype.kind in {"U", "O"} and serializer == "auto":
+                value_array = value_array.astype(str).astype(object)
+                serializer = VLenUTF8Codec()
+            self.created = {
+                "name": name,
+                "data": value_array,
+                "chunks": chunks
+                or self.default_index_chunks(len(value_array)),
+                "serializer": serializer,
+            }
+            return self.created
+
+    recording = object.__new__(SigMFRecording)
+    recording._store = FakeStore()
+
+    created = recording._create_array(
+        object(),
+        "labels",
+        np.array(["AM-DSB", "BPSK"]),
+        overwrite=False,
+    )
+
+    assert isinstance(created["serializer"], VLenUTF8Codec)
+    assert np.asarray(created["data"]).dtype.kind == "O"
+    np.testing.assert_array_equal(
+        np.asarray(created["data"], dtype=object),
+        np.array(["AM-DSB", "BPSK"], dtype=object),
+    )
+
+
+def test_create_array_normalizes_object_arrays_to_strings() -> None:
+    """Object arrays of strings should be normalized before creation."""
+
+    class FakeStore:
+        def __init__(self) -> None:
+            """Initialize a fake store."""
+            self.created: dict[str, object] | None = None
+
+        @staticmethod
+        def default_index_chunks(num_values: int) -> tuple[int]:
+            """Choose fake index chunks.
+
+            Args:
+                num_values: Number of index values.
+
+            Returns:
+                One-dimensional chunk shape.
+            """
+            return (min(4096, max(1, num_values)),)
+
+        def create_array(
+            self,
+            group: object,
+            name: str,
+            data: object,
+            *,
+            overwrite: bool,
+            chunks: tuple[int, ...] | None = None,
+            shards: object = None,
+            compressors: object = "auto",
+            compressor: object = "auto",
+            serializer: object = "auto",
+        ) -> dict[str, object]:
+            """Create a fake array.
+
+            Args:
+                group: Parent group placeholder.
+                name: Array name.
+                data: Array data.
+                overwrite: Whether replacement is allowed.
+                chunks: Optional chunk shape.
+                shards: Optional shard shape.
+                compressors: Optional compressors configuration.
+                compressor: Optional single-compressor configuration.
+                serializer: Optional serializer configuration.
+
+            Returns:
+                Created array details.
+            """
+            del group, overwrite, shards, compressors, compressor
+            value_array = np.asarray(data)
+            if value_array.dtype.kind in {"U", "O"} and serializer == "auto":
+                value_array = value_array.astype(str).astype(object)
+                serializer = VLenUTF8Codec()
+            self.created = {
+                "name": name,
+                "data": value_array,
+                "chunks": chunks
+                or self.default_index_chunks(len(value_array)),
+                "serializer": serializer,
+            }
+            return self.created
+
+    recording = object.__new__(SigMFRecording)
+    recording._store = FakeStore()
+
+    created = recording._create_array(
+        object(),
+        "labels",
+        np.array(["AM-DSB", "BPSK"], dtype=object),
+        overwrite=False,
+    )
+
+    assert isinstance(created["serializer"], VLenUTF8Codec)
+    assert np.asarray(created["data"]).dtype.kind == "O"
+    np.testing.assert_array_equal(
+        np.asarray(created["data"], dtype=object),
+        np.array(["AM-DSB", "BPSK"], dtype=object),
+    )
+
+
+def test_add_index_reuses_shared_array_creation_for_strings() -> None:
+    """String indexes should use the shared string-normalization path."""
+
+    class FakeGroup:
+        def __contains__(self, name: object) -> bool:
+            """Return whether a fake member exists.
+
+            Args:
+                name: Candidate member name.
+
+            Returns:
+                Always false for this fake.
+            """
+            del name
+            return False
+
+        def create_array(
+            self,
+            name: str,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            """Create a fake array.
+
+            Args:
+                name: Array name.
+                **kwargs: Array creation options.
+
+            Returns:
+                Created array details.
+            """
+            return {"name": name, **kwargs}
+
+        def require_group(self, name: str) -> FakeGroup:
+            """Return this fake group.
+
+            Args:
+                name: Required group name.
+
+            Returns:
+                This fake group.
+            """
+            del name
+            return self
+
+    store = object.__new__(SigMFZarrStore)
+    store._group = type(
+        "RootGroup",
+        (),
+        {
+            "metadata": type("Metadata", (), {"zarr_format": 3})(),
+            "__getitem__": lambda self, key: FakeGroup(),
+        },
+    )()
+
+    created = store.add_index("labels", np.array(["AM-DSB", "BPSK"]))
+
+    assert isinstance(created["serializer"], VLenUTF8Codec)
+    assert created["shape"] == (2,)
+    assert np.asarray(created[slice(None)]).dtype.kind == "O"
+    assert created["chunks"] == (2,)
