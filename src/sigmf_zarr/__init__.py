@@ -6,6 +6,8 @@ from sigmf_zarr.provenance import capture_inputs, verify_inputs
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
 from sigmf_zarr.sigmf import (
     calculate_sha512,
+    export_sigmf,
+    import_sigmf,
     verify_sha512,
 )
 from sigmf_zarr.store import (
@@ -27,6 +29,8 @@ __all__ = [
     "ReadOnlyGroup",
     "calculate_sha512",
     "capture_inputs",
+    "export_sigmf",
+    "import_sigmf",
     "verify_sha512",
     "verify_inputs",
 ]
