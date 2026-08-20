@@ -699,6 +699,43 @@ def test_item_metadata_entry_and_slice_setters(tmp_path) -> None:
     }
 
 
+def test_item_metadata_setters_validate_before_mutation(tmp_path) -> None:
+    """Rejected setter values should not change content or integrity.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+
+    Raises:
+        AssertionError: If invalid metadata changes the recording.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=True,
+        sample_shape=(2, 4),
+    )
+    recording.append_samples(
+        np.zeros((2, 2, 4), dtype=np.float32),
+        item_metadata=[None, None],
+    )
+    store.update_integrity()
+    integrity = recording.integrity
+
+    try:
+        recording.set_item_metadata_entry(
+            0,
+            {"global": {"sigmf-zarr:dtype": "<i2"}},
+        )
+    except ValueError as exc:
+        assert "cannot override storage fields" in str(exc)
+    else:
+        raise AssertionError("Expected invalid item metadata to fail")
+
+    assert recording.get_item_metadata(0) == {}
+    assert recording.integrity == integrity
+
+
 def test_item_metadata_slice_setter_validates_selection(tmp_path) -> None:
     """Slice updates should require contiguous, correctly sized values.
 

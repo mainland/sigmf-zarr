@@ -14,6 +14,8 @@ import numpy.typing as npt
 from zarr.core.array import Array
 from zarr.core.group import Group
 
+from sigmf_zarr.readonly import ReadOnlyArray
+
 INTEGRITY_ATTR = "integrity"
 """Group attribute containing SigMF-Zarr-native integrity hashes."""
 
@@ -85,7 +87,9 @@ def _canonical_dtype(dtype: object) -> str:
     return str(numpy_dtype.str)
 
 
-def _iter_array_blocks(array: Array) -> Iterator[npt.NDArray[Any]]:
+def _iter_array_blocks(
+    array: Array | ReadOnlyArray | npt.NDArray[Any],
+) -> Iterator[npt.NDArray[Any]]:
     """Yield array values in bounded C-order blocks.
 
     Args:
@@ -166,15 +170,17 @@ def _update_array_values(
         digest.update(encoded)
 
 
-def calculate_array_sha512(array: Array) -> str:
-    """Hash one logical Zarr array independently of chunk encoding.
+def calculate_array_sha512(
+    array: Array | ReadOnlyArray | npt.NDArray[Any],
+) -> str:
+    """Hash one logical array independently of chunk encoding.
 
     The digest includes logical shape and dtype, then values in C order.
     Numeric values use little-endian bytes so the result is independent of
     host byte order and physical Zarr format.
 
     Args:
-        array: Zarr array to hash.
+        array: Zarr, read-only, or NumPy array to hash.
 
     Returns:
         Lowercase SHA-512 hexadecimal digest.

@@ -27,7 +27,11 @@ from zarr.core.group import Group
 from zarr.storage import StoreLike
 
 from sigmf_zarr.integrity import (
+    INTEGRITY_ALGORITHM,
     INTEGRITY_ATTR,
+    INTEGRITY_VERSION,
+    calculate_group_metadata_sha512,
+    integrity_is_supported,
 )
 from sigmf_zarr.json import JSONObject
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
@@ -471,6 +475,80 @@ class SigMFZarrStore:
         if attrs is not None and INTEGRITY_ATTR in attrs:
             del attrs[INTEGRITY_ATTR]
 
+    def calculate_metadata_sha512(self) -> str:
+        """Calculate a hash of all logical metadata in the store.
+
+        Sample array descriptors are included, while sample values are covered
+        by each recording's internal sample hash.
+
+        Returns:
+            Lowercase SHA-512 hexadecimal digest.
+        """
+        excluded_samples = frozenset(
+            f"recordings/{name}/samples" for name in self.list_recordings()
+        )
+        return calculate_group_metadata_sha512(
+            self._group,
+            exclude_array_values=excluded_samples,
+        )
+
+    def update_integrity(self) -> JSONObject:
+        """Calculate and store all recording, collection, and store hashes.
+
+        Returns:
+            Updated store integrity metadata object.
+        """
+        for recording in self.recordings.values():
+            recording.update_integrity()
+        for collection in self.collections.values():
+            collection.update_integrity()
+        return self.update_metadata_integrity()
+
+    def update_metadata_integrity(self) -> JSONObject:
+        """Calculate and store the current store-wide metadata hash.
+
+        Returns:
+            Updated store integrity metadata object.
+
+        Raises:
+            ValueError: If a store-wide index is invalid.
+        """
+        invalid_index = self._invalid_store_index_reason()
+        if invalid_index is not None:
+            raise ValueError(
+                f"Cannot update store integrity: {invalid_index}"
+            )
+        integrity: JSONObject = {
+            "algorithm": INTEGRITY_ALGORITHM,
+            "version": INTEGRITY_VERSION,
+            self._INTEGRITY_METADATA_FIELD: (
+                self.calculate_metadata_sha512()
+            ),
+        }
+        self._group.attrs[INTEGRITY_ATTR] = integrity
+        return self.integrity
+
+    def verify_integrity(self) -> bool:
+        """Verify every stored internal integrity hash.
+
+        Returns:
+            True only when all resource hashes and the root hash are present
+            and match current logical content.
+        """
+        return (
+            integrity_is_supported(self.integrity)
+            and self._invalid_store_index_reason() is None
+            and self.metadata_sha512 is not None
+            and all(
+                recording.verify_integrity()
+                for recording in self.recordings.values()
+            )
+            and all(
+                collection.verify_integrity()
+                for collection in self.collections.values()
+            )
+            and self.metadata_sha512 == self.calculate_metadata_sha512()
+        )
 
     @classmethod
     def _required_groups_present(cls, group: Group) -> bool:
@@ -972,6 +1050,29 @@ class SigMFZarrStore:
             )
         return ReadOnlyArray(index)
 
+    def _invalid_store_index_reason(self) -> str | None:
+        """Return the reason that any store-wide index is invalid.
+
+        Returns:
+            Error message for the first invalid index, or ``None``.
+        """
+        for index_name, index in sorted(
+            self._indexes_group.members(max_depth=None)
+        ):
+            if not isinstance(index, Array):
+                continue
+            if index.attrs.get(self._INDEX_VALID_FIELD, True) is not True:
+                reason = index.attrs.get(
+                    self._INDEX_INVALID_REASON_FIELD,
+                    "unknown reason",
+                )
+                return f"Index {index_name!r} is invalid: {reason}"
+            if index.ndim != 1:
+                return (
+                    f"Index {index_name!r} must be one-dimensional, got "
+                    f"shape {index.shape}"
+                )
+        return None
 
     @contextmanager
     def mutate_index(

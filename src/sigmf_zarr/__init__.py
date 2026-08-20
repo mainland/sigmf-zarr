@@ -2,6 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
+from sigmf_zarr.provenance import capture_inputs, verify_inputs
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
 from sigmf_zarr.store import (
     ChecksumName,
@@ -20,6 +21,8 @@ __all__ = [
     "ZarrFormat",
     "ReadOnlyArray",
     "ReadOnlyGroup",
+    "capture_inputs",
+    "verify_inputs",
 ]
 
 try:
