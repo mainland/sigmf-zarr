@@ -61,6 +61,12 @@ complete.
   Preserve and verify standard SigMF dataset hashes.
 - Check exported metadata against the SigMF schema before writing output.
 
+### Dataset importers
+
+- Import RadioML 2016 datasets in bounded batches.
+- Restrict RadioML pickle loading to built-in containers and real numeric
+  NumPy arrays, and reject arrays that hold more data than the file.
+
 ### Command line
 
 - Provide the `sigmf-zarr` command for store inspection, validation,
