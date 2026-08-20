@@ -93,6 +93,32 @@ def test_input_binding_rejects_invalid_index(
         verify_inputs(rec, {**binding, "indexes": []})
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_input_binding_ignores_declared_dataset_hash(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """Storing `core:sha512` must not make a binding stale.
+
+    Args:
+        tmp_path: Temporary store directory.
+        zarr_format: Physical Zarr format.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "data.zarr", zarr_format=zarr_format
+    )
+    rec = store.recordings.create(
+        "rec", batched=False, sample_shape=(8,), sample_axes=("time",)
+    )
+    rec.append_samples(np.arange(8, dtype=np.float32))
+    binding = capture_inputs(rec)
+    rec.update_sha512()
+    assert rec.sha512 is not None
+    assert verify_inputs(rec, binding)
+    assert capture_inputs(rec) == binding
+    rec.set_global_field("test:source", "changed")
+    assert not verify_inputs(rec, binding)
+
+
 def test_verify_inputs_rejects_malformed_bindings(tmp_path: Path) -> None:
     """Bindings that capture_inputs() cannot return must raise ValueError.
 

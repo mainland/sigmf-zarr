@@ -433,10 +433,20 @@ recording = store.recordings.create(
 )
 ```
 
-`set_samples()` and `append_samples()` automatically remove a stored
-`core:sha512` digest. Public sample views are read-only. Use a mutation context
-for same-shape value updates. It invalidates hashes before granting writable
-access:
+For an unbatched recording, calculate or verify standard SigMF
+`core:sha512` over the exact `.sigmf-data` byte stream that export would
+produce:
+
+```python
+digest = recording.calculate_sha512()  # Does not change metadata.
+recording.update_sha512()              # Stores core:sha512.
+assert recording.verify_sha512()
+```
+
+`set_samples()` and `append_samples()` automatically remove a stored digest.
+Public sample views are read-only. They prevent accidental mutation but are not
+a security boundary. Use a mutation context for same-shape value updates. It
+invalidates hashes before granting writable access:
 
 ```python
 replacement = np.ones(100, dtype=np.float32)
@@ -444,7 +454,9 @@ with recording.mutate_samples() as samples:
     samples[100:200] = replacement
 ```
 
-Use `set_samples()` or `append_samples()` for shape changes.
+Use `set_samples()` or `append_samples()` for shape changes. SHA-512 is a
+whole-recording portability and identity check. CRC32C remains the efficient
+per-chunk corruption check.
 
 SigMF-Zarr can additionally maintain logical SHA-512 hashes for samples and
 metadata. Unlike `core:sha512`, these native hashes describe the logical Zarr

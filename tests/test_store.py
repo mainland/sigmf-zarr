@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, cast
 
@@ -615,6 +616,72 @@ def test_set_samples_resizes_unbatched_time_axis(tmp_path: Path) -> None:
     assert reopened.sample_shape == (2, 6)
     assert reopened.sample_count == 6
     np.testing.assert_array_equal(reopened.samples[:], samples)
+
+
+def test_recording_sha512_lifecycle(tmp_path: Path) -> None:
+    """Managed mutations should invalidate whole-recording SHA-512 metadata.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=False,
+        sample_shape=(4,),
+        sample_axes=("time",),
+        global_metadata={"core:datatype": "rf32_le"},
+    )
+    samples = np.arange(4, dtype=np.float32)
+    recording.set_samples(samples)
+    expected = hashlib.sha512(samples.astype("<f4").tobytes()).hexdigest()
+
+    initial_sha512 = recording.sha512
+    assert initial_sha512 is None
+    assert recording.calculate_sha512() == expected
+    assert recording.verify_sha512() is False
+    assert recording.update_sha512() == expected
+    updated_sha512 = recording.sha512
+    assert updated_sha512 == expected
+    assert recording.verify_sha512() is True
+
+    with pytest.raises(TypeError, match="read-only"):
+        recording.samples[0] = np.float32(99.0)
+    unchanged_sha512 = recording.sha512
+    assert unchanged_sha512 == expected
+
+    with recording.mutate_samples() as writable_samples:
+        writable_samples[0] = np.float32(99.0)
+    assert recording.sha512 is None
+
+    recording.update_sha512()
+    recording.append_samples(np.array([5.0], dtype=np.float32))
+    assert recording.sha512 is None
+
+    recording.update_sha512()
+    recording.set_samples(samples)
+    assert recording.sha512 is None
+
+
+def test_datatype_change_invalidates_recording_sha512(tmp_path: Path) -> None:
+    """Changing the output byte encoding should invalidate `core:sha512`.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=False,
+        sample_shape=(4,),
+        sample_axes=("time",),
+        global_metadata={"core:datatype": "rf32_le"},
+    )
+    recording.update_sha512()
+
+    recording.set_global_field("core:datatype", "rf32_be")
+
+    assert recording.sha512 is None
 
 
 def test_set_samples_rejects_non_time_axis_resize(tmp_path: Path) -> None:
