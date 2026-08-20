@@ -601,6 +601,13 @@ no larger than the archive. Each directory can still occupy a file-system block
 and an inode, so a directory needs up to about eight times its 512-byte header
 on a file system with 4 KiB blocks.
 
+Archive import also verifies `.sigmf-collection` stream hashes against the
+referenced metadata files. A standalone `.sigmf-meta` file has no standard
+self-hash for its metadata. After a successful import, SigMF-Zarr calculates
+its own sample and metadata hashes. Export verifies any stored native hashes,
+calculates `core:sha512` from the emitted data bytes, and, for archives,
+calculates collection stream hashes from the emitted metadata bytes.
+
 For multi-channel unbatched recordings, standard SigMF export validates
 `core:num_channels` against the declared `channel` axis. If the field is
 missing and the recording has more than one channel, export fills it from the
