@@ -3,9 +3,19 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
+from sigmf_zarr.store import (
+    ChecksumName,
+    SigMFCollection,
+    SigMFZarrStore,
+    ZarrFormat,
+)
 
 __all__ = [
     "__version__",
+    "ChecksumName",
+    "SigMFCollection",
+    "SigMFZarrStore",
+    "ZarrFormat",
     "ReadOnlyArray",
     "ReadOnlyGroup",
 ]
