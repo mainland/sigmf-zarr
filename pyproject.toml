@@ -87,6 +87,7 @@ branch = true
 source = ["sigmf_zarr"]
 
 [tool.coverage.report]
+fail_under = 80
 show_missing = true
 skip_covered = true
 
@@ -184,7 +185,6 @@ dependency_groups = ["docs"]
 commands = [["sphinx-build", "-b", "linkcheck", "docs", "docs/_build/linkcheck"]]
 
 [tool.repo-review.ignore]
-GH100 = "Continuous integration is not set up yet."
 PC110 = "Ruff format runs as a local hook from .venv."
 PC140 = "Mypy runs as a local hook from .venv."
 PC170 = "The documentation is Markdown and has no reStructuredText."
