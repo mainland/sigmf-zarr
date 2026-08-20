@@ -1,0 +1,43 @@
+name: Audit
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly, so that new advisories against locked versions are reported
+    # without a code change.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.13.5"
+          enable-cache: false
+      - name: Export the locked dependencies
+        run: >-
+          uv export --locked --all-extras --all-groups --no-emit-project
+          --format requirements.txt --output-file requirements-audit.txt
+      # The lock pins CPU PyTorch with a local version label, such as
+      # 2.15.0+cpu. pip-audit skips versions that are not on PyPI, so audit
+      # the public release that each local build is made from.
+      - name: Remove local version labels
+        run: >-
+          sed -E -i 's/^([A-Za-z0-9._-]+==[^ ;+]+)\+[^ ;]+/\1/'
+          requirements-audit.txt
+      - run: >-
+          uvx pip-audit==2.10.1 --disable-pip
+          --requirement requirements-audit.txt

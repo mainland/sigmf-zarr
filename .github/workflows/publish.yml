@@ -1,0 +1,75 @@
+name: Publish release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.13.5"
+          python-version: "3.12"
+          enable-cache: false
+      - name: Build distributions
+        # Pin the build backend, which pyproject.toml gives only lower
+        # bounds for.
+        run: uv build --build-constraint .github/build-constraints.txt
+      - name: Check distribution metadata
+        run: uvx twine==7.0.0 check dist/*
+      - name: Check that the tag names the built version
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          wheels=(dist/*.whl)
+          version=$(basename "${wheels[0]}" | cut -d- -f2)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not name the built version $version."
+            exit 1
+          fi
+      - name: Check that CI passed on the tagged commit
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+            --commit "$GITHUB_SHA" --status success \
+            --json databaseId --jq length)
+          if [ "$runs" -eq 0 ]; then
+            echo "::error::No successful CI run exists for $GITHUB_SHA."
+            exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: distributions
+          path: dist/
+
+  publish:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/sigmf-zarr/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
