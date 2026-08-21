@@ -1,6 +1,12 @@
 """Top-level package for the SigMF-Zarr extension project."""
 
 from sigmf_zarr._version import __version__
+from sigmf_zarr.cspb import (
+    CSPBSignalMetadata,
+    CSPBTruth,
+    CSPBTruthRecord,
+    load_cspb_truth,
+)
 from sigmf_zarr.provenance import capture_inputs, verify_inputs
 from sigmf_zarr.radioml2016 import (
     RadioML2016Dict,
@@ -39,6 +45,9 @@ from sigmf_zarr.validation import (
 
 __all__ = [
     "RADIOML2018_MODULATION_CLASSES",
+    "CSPBSignalMetadata",
+    "CSPBTruth",
+    "CSPBTruthRecord",
     "ChecksumName",
     "RadioML2016Dict",
     "RadioML2016Key",
@@ -63,6 +72,7 @@ __all__ = [
     "import_radioml2018_dataset",
     "import_sigmf",
     "import_sigmf_archive",
+    "load_cspb_truth",
     "read_tim",
     "validate_store",
     "verify_inputs",
