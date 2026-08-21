@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import pickle
+import struct
 import warnings
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import h5py
 import numpy as np
 from zarr.codecs import BloscCodec
 
+import sigmf_zarr.cli.import_cspb as cspb_cli
 import sigmf_zarr.cli.import_radioml2016 as radioml2016_cli
 import sigmf_zarr.cli.import_radioml2018 as radioml2018_cli
 import sigmf_zarr.cli.sigmf as sigmf_cli
@@ -155,6 +157,29 @@ def test_radioml_importers_have_nested_parsers() -> None:
     assert radioml2018_args.zarr_format is None
 
 
+def test_cspb_importer_has_nested_parser() -> None:
+    """The CSPB importer should expose shared and dataset-specific options."""
+    args = sigmf_cli.SigMFCommand().build_parser().parse_args(
+        [
+            "import",
+            "cspb",
+            "batches",
+            "store.zarr",
+            "--truth-file",
+            "truth-a.txt",
+            "--truth-file",
+            "truth-b.txt",
+        ]
+    )
+
+    assert isinstance(args.command, cspb_cli.ImportCSPBCommand)
+    assert args.handler == args.command.handle
+    assert args.source == Path("batches")
+    assert args.recording_name == "cspb"
+    assert args.zarr_format is None
+    assert args.truth_file == [Path("truth-a.txt"), Path("truth-b.txt")]
+
+
 def test_import_commands_share_import_base() -> None:
     """All concrete importers should inherit shared import behavior."""
     assert issubclass(sigmf_cli.ImportSigMFCommand, ImportCommand)
@@ -166,6 +191,7 @@ def test_import_commands_share_import_base() -> None:
         radioml2018_cli.ImportRadioML2018Command,
         ImportCommand,
     )
+    assert issubclass(cspb_cli.ImportCSPBCommand, ImportCommand)
 
 
 def test_import_parsers_accept_zarr_format_2() -> None:
@@ -183,9 +209,40 @@ def test_import_parsers_accept_zarr_format_2() -> None:
         .build_parser()
         .parse_args(["input.hdf5", "store.zarr", "--zarr-format", "2"])
     )
+    cspb_args = cspb_cli.ImportCSPBCommand().build_parser().parse_args(
+        ["batch.zip", "store.zarr", "--zarr-format", "2"]
+    )
+
     assert sigmf_args.zarr_format == 2
     assert radioml2016_args.zarr_format == 2
     assert radioml2018_args.zarr_format == 2
+    assert cspb_args.zarr_format == 2
+
+
+def test_cspb_command_auto_detects_existing_zarr_format_2(
+    tmp_path,
+) -> None:
+    """The CSPB command should preserve an existing format-2 store.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    source_path = tmp_path / "signal_1.tim"
+    store_path = tmp_path / "store-v2.zarr"
+    components = np.array([1.0, 2.0, 3.0, 4.0], dtype="<f4")
+    source_path.write_bytes(
+        struct.pack("<ii", 2, 2) + components.tobytes()
+    )
+    SigMFZarrStore.create(store_path, zarr_format=2)
+
+    status = sigmf_cli.SigMFCommand().run(
+        ["import", "cspb", str(source_path), str(store_path)]
+    )
+
+    store = SigMFZarrStore.open(store_path)
+    assert status == 0
+    assert store.zarr_format == 2
+    assert store.recordings["cspb"].samples.shape == (1, 2, 2)
 
 
 def test_radioml2016_command_auto_detects_existing_zarr_format_2(

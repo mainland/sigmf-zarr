@@ -97,6 +97,17 @@ sigmf-zarr import radioml2018 \
 See [RadioML](radioml.md) for dataset-specific behavior, class ordering, CLI
 options, and Python examples.
 
+Import Chad Spooner's CSPB `.tim` files or ZIP batches:
+
+```bash
+sigmf-zarr import cspb CSPB.ML.2018R2 cspb.zarr \
+  --truth-file signal_record_C_2023.txt \
+  --source-dataset CSPB.ML.2018R2
+```
+
+See [Chad Spooner CSPB Datasets](cspb.md) for the `.tim` encoding, supported
+truth layouts, ZIP handling, indexes, and Python API.
+
 Export one unbatched recording back to standard SigMF:
 
 ```bash
