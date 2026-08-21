@@ -11,7 +11,6 @@ from sigmf_zarr.radioml2016 import (
     import_radioml2016_dataset,
 )
 from sigmf_zarr.radioml2018 import (
-    RADIOML2018_MODULATION_CLASSES,
     import_radioml2018_dataset,
 )
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
@@ -30,6 +29,7 @@ from sigmf_zarr.store import (
     SigMFZarrStore,
     ZarrFormat,
 )
+from sigmf_zarr.tim import decode_tim, read_tim
 from sigmf_zarr.validation import (
     ValidationIssue,
     ValidationReport,
@@ -43,7 +43,6 @@ __all__ = [
     "SigMFRecording",
     "SigMFZarrStore",
     "ZarrFormat",
-    "RADIOML2018_MODULATION_CLASSES",
     "RadioML2016Dict",
     "RadioML2016Key",
     "RadioML2016Value",
@@ -51,6 +50,7 @@ __all__ = [
     "ReadOnlyGroup",
     "as_radioml2016_dict",
     "calculate_sha512",
+    "decode_tim",
     "export_sigmf",
     "export_sigmf_archive",
     "flatten_radioml2016_dataset",
@@ -58,6 +58,7 @@ __all__ = [
     "import_sigmf_archive",
     "import_radioml2016_dataset",
     "import_radioml2018_dataset",
+    "read_tim",
     "verify_sha512",
     "ValidationIssue",
     "ValidationReport",
