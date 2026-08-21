@@ -97,6 +97,7 @@ jobs:
           .venv/bin/sigmf-zarr --version
           .venv/bin/sigmf-zarr import radioml2016 --help
           .venv/bin/sigmf-zarr import radioml2018 --help
+          .venv/bin/sigmf-zarr import cspb --help
       - uses: actions/upload-artifact@v4
         with:
           name: distributions

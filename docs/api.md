@@ -62,6 +62,22 @@
    :undoc-members:
 ```
 
+## CSPB datasets and TIM files
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.tim
+   :members:
+   :undoc-members:
+
+.. automodule:: sigmf_zarr.cspb
+   :members:
+   :undoc-members:
+
+.. automodule:: sigmf_zarr.cli.import_cspb
+   :members:
+   :undoc-members:
+```
+
 ## CLI
 
 ```{eval-rst}

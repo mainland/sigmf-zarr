@@ -12,7 +12,7 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
   item-metadata model.
 - Support physical Zarr formats 2 and 3 through zarr-python 3.
 - Import and export standard SigMF recordings and archives.
-- Import RadioML 2016 and RadioML 2018 datasets.
+- Import RadioML 2016, RadioML 2018, and Chad Spooner CSPB datasets.
 - Preserve and verify standard SigMF dataset hashes.
 - Maintain logical sample, metadata, recording, collection, and store hashes.
 - Derive per-item metadata presence from the array, protect its chunks with

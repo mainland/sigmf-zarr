@@ -3,9 +3,12 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from sigmf_zarr.cspb import (
+    CSPB_MODULATION_CLASSES,
     CSPBSignalMetadata,
     CSPBTruth,
     CSPBTruthRecord,
+    cspb_sample_shape,
+    import_cspb_dataset,
     load_cspb_truth,
 )
 from sigmf_zarr.radioml2016 import (
@@ -17,6 +20,7 @@ from sigmf_zarr.radioml2016 import (
     import_radioml2016_dataset,
 )
 from sigmf_zarr.radioml2018 import (
+    RADIOML2018_MODULATION_CLASSES,
     import_radioml2018_dataset,
 )
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
@@ -45,6 +49,7 @@ from sigmf_zarr.validation import (
 __all__ = [
     "__version__",
     "ChecksumName",
+    "CSPB_MODULATION_CLASSES",
     "CSPBSignalMetadata",
     "CSPBTruth",
     "CSPBTruthRecord",
@@ -52,6 +57,7 @@ __all__ = [
     "SigMFRecording",
     "SigMFZarrStore",
     "ZarrFormat",
+    "RADIOML2018_MODULATION_CLASSES",
     "RadioML2016Dict",
     "RadioML2016Key",
     "RadioML2016Value",
@@ -59,6 +65,7 @@ __all__ = [
     "ReadOnlyGroup",
     "as_radioml2016_dict",
     "calculate_sha512",
+    "cspb_sample_shape",
     "decode_tim",
     "export_sigmf",
     "export_sigmf_archive",
@@ -67,6 +74,7 @@ __all__ = [
     "import_sigmf_archive",
     "import_radioml2016_dataset",
     "import_radioml2018_dataset",
+    "import_cspb_dataset",
     "load_cspb_truth",
     "read_tim",
     "verify_sha512",
