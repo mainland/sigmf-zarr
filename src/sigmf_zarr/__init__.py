@@ -30,6 +30,7 @@ from sigmf_zarr.store import (
     SigMFZarrStore,
     ZarrFormat,
 )
+from sigmf_zarr.tim import decode_tim, read_tim
 from sigmf_zarr.validation import (
     ValidationIssue,
     ValidationReport,
@@ -54,6 +55,7 @@ __all__ = [
     "as_radioml2016_dict",
     "calculate_sha512",
     "capture_inputs",
+    "decode_tim",
     "export_sigmf",
     "export_sigmf_archive",
     "flatten_radioml2016_dataset",
@@ -61,6 +63,7 @@ __all__ = [
     "import_radioml2018_dataset",
     "import_sigmf",
     "import_sigmf_archive",
+    "read_tim",
     "validate_store",
     "verify_inputs",
     "verify_sha512",
