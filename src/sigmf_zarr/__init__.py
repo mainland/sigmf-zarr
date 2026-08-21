@@ -2,9 +2,12 @@
 
 from sigmf_zarr._version import __version__
 from sigmf_zarr.cspb import (
+    CSPB_MODULATION_CLASSES,
     CSPBSignalMetadata,
     CSPBTruth,
     CSPBTruthRecord,
+    cspb_sample_shape,
+    import_cspb_dataset,
     load_cspb_truth,
 )
 from sigmf_zarr.provenance import capture_inputs, verify_inputs
@@ -44,6 +47,7 @@ from sigmf_zarr.validation import (
 )
 
 __all__ = [
+    "CSPB_MODULATION_CLASSES",
     "RADIOML2018_MODULATION_CLASSES",
     "CSPBSignalMetadata",
     "CSPBTruth",
@@ -64,10 +68,12 @@ __all__ = [
     "as_radioml2016_dict",
     "calculate_sha512",
     "capture_inputs",
+    "cspb_sample_shape",
     "decode_tim",
     "export_sigmf",
     "export_sigmf_archive",
     "flatten_radioml2016_dataset",
+    "import_cspb_dataset",
     "import_radioml2016_dataset",
     "import_radioml2018_dataset",
     "import_sigmf",
