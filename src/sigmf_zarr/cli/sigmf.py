@@ -9,18 +9,23 @@ from typing import Literal, cast, get_args
 from sigmf_zarr import SigMFZarrStore
 from sigmf_zarr._text import escape_text
 from sigmf_zarr.cli import Command, CommandGroup, ImportCommand, StoreContext
+from sigmf_zarr.cli.export import (
+    EXPORT_OPTIONS,
+    add_export_arguments,
+    add_recording_export_arguments,
+    export_archive,
+    export_recording,
+)
 from sigmf_zarr.cli.import_cspb import ImportCSPBCommand
 from sigmf_zarr.cli.import_radioml2016 import ImportRadioML2016Command
 from sigmf_zarr.cli.import_radioml2018 import ImportRadioML2018Command
+from sigmf_zarr.cli.output import print_text
 from sigmf_zarr.cli.store import (
     StoreCommand,
+    require_collection,
+    require_recording,
 )
-from sigmf_zarr.sigmf import (
-    export_sigmf,
-    export_sigmf_archive,
-    import_sigmf,
-    import_sigmf_archive,
-)
+from sigmf_zarr.sigmf import import_sigmf, import_sigmf_archive
 
 ImportFormat = Literal["auto", "sigmf", "sigmf-archive"]
 """Supported import format selectors."""
@@ -196,6 +201,7 @@ class ExportCommand(Command):
 
     name = "export"
     help = "Export SigMF-Zarr recordings to standard SigMF files"
+    parameter_options = EXPORT_OPTIONS
 
     def __init__(self) -> None:
         """Initialize the export command."""
@@ -214,10 +220,8 @@ class ExportCommand(Command):
             "store",
             help="Input SigMF-Zarr store path or URL.",
         )
-        parser.add_argument(
-            "output",
-            type=Path,
-            help="Output SigMF path or archive.",
+        add_export_arguments(
+            parser, output_help="Output SigMF path or archive."
         )
         parser.add_argument(
             "--archive",
@@ -239,23 +243,12 @@ class ExportCommand(Command):
         )
         parser.add_argument(
             "--collection-name",
-            help="Optional collection name to include in an archive export.",
+            help=(
+                "Collection to include in an archive export. Without "
+                "--recording, the archive contains its recordings."
+            ),
         )
-        parser.add_argument(
-            "--overwrite",
-            action="store_true",
-            help="Replace existing target files.",
-        )
-        parser.add_argument(
-            "--force",
-            action="store_true",
-            help="Export even when sample-indexed metadata appears stale.",
-        )
-        parser.add_argument(
-            "--compact",
-            action="store_true",
-            help="Write compact JSON instead of pretty-printed metadata.",
-        )
+        add_recording_export_arguments(parser)
 
     def validate_arguments(
         self,
@@ -313,39 +306,31 @@ class ExportCommand(Command):
 
         Raises:
             SystemExit: If a single-recording export omits
-                `--recording-name`.
+                `--recording-name`, or options do not apply to the selected
+                export kind.
         """
         store = SigMFZarrStore.open(args.store)
-        pretty = not args.compact
 
         if args.archive:
-            archive_path = export_sigmf_archive(
+            for name in args.recording_names or ():
+                require_recording(store, name)
+            if args.collection_name is not None:
+                require_collection(store, args.collection_name)
+            if args.item_index is not None:
+                raise SystemExit("--item-index cannot be used with --archive")
+            archive_path = export_archive(
                 store,
-                args.output,
+                args,
                 recording_names=args.recording_names,
                 collection_name=args.collection_name,
-                overwrite=args.overwrite,
-                pretty=pretty,
-                force=args.force,
             )
-            print(f"exported archive: {archive_path}")
+            print_text(f"exported archive: {escape_text(str(archive_path))}")
             return 0
 
-        if args.recording_name is None:
-            raise SystemExit(
-                "--recording-name is required unless --archive is used"
-            )
-
-        meta_path = export_sigmf(
-            store,
-            args.recording_name,
-            args.output,
-            overwrite=args.overwrite,
-            pretty=pretty,
-            force=args.force,
-        )
-        print(f"exported recording: {meta_path}")
-        return 0
+        require_recording(store, args.recording_name)
+        status, text, _ = export_recording(store, args.recording_name, args)
+        print_text(text)
+        return status
 
 
 class ImportGroup(CommandGroup):

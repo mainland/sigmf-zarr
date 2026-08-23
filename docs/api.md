@@ -124,6 +124,10 @@
    :members:
    :undoc-members:
 
+.. automodule:: sigmf_zarr.cli.export
+   :members:
+   :undoc-members:
+
 .. automodule:: sigmf_zarr.cli.sigmf
    :members:
    :undoc-members:

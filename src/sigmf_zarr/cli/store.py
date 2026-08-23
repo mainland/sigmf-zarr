@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
 from sigmf_zarr._text import escape_text
 from sigmf_zarr.cli.command import NotFoundError, positive_int
 from sigmf_zarr.cli.context import StoreContext
+from sigmf_zarr.cli.export import (
+    EXPORT_OPTIONS,
+    add_export_arguments,
+    add_recording_export_arguments,
+    export_archive,
+    export_recording,
+)
 from sigmf_zarr.cli.group import CommandGroup
 from sigmf_zarr.cli.output import OutputCommand
 from sigmf_zarr.readonly import ReadOnlyArray
-from sigmf_zarr.sigmf import export_sigmf, export_sigmf_archive
 from sigmf_zarr.store import SigMFCollection, SigMFRecording, SigMFZarrStore
 from sigmf_zarr.validation import validate_store
 
@@ -398,6 +403,7 @@ class RecordingExportCommand(StoreOutputCommand):
 
     name = "export"
     help = "Export the recording"
+    parameter_options = EXPORT_OPTIONS
 
     def __init__(self, context: StoreContext) -> None:
         """Initialize the recording export command.
@@ -414,22 +420,8 @@ class RecordingExportCommand(StoreOutputCommand):
             parser: Argument parser to extend.
         """
         super().add_arguments(parser)
-        parser.add_argument("output", type=Path, help="Output SigMF path.")
-        parser.add_argument(
-            "--overwrite",
-            action="store_true",
-            help="Replace existing target files.",
-        )
-        parser.add_argument(
-            "--force",
-            action="store_true",
-            help="Export even when sample-indexed metadata appears stale.",
-        )
-        parser.add_argument(
-            "--compact",
-            action="store_true",
-            help="Write compact JSON metadata.",
-        )
+        add_export_arguments(parser, output_help="Output SigMF path.")
+        add_recording_export_arguments(parser)
 
     def handle(self, args: argparse.Namespace) -> int:
         """Export one recording.
@@ -440,20 +432,10 @@ class RecordingExportCommand(StoreOutputCommand):
         Returns:
             Process exit status.
         """
-        path = export_sigmf(
-            self.context.open(args.store),
-            args.name,
-            args.output,
-            overwrite=args.overwrite,
-            pretty=not args.compact,
-            force=args.force,
-        )
-        self.write_output(
-            args,
-            text=f"exported recording: {path}",
-            value={"recording": args.name, "output": str(path)},
-        )
-        return 0
+        store = require_recording(self.context.open(args.store), args.name)
+        status, text, value = export_recording(store, args.name, args)
+        self.write_output(args, text=text, value=value)
+        return status
 
 
 class RecordingCommand(CommandGroup):
@@ -549,10 +531,11 @@ class CollectionInfoCommand(StoreOutputCommand):
 
 
 class CollectionExportCommand(StoreOutputCommand):
-    """Export one collection as a standard SigMF archive."""
+    """Export one collection and its recordings as a SigMF archive."""
 
     name = "export"
-    help = "Export the collection"
+    help = "Export the collection and its recordings"
+    parameter_options = EXPORT_OPTIONS
 
     def __init__(self, context: StoreContext) -> None:
         """Initialize the collection export command.
@@ -560,7 +543,11 @@ class CollectionExportCommand(StoreOutputCommand):
         Args:
             context: Shared store context.
         """
-        super().__init__(context, "Export one collection as a SigMF archive.")
+        super().__init__(
+            context,
+            "Export one collection and the recordings it references as a "
+            "SigMF archive.",
+        )
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         """Add archive export arguments.
@@ -569,22 +556,7 @@ class CollectionExportCommand(StoreOutputCommand):
             parser: Argument parser to extend.
         """
         super().add_arguments(parser)
-        parser.add_argument("output", type=Path, help="Output archive path.")
-        parser.add_argument(
-            "--overwrite",
-            action="store_true",
-            help="Replace an existing archive.",
-        )
-        parser.add_argument(
-            "--force",
-            action="store_true",
-            help="Export even when sample-indexed metadata appears stale.",
-        )
-        parser.add_argument(
-            "--compact",
-            action="store_true",
-            help="Write compact JSON metadata.",
-        )
+        add_export_arguments(parser, output_help="Output archive path.")
 
     def handle(self, args: argparse.Namespace) -> int:
         """Export one collection.
@@ -595,13 +567,11 @@ class CollectionExportCommand(StoreOutputCommand):
         Returns:
             Process exit status.
         """
-        path = export_sigmf_archive(
+        path = export_archive(
             require_collection(self.context.open(args.store), args.name),
-            args.output,
+            args,
+            recording_names=None,
             collection_name=args.name,
-            overwrite=args.overwrite,
-            pretty=not args.compact,
-            force=args.force,
         )
         self.write_output(
             args,
