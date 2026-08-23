@@ -17,6 +17,8 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
 - Use approximately 256 KiB logical chunks and 4 MiB physical shards for
   batched format-3 imports. Use approximately 1 MiB chunks for unbatched
   format-3 imports and 4 MiB chunks for format-2 imports.
+- Provide shared `auto`, `none`, `zstd`, `lz4`, and `lz4hc` sample compression
+  choices for every import command.
 - Import and export standard SigMF recordings and archives.
 - Preserve source recording and collection versions during interchange, and
   validate absolute sample coordinates using `core:offset`.

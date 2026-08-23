@@ -21,6 +21,11 @@ import sigmf_zarr.cli.sigmf as sigmf_cli
 import sigmf_zarr.cli.store as store_cli
 import sigmf_zarr.radioml2016 as radioml2016
 from sigmf_zarr.cli import Command, ImportCommand, positive_int
+from sigmf_zarr.cli.import_command import (
+    compression_level,
+    resolve_sample_compressor,
+    resolve_sample_shards,
+)
 from sigmf_zarr.store import SigMFZarrStore
 
 
@@ -194,6 +199,87 @@ def test_import_commands_share_import_base() -> None:
     assert issubclass(cspb_cli.ImportCSPBCommand, ImportCommand)
 
 
+def test_import_commands_share_sample_compression_options() -> None:
+    """All import parsers should support the same compression codecs."""
+    commands_and_sources = (
+        (sigmf_cli.ImportSigMFCommand(), "input.sigmf-meta"),
+        (radioml2016_cli.ImportRadioML2016Command(), "input.pkl"),
+        (radioml2018_cli.ImportRadioML2018Command(), "input.hdf5"),
+        (cspb_cli.ImportCSPBCommand(), "batch.zip"),
+    )
+
+    for command, source in commands_and_sources:
+        args = command.build_parser().parse_args(
+            [
+                source,
+                "store.zarr",
+                "--sample-compression",
+                "lz4",
+                "--sample-compression-level",
+                "4",
+            ]
+        )
+        compressor = resolve_sample_compressor(
+            args.sample_compression,
+            level=args.sample_compression_level,
+        )
+
+        assert isinstance(compressor, BloscCodec)
+        compressor_name = compressor.cname
+        assert getattr(compressor_name, "value", compressor_name) == "lz4"
+        assert compressor.clevel == 4
+
+
+def test_sample_compression_supports_lz4hc_and_auto() -> None:
+    """Compression resolution should support LZ4HC and native defaults."""
+    compressor = resolve_sample_compressor("lz4hc", level=6)
+
+    assert isinstance(compressor, BloscCodec)
+    compressor_name = compressor.cname
+    assert getattr(compressor_name, "value", compressor_name) == "lz4hc"
+    assert compressor.clevel == 6
+    assert resolve_sample_compressor("auto", level=3) == "auto"
+
+
+def test_sample_compression_can_be_disabled() -> None:
+    """Compression resolution should support uncompressed samples."""
+    assert resolve_sample_compressor("none", level=3) is None
+
+
+def test_sample_compression_rejects_unknown_codec() -> None:
+    """Compression resolution should reject unsupported codec names.
+
+    Raises:
+        AssertionError: If an unsupported codec name is accepted.
+    """
+    try:
+        resolve_sample_compressor("unsupported", level=3)
+    except ValueError as exc:
+        assert "Unsupported sample compression codec" in str(exc)
+    else:
+        raise AssertionError("Expected unsupported codec to be rejected")
+
+
+def test_compression_level_validates_blosc_range() -> None:
+    """Blosc compression levels should be integers from zero through nine.
+
+    Raises:
+        AssertionError: If an invalid compression level is accepted.
+    """
+    assert compression_level("0") == 0
+    assert compression_level("9") == 9
+
+    for value in ("invalid", "-1", "10"):
+        try:
+            compression_level(value)
+        except argparse.ArgumentTypeError:
+            pass
+        else:
+            raise AssertionError(
+                f"Expected compression level {value!r} to be rejected"
+            )
+
+
 def test_import_parsers_accept_zarr_format_2() -> None:
     """All import commands should expose format-2 store creation."""
     sigmf_args = sigmf_cli.ImportSigMFCommand().build_parser().parse_args(
@@ -221,6 +307,69 @@ def test_import_parsers_accept_zarr_format_2() -> None:
     assert radioml2018_args.no_sample_sharding is False
     assert cspb_args.zarr_format == 2
     assert cspb_args.no_sample_sharding is False
+
+
+def test_sigmf_import_passes_sample_compression(monkeypatch, capsys) -> None:
+    """The standard SigMF importer should pass compression to the API.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        capsys: Pytest capture fixture.
+    """
+    captured: dict[str, object] = {}
+
+    class FakeRecording:
+        def info(self) -> str:
+            """Return fake recording information.
+
+            Returns:
+                Recording information.
+            """
+            return "recording-info"
+
+    def fake_import_sigmf(
+        store_path: object,
+        metadata_path: Path,
+        **kwargs: object,
+    ) -> FakeRecording:
+        """Capture standard SigMF import arguments.
+
+        Args:
+            store_path: Target store path.
+            metadata_path: Source metadata path.
+            **kwargs: Import options.
+
+        Returns:
+            Fake recording.
+        """
+        captured["store_path"] = store_path
+        captured["metadata_path"] = metadata_path
+        captured.update(kwargs)
+        return FakeRecording()
+
+    monkeypatch.setattr(sigmf_cli, "import_sigmf", fake_import_sigmf)
+
+    status = sigmf_cli.SigMFCommand().run(
+        [
+            "import",
+            "sigmf",
+            "input.sigmf-meta",
+            "store.zarr",
+            "--sample-compression",
+            "lz4hc",
+            "--sample-compression-level",
+            "6",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    compressor = captured["sample_compressor"]
+    assert status == 0
+    assert isinstance(compressor, BloscCodec)
+    compressor_name = compressor.cname
+    assert getattr(compressor_name, "value", compressor_name) == "lz4hc"
+    assert compressor.clevel == 6
+    assert "recording-info" in output
 
 
 def test_cspb_command_auto_detects_existing_zarr_format_2(
@@ -719,8 +868,8 @@ def test_export_command_passes_force_to_archive_export(
     assert "exported archive: bundle.sigmf" in output
 
 
-def test_resolve_sample_shards_validates_batch_size() -> None:
-    """Shard sizing should require a positive sample batch count.
+def test_sample_shard_arguments_validate_and_resolve_batch_size() -> None:
+    """Shard sizing should validate and expand a sample batch count.
 
     Raises:
         AssertionError: If invalid shard sizing does not raise.
@@ -731,6 +880,15 @@ def test_resolve_sample_shards_validates_batch_size() -> None:
         assert "must be positive" in str(exc)
     else:
         raise AssertionError("Expected error for non-positive shard batch")
+
+    assert resolve_sample_shards(None, (2, 128), zarr_format=3) is None
+    assert resolve_sample_shards(16, (2, 128), zarr_format=3) == (16, 2, 128)
+    try:
+        resolve_sample_shards(16, (2, 128), zarr_format=2)
+    except ValueError as exc:
+        assert "requires Zarr format 3" in str(exc)
+    else:
+        raise AssertionError("Expected format-2 shard sizing to be rejected")
 
 
 def test_load_modulation_classes_supports_json(tmp_path) -> None:
