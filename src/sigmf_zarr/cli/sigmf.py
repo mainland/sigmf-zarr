@@ -218,6 +218,10 @@ class ExportCommand(Command):
         store = SigMFZarrStore.open(args.store)
 
         if args.archive:
+            if args.dry_run or args.project_index:
+                raise SystemExit(
+                    "--dry-run and --project-index require a single recording"
+                )
             if args.item_index is not None:
                 raise SystemExit("--item-index cannot be used with --archive")
             archive_path = export_archive(

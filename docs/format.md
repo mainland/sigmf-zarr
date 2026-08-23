@@ -549,6 +549,10 @@ there is nothing external to verify in that case. Export always calculates
 `core:sha512` from the emitted data bytes. Archive export calculates collection
 stream hashes from the emitted metadata bytes. If a native internal hash is
 present but stale, export fails rather than silently blessing changed content.
+Export of one batch item checks the recording `metadata_sha512` but not the
+recording `sample_sha512`, because verifying the sample hash requires reading
+every item. Chunk CRC32C checks the selected item's reads, and the exported
+`core:sha512` covers the emitted bytes.
 
 ### Canonical JSON encoding
 

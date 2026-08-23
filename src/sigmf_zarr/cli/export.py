@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
+from sigmf_zarr.export_plan import plan_sigmf_export
 from sigmf_zarr.sigmf import export_sigmf, export_sigmf_archive
 from sigmf_zarr.store import SigMFZarrStore
 
@@ -56,12 +58,23 @@ def add_recording_export_arguments(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="Export one nonnegative item position from a batch.",
     )
+    parser.add_argument(
+        "--project-index",
+        action="append",
+        default=[],
+        help="Preserve this item index and its descriptors. Repeatable.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print a verified JSON export plan without writing files.",
+    )
 
 
 def export_recording(
     store: SigMFZarrStore, recording_name: str, args: argparse.Namespace
 ) -> ExportResult:
-    """Export one recording.
+    """Export one recording, or plan the export for a dry run.
 
     Args:
         store: Source store.
@@ -69,8 +82,22 @@ def export_recording(
         args: Parsed export arguments.
 
     Returns:
-        Exit status, text, and JSON value.
+        Exit status, text, and JSON value. A dry run fails when the plan has
+        rejections, or omissions without `--allow-lossy`.
     """
+    if args.dry_run:
+        plan = plan_sigmf_export(
+            store,
+            recording_name,
+            item_index=args.item_index,
+            project_indexes=args.project_index,
+            force=args.force,
+        )
+        value = plan.as_dict()
+        status = int(
+            bool(plan.rejected or (plan.omitted and not args.allow_lossy))
+        )
+        return status, json.dumps(value, indent=2, sort_keys=True), value
     path = export_sigmf(
         store,
         recording_name,
@@ -80,6 +107,7 @@ def export_recording(
         force=args.force,
         allow_lossy=args.allow_lossy,
         item_index=args.item_index,
+        project_indexes=args.project_index,
     )
     return (
         0,

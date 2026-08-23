@@ -29,6 +29,7 @@ from sigmf.sigmffile import (
 )
 from zarr.core.array import CompressorLike, ShardsLike
 
+from sigmf_zarr.export_plan import export_omissions, project_item_indexes
 from sigmf_zarr.integrity import integrity_is_supported
 from sigmf_zarr.json import (
     JSONObject,
@@ -967,27 +968,22 @@ def _validate_import_metadata(metadata: JSONObject) -> None:
 
 
 def _check_export_loss(
-    recording: SigMFRecording, *, allow_lossy: bool
+    recording: SigMFRecording,
+    *,
+    allow_lossy: bool,
+    project_indexes: Sequence[str] = (),
 ) -> None:
     """Require explicit permission to omit native metadata structures.
 
     Args:
         recording: Source recording.
         allow_lossy: Whether omissions may be reported as warnings.
+        project_indexes: Explicit item indexes preserved in extension JSON.
 
     Raises:
         ValueError: If export would discard metadata without permission.
     """
-    omitted = []
-    if len(recording.indexes) or recording.indexes.attrs:
-        omitted.append("indexes")
-    if len(recording.extensions) or recording.extensions.attrs:
-        omitted.append("extension groups or arrays")
-    if "channel" in recording.sample_axes and any(
-        recording.channel_metadata(index)
-        for index in range(recording.num_channels)
-    ):
-        omitted.append("per-channel metadata")
+    omitted = export_omissions(recording, project_indexes)
     if not omitted:
         return
     message = "Standard SigMF export omits " + ", ".join(omitted)
@@ -1172,6 +1168,44 @@ def _project_item_metadata(
     return recording.signal(item_index).metadata
 
 
+def _validate_export_integrity(
+    recording: SigMFRecording, *, samples: bool = True
+) -> None:
+    """Check declared internal hashes before planning or publishing samples.
+
+    Args:
+        recording: Source recording.
+        samples: Whether to verify the whole-recording sample hash. Exports
+            of one batch item skip it, because the hash covers every item.
+            Chunk CRC32C checks the selected item's reads, and export
+            computes `core:sha512` from the emitted bytes.
+
+    Raises:
+        ValueError: If integrity metadata is unsupported or does not match.
+    """
+    if recording.integrity and not integrity_is_supported(recording.integrity):
+        raise ValueError(
+            "Recording uses an unsupported internal integrity algorithm or "
+            "version"
+        )
+    if (
+        samples
+        and recording.sample_sha512 is not None
+        and recording.sample_sha512 != recording.calculate_sample_sha512()
+    ):
+        raise ValueError(
+            "Recording internal sample SHA-512 does not match current data"
+        )
+    if (
+        recording.metadata_sha512 is not None
+        and recording.metadata_sha512 != recording.calculate_metadata_sha512()
+    ):
+        raise ValueError(
+            "Recording internal metadata SHA-512 does not match current "
+            "metadata"
+        )
+
+
 def _validate_sigmf_schema(sigmf_file: SigMFFile) -> None:
     """Check exported metadata against the SigMF schema before writing data.
 
@@ -1191,74 +1225,36 @@ def _validate_sigmf_schema(sigmf_file: SigMFFile) -> None:
         ) from exc
 
 
-def export_sigmf(
-    store: SigMFZarrStore,
-    recording_name: str,
-    output_path: str | PathLike[str],
+def _export_metadata(
+    recording: SigMFRecording,
     *,
-    overwrite: bool = False,
-    pretty: bool = True,
-    force: bool = False,
-    allow_lossy: bool = False,
-    item_index: int | None = None,
-) -> Path:
-    """Export one recording from a SigMF-Zarr store to standard SigMF files.
+    item_index: int | None,
+    force: bool,
+    project_indexes: Sequence[str],
+) -> JSONObject:
+    """Prepare the same metadata for preflight and actual export.
 
     Args:
-        store: Source SigMF-Zarr store.
-        recording_name: Recording name to export.
-        output_path: Target `.sigmf-meta` path or path stem. Dots in a stem
-            are retained.
-        overwrite: Whether to replace existing target files.
-        pretty: Whether to pretty-print metadata JSON.
-        force: Whether to export even when sample-indexed metadata appears
-            stale. This does not permit metadata loss.
-        allow_lossy: Whether to warn and omit native indexes, extension
-            arrays, and per-channel metadata. Defaults to rejection.
-        item_index: Nonnegative item position to export from a batch. Each
-            selected item becomes a separate standard SigMF recording.
+        recording: Source recording.
+        item_index: Optional selected batch item.
+        force: Whether stale sample spans are permitted.
+        project_indexes: Explicit indexes projected to extension JSON.
 
     Returns:
-        Written `.sigmf-meta` path.
+        Detached metadata ready for serialization.
 
     Raises:
-        ValueError: If a batch has no valid selected item, target files exist,
-            metadata cannot be preserved or violates the SigMF schema, or
-            sample coordinates are invalid.
+        ValueError: If selection, layout, or metadata is incompatible.
     """
-    recording = store.recordings.open(recording_name)
+    _validate_sigmf_sample_axes(recording.sample_axes)
     if recording.batched and item_index is None:
-        raise ValueError(
-            "Standard SigMF export only supports unbatched recordings "
-            "unless item_index is selected"
-        )
+        raise ValueError("Batched export requires item_index")
     if item_index is not None and (
         not recording.batched
         or type(item_index) is not int
         or not 0 <= item_index < len(recording)
     ):
         raise ValueError("item_index must select an existing batch item")
-    _check_export_loss(recording, allow_lossy=allow_lossy)
-    if recording.integrity and not integrity_is_supported(recording.integrity):
-        raise ValueError(
-            "Recording uses an unsupported internal integrity algorithm or "
-            "version"
-        )
-    if (
-        recording.sample_sha512 is not None
-        and recording.sample_sha512 != recording.calculate_sample_sha512()
-    ):
-        raise ValueError(
-            "Recording internal sample SHA-512 does not match current data"
-        )
-    if (
-        recording.metadata_sha512 is not None
-        and recording.metadata_sha512 != recording.calculate_metadata_sha512()
-    ):
-        raise ValueError(
-            "Recording internal metadata SHA-512 does not match current "
-            "metadata"
-        )
     projected = (
         None
         if item_index is None
@@ -1285,6 +1281,81 @@ def export_sigmf(
     }
 
     _validate_import_metadata(json_object(metadata, name="export metadata"))
+    if not isinstance(global_metadata.get("core:datatype"), str):
+        raise ValueError("Export requires a declared core:datatype")
+    return project_item_indexes(
+        recording,
+        json_object(metadata, name="export metadata"),
+        project_indexes,
+        item_index,
+    )
+
+
+def export_sigmf(
+    store: SigMFZarrStore,
+    recording_name: str,
+    output_path: str | PathLike[str],
+    *,
+    overwrite: bool = False,
+    pretty: bool = True,
+    force: bool = False,
+    allow_lossy: bool = False,
+    item_index: int | None = None,
+    project_indexes: Sequence[str] = (),
+) -> Path:
+    """Export one recording from a SigMF-Zarr store to standard SigMF files.
+
+    Args:
+        store: Source SigMF-Zarr store.
+        recording_name: Recording name to export.
+        output_path: Target `.sigmf-meta` path or path stem. Dots in a stem
+            are retained.
+        overwrite: Whether to replace existing target files.
+        pretty: Whether to pretty-print metadata JSON.
+        force: Whether to export even when sample-indexed metadata appears
+            stale. This does not permit metadata loss.
+        allow_lossy: Whether to warn and omit native indexes, extension
+            arrays, and per-channel metadata. Defaults to rejection.
+        item_index: Nonnegative item position to export from a batch. Each
+            selected item becomes a separate standard SigMF recording.
+        project_indexes: Explicit item indexes retained with their descriptors
+            in the sigmf-zarr-indexes extension.
+
+    Returns:
+        Written `.sigmf-meta` path.
+
+    Raises:
+        ValueError: If a batch has no valid selected item, target files exist,
+            metadata cannot be preserved or violates the SigMF schema,
+            sample coordinates are invalid, or a declared hash is stale.
+            Item exports check the recording metadata hash but not the
+            whole-recording sample hash.
+    """
+    recording = store.recordings.open(recording_name)
+    if recording.batched and item_index is None:
+        raise ValueError(
+            "Standard SigMF export only supports unbatched recordings "
+            "unless item_index is selected"
+        )
+    if item_index is not None and (
+        not recording.batched
+        or type(item_index) is not int
+        or not 0 <= item_index < len(recording)
+    ):
+        raise ValueError("item_index must select an existing batch item")
+    _check_export_loss(
+        recording,
+        allow_lossy=allow_lossy,
+        project_indexes=project_indexes,
+    )
+    _validate_export_integrity(recording, samples=item_index is None)
+    metadata = _export_metadata(
+        recording,
+        item_index=item_index,
+        force=force,
+        project_indexes=project_indexes,
+    )
+    global_metadata = json_object(metadata["global"], name="global")
     sigmf_file = SigMFFile(metadata=deepcopy(metadata))
     if "core:version" in global_metadata:
         sigmf_file.set_global_field(

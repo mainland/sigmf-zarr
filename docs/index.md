@@ -18,6 +18,7 @@ cspb
 format
 provenance
 sigmf-zarr.sigmf-ext
+sigmf-zarr-indexes.sigmf-ext
 development
 api
 ```

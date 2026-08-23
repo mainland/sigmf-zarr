@@ -65,12 +65,15 @@ complete.
 - Preserve exact dataset encodings, source recording and collection versions,
   and absolute sample coordinates based on `core:offset`.
 - Export explicitly selected batch items with resolved capture scopes,
-  independent timestamps, and per-item dataset hashes.
+  independent timestamps, and per-item dataset hashes. Item export checks the
+  recording metadata hash and relies on chunk CRC32C for the selected samples.
 - Reject unsupported input metadata and archive files before destination
   creation. Reject sample axes that standard SigMF cannot represent.
 - Require explicit permission, and warn, before omitting native indexes,
   extension arrays, or channel metadata during standard export.
 - Check exported metadata against the SigMF schema before writing output.
+- Plan exports without writing output, and project explicitly selected indexes
+  into the `sigmf-zarr-indexes` extension.
 - Move replaced recordings and collections to a backup during archive import
   instead of copying them.
 
