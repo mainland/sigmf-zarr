@@ -258,6 +258,7 @@ class FakeStore:
 
     recordings: FakeRecordings = field(default_factory=FakeRecordings)
     collections: FakeCollections = field(default_factory=FakeCollections)
+    zarr_format: int = 3
 
     def update_metadata_integrity(self) -> dict[str, object]:
         """Pretend to update store metadata integrity.
@@ -377,6 +378,25 @@ def test_import_sigmf_can_create_zarr_format_2(tmp_path) -> None:
 
     assert sigmf_module.SigMFZarrStore.open(store_path).zarr_format == 2
     np.testing.assert_allclose(recording.samples[:], TEST_FLOAT32_DATA)
+
+
+def test_import_sigmf_defaults_to_sharded_zarr_format_3(tmp_path) -> None:
+    """Standard imports should shard large recordings by default.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    samples = np.arange(300_000, dtype=np.float32)
+    meta_path = tmp_path / "source.sigmf-meta"
+    store_path = tmp_path / "store.zarr"
+    write_standard_sigmf(meta_path, samples, metadata_without_hash())
+
+    recording = sigmf_module.import_sigmf(store_path, meta_path)
+
+    assert sigmf_module.SigMFZarrStore.open(store_path).zarr_format == 3
+    assert recording.samples.chunks == (262_144,)
+    assert recording.samples.shards == (524_288,)
+    np.testing.assert_allclose(recording.samples[:], samples)
 
 
 def test_import_sigmf_auto_detects_existing_zarr_format_2(tmp_path) -> None:
@@ -1302,6 +1322,8 @@ def test_import_sigmf_archive_normalizes_collection_stream_names(
         recording_name: str | None = None,
         overwrite_store: bool = False,
         overwrite_recording: bool = False,
+        automatic_sharding: bool = True,
+        sample_compressor: object = "auto",
         zarr_format: int = 3,
     ) -> FakeRecording:
         """Capture archive import source paths.
@@ -1312,6 +1334,8 @@ def test_import_sigmf_archive_normalizes_collection_stream_names(
             recording_name: Optional recording name override.
             overwrite_store: Whether to recreate the store.
             overwrite_recording: Whether to replace a recording.
+            automatic_sharding: Whether automatic sharding is enabled.
+            sample_compressor: Sample-array compressor.
             zarr_format: Physical Zarr format.
 
         Returns:
@@ -1322,6 +1346,8 @@ def test_import_sigmf_archive_normalizes_collection_stream_names(
             recording_name,
             overwrite_store,
             overwrite_recording,
+            automatic_sharding,
+            sample_compressor,
             zarr_format,
         )
         imported_sources.append(Path(sigmf_path))

@@ -52,6 +52,12 @@ same in both formats. Their physical array encodings differ:
 - Array sharding is available only in Zarr format 3. Writers must reject shard
   settings when creating a Zarr format 2 store.
 
+The reference importers create new stores in Zarr format 3 and use physical
+sample shards targeting approximately 4 MiB by default. Batched dataset
+imports use logical chunks targeting approximately 256 KiB. Unbatched imports
+use logical chunks targeting approximately 1 MiB. When writing format 2, they
+use logical chunks targeting approximately 4 MiB instead.
+
 ## Recording layout
 
 Each recording lives at `recordings/<recording_name>/`:

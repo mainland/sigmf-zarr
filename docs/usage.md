@@ -74,9 +74,13 @@ sigmf-zarr import sigmf input.sigmf-meta store.zarr --zarr-format 2
 ```
 
 Supplying `--zarr-format` for an existing store verifies that the store has the
-requested format. The same behavior applies to both RadioML import commands.
-Zarr format 2 does not support sample sharding, so it cannot be combined with
-`--sample-shard-batch`.
+requested format. Format-3 imports automatically place logical chunks in
+physical shards targeting approximately 4 MiB. RadioML and CSPB chunks target
+approximately 256 KiB, while standard SigMF chunks target approximately 1 MiB.
+Pass `--no-sample-sharding` to disable this behavior. Format-2 imports use
+logical chunks targeting approximately 4 MiB because format 2 does not support
+sharding. The RadioML and CSPB commands also accept `--sample-shard-batch` to
+override the automatic item count for each format-3 shard.
 
 Import a RadioML 2016 pickle mapping:
 

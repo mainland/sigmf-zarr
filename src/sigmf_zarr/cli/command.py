@@ -49,7 +49,7 @@ def positive_int(value: str) -> int:
 
 
 def add_sample_storage_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add storage options shared by the RadioML import commands.
+    """Add storage options shared by dataset import commands.
 
     Args:
         parser: Argument parser to extend.
@@ -65,12 +65,21 @@ def add_sample_storage_arguments(parser: argparse.ArgumentParser) -> None:
         default=3,
         help="Compression level for zstd.",
     )
-    parser.add_argument(
+    sharding = parser.add_mutually_exclusive_group()
+    sharding.add_argument(
         "--sample-shard-batch",
         type=positive_int,
         help=(
-            "Optional number of items per physical sample shard "
+            "Items per physical sample shard, overriding automatic sizing "
             "(Zarr format 3 only)."
+        ),
+    )
+    sharding.add_argument(
+        "--no-sample-sharding",
+        action="store_true",
+        help=(
+            "Disable automatic sample sharding. Larger logical chunks are "
+            "used instead."
         ),
     )
 

@@ -97,10 +97,7 @@ class ImportRadioML2018Command(ImportCommand):
                 label="sample",
             )
             sample_shape, _ = _sample_shape(samples)
-        sample_shards = resolve_sample_shards(
-            args,
-            sample_shape,
-        )
+        sample_shards = resolve_sample_shards(args, sample_shape)
         store = import_radioml2018_dataset(
             args.store,
             args.source,
@@ -114,6 +111,7 @@ class ImportRadioML2018Command(ImportCommand):
             snr_dataset=args.snr_dataset,
             batch_size=args.batch_size,
             sample_shards=sample_shards,
+            automatic_sharding=not args.no_sample_sharding,
             sample_compressor=resolve_sample_compressor(args),
             zarr_format=args.zarr_format,
         )

@@ -15,6 +15,7 @@ import numpy.typing as npt
 from zarr.core.array import CompressorLike, ShardsLike
 
 from sigmf_zarr.json import JSONObject
+from sigmf_zarr.sample_storage import resolve_import_sample_storage
 from sigmf_zarr.store import SigMFZarrStore, ZarrFormat
 from sigmf_zarr.store._transaction import recording_import_transaction
 
@@ -200,6 +201,7 @@ def import_radioml2016_dataset(
     global_metadata: JSONObject | None = None,
     iq_chunks: tuple[int, int, int] | None = None,
     sample_shards: ShardsLike | None = None,
+    automatic_sharding: bool = True,
     sample_compressor: CompressorLike = "auto",
     zarr_format: ZarrFormat | None = None,
 ) -> SigMFZarrStore:
@@ -218,6 +220,8 @@ def import_radioml2016_dataset(
         global_metadata: Optional SigMF global metadata to merge.
         iq_chunks: Optional IQ sample chunks.
         sample_shards: Optional IQ sample shards.
+        automatic_sharding: Whether to derive format-3 shards when explicit
+            shards are not supplied.
         sample_compressor: Optional IQ sample compressor.
         zarr_format: Optional physical Zarr format requirement. Existing
             stores are auto-detected when omitted. New stores default to Zarr
@@ -231,11 +235,6 @@ def import_radioml2016_dataset(
         ValueError: If shapes, labels, or the batch size are invalid, or sample
             sharding is requested for Zarr format 2.
     """
-    if zarr_format == 2 and sample_shards is not None:
-        raise ValueError(
-            "Sample sharding requires Zarr format 3. Omit sample_shards or "
-            "create a Zarr format 3 store"
-        )
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive, got {batch_size}")
     dataset = as_radioml2016_dict(dataset)
@@ -254,6 +253,18 @@ def import_radioml2016_dataset(
         overwrite=overwrite_store,
         zarr_format=zarr_format,
     )
+    resolved_iq_chunks, resolved_sample_shards = (
+        resolve_import_sample_storage(
+            np.float32,
+            sample_shape,
+            item_count,
+            batched=True,
+            zarr_format=store.zarr_format,
+            sample_chunks=iq_chunks,
+            sample_shards=sample_shards,
+            automatic_sharding=automatic_sharding,
+        )
+    )
     if recording_name in store.recordings and not overwrite_recording:
         raise ValueError(
             f"Recording {recording_name!r} already exists. Pass "
@@ -270,8 +281,8 @@ def import_radioml2016_dataset(
             sample_shape=sample_shape,
             sample_axes=("iq", "time"),
             global_metadata=metadata,
-            sample_chunks=iq_chunks,
-            sample_shards=sample_shards,
+            sample_chunks=resolved_iq_chunks,
+            sample_shards=resolved_sample_shards,
             sample_compressor=sample_compressor,
             overwrite=overwrite_recording,
         )

@@ -37,7 +37,7 @@ def test_default_sample_chunks_targets_chunk_bytes_for_batches() -> None:
 
 
 def test_default_sample_chunks_targets_chunk_bytes_for_unbatched() -> None:
-    """Unbatched chunking should keep the original sample shape."""
+    """Unbatched chunking should divide the final sample axis."""
     chunks = SigMFZarrStore.default_sample_chunks(
         "float32",
         (4096, 512),
@@ -46,7 +46,7 @@ def test_default_sample_chunks_targets_chunk_bytes_for_unbatched() -> None:
         target_chunk_bytes=1_048_576,
     )
 
-    assert chunks == (4096, 512)
+    assert chunks == (4096, 64)
 
 
 def test_default_sample_chunks_rejects_non_positive_target() -> None:

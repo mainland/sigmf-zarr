@@ -77,10 +77,7 @@ class ImportRadioML2016Command(ImportCommand):
         sample_shape = tuple(
             int(dim) for dim in next(iter(dataset.values())).shape[1:]
         )
-        sample_shards = resolve_sample_shards(
-            args,
-            sample_shape,
-        )
+        sample_shards = resolve_sample_shards(args, sample_shape)
         store = import_radioml2016_dataset(
             args.store,
             dataset,
@@ -90,6 +87,7 @@ class ImportRadioML2016Command(ImportCommand):
             overwrite_recording=args.overwrite_recording,
             batch_size=args.batch_size,
             sample_shards=sample_shards,
+            automatic_sharding=not args.no_sample_sharding,
             sample_compressor=resolve_sample_compressor(args),
             zarr_format=args.zarr_format,
         )

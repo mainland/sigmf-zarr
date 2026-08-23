@@ -123,6 +123,8 @@ def test_import_cspb_directory_with_dense_truth_indexes(tmp_path) -> None:
 
     recording = store.recordings["cspb"]
     assert recording.samples.shape == (2, 2, 3)
+    assert recording.samples.chunks == (2, 2, 3)
+    assert recording.samples.shards is None
     assert recording.sample_axes == ("iq", "time")
     assert recording.global_metadata["core:datatype"] == "cf32_le"
     assert (
@@ -183,6 +185,8 @@ def test_import_cspb_zip_preserves_cochannel_metadata_in_zarr_2(
     recording = store.recordings["cspb"]
     assert store.zarr_format == 2
     assert recording.samples.shape == (1, 2, 2)
+    assert recording.samples.chunks == (1, 2, 2)
+    assert recording.samples.shards is None
     assert recording.has_item_metadata is True
     metadata = recording.get_item_metadata(0)
     signals = metadata["global"]["cspb:signals"]

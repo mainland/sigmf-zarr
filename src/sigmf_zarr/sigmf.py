@@ -17,6 +17,7 @@ import numpy.typing as npt
 from sigmf import SHA512_KEY
 from sigmf.sigmffile import SigMFCollection as StandardSigMFCollection
 from sigmf.sigmffile import SigMFFile, dtype_info, fromfile
+from zarr.core.array import CompressorLike, ShardsLike
 
 from sigmf_zarr.integrity import integrity_is_supported
 from sigmf_zarr.json import (
@@ -25,6 +26,7 @@ from sigmf_zarr.json import (
     json_object,
     json_object_list,
 )
+from sigmf_zarr.sample_storage import resolve_import_sample_storage
 from sigmf_zarr.store import (
     SigMFCollection,
     SigMFRecording,
@@ -744,6 +746,10 @@ def import_sigmf(
     recording_name: str | None = None,
     overwrite_store: bool = False,
     overwrite_recording: bool = False,
+    sample_chunks: tuple[int, ...] | None = None,
+    sample_shards: ShardsLike | None = None,
+    automatic_sharding: bool = True,
+    sample_compressor: CompressorLike = "auto",
     zarr_format: ZarrFormat | None = None,
 ) -> SigMFRecording:
     """Import one standard SigMF recording into a SigMF-Zarr store.
@@ -754,6 +760,11 @@ def import_sigmf(
         recording_name: Optional recording name override.
         overwrite_store: Whether to recreate the target store root.
         overwrite_recording: Whether to replace an existing recording.
+        sample_chunks: Optional sample-array chunk shape.
+        sample_shards: Optional sample-array shard shape.
+        automatic_sharding: Whether to derive format-3 shards when explicit
+            shards are not supplied.
+        sample_compressor: Optional sample-array compressor.
         zarr_format: Optional physical Zarr format requirement. Existing
             stores are auto-detected when omitted. New stores default to Zarr
             format 3.
@@ -807,6 +818,18 @@ def import_sigmf(
         overwrite=overwrite_store,
         zarr_format=zarr_format,
     )
+    resolved_sample_chunks, resolved_sample_shards = (
+        resolve_import_sample_storage(
+            samples.dtype,
+            tuple(int(dim) for dim in samples.shape),
+            1,
+            batched=False,
+            zarr_format=store.zarr_format,
+            sample_chunks=sample_chunks,
+            sample_shards=sample_shards,
+            automatic_sharding=automatic_sharding,
+        )
+    )
     try:
         recording = store.recordings.open(
             target_name,
@@ -818,6 +841,9 @@ def import_sigmf(
             global_metadata=global_metadata,
             captures=captures,
             annotations=annotations,
+            sample_chunks=resolved_sample_chunks,
+            sample_shards=resolved_sample_shards,
+            sample_compressor=sample_compressor,
             overwrite=overwrite_recording,
         )
         recording.set_samples(samples)
@@ -946,6 +972,8 @@ def import_sigmf_archive(
     *,
     overwrite_store: bool = False,
     overwrite_recordings: bool = False,
+    automatic_sharding: bool = True,
+    sample_compressor: CompressorLike = "auto",
     zarr_format: ZarrFormat | None = None,
 ) -> SigMFZarrStore:
     """Import a standard SigMF archive into a SigMF-Zarr store.
@@ -955,6 +983,9 @@ def import_sigmf_archive(
         archive_source: Source `.sigmf` archive path.
         overwrite_store: Whether to recreate the target store root.
         overwrite_recordings: Whether to replace existing recordings.
+        automatic_sharding: Whether to derive format-3 shards for imported
+            recordings.
+        sample_compressor: Optional sample-array compressor.
         zarr_format: Optional physical Zarr format requirement. Existing
             stores are auto-detected when omitted. New stores default to Zarr
             format 3.
@@ -1006,6 +1037,8 @@ def import_sigmf_archive(
                     meta_file,
                     overwrite_store=False,
                     overwrite_recording=overwrite_recordings,
+                    automatic_sharding=automatic_sharding,
+                    sample_compressor=sample_compressor,
                     zarr_format=zarr_format,
                 )
                 imported_names.append(recording.name)

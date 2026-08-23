@@ -118,12 +118,21 @@ without executing their contents.
 
 ## Storage options
 
-Both commands accept `--sample-compression`, `--sample-compression-level`, and
-`--sample-shard-batch`. Like the standard SigMF importer, they support
-`--recording-name`, `--overwrite-store`, `--overwrite-recording`, and
-`--zarr-format`. Existing stores have their format detected automatically, and
-new stores use Zarr format 3 by default. Pass `--zarr-format 2` to create a
-Zarr format 2 store or to require Zarr format 2 for an existing store. Because
-sharding is a Zarr format 3 feature, `--zarr-format 2` cannot be combined with
-`--sample-shard-batch`. Run either command with `--help` for the full option
-list.
+Both commands accept `--sample-compression`, `--sample-compression-level`,
+`--sample-shard-batch`, and `--no-sample-sharding`. Like the standard SigMF
+importer, they support `--recording-name`, `--overwrite-store`,
+`--overwrite-recording`, and `--zarr-format`.
+
+New stores use Zarr format 3 by default. Automatic layout selection groups
+RadioML items into logical chunks targeting approximately 256 KiB and physical
+shards targeting approximately 4 MiB. A float32 RadioML 2016 array with item
+shape `(2, 128)` uses 256 items per chunk and 4096 items per shard. A float32
+RadioML 2018 array with item shape `(2, 1024)` uses 32 items per chunk and 512
+items per shard. Use `--sample-shard-batch` to override the derived shard item
+count or `--no-sample-sharding` to use larger unsharded chunks.
+
+Existing stores have their format detected automatically. Pass
+`--zarr-format 2` to create a Zarr format 2 store or to require format 2 for an
+existing store. Format 2 uses chunks targeting approximately 4 MiB and cannot
+be combined with `--sample-shard-batch`. Run either command with `--help` for
+the complete option list.
