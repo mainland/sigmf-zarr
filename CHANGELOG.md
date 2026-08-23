@@ -179,7 +179,8 @@ complete.
 - Preserve exact dataset encodings, source recording and collection versions,
   and absolute sample coordinates based on `core:offset`.
 - Export explicitly selected batch items with resolved capture scopes,
-  independent timestamps, and per-item dataset hashes.
+  independent timestamps, and per-item dataset hashes. Item export checks the
+  recording metadata hash and relies on chunk CRC32C for the selected samples.
 - Reject unsupported input metadata and archive files before destination
   creation. Reject sample axes that standard SigMF cannot represent.
 - Check imported metadata against the SigMF schema that export applies, and
@@ -197,6 +198,13 @@ complete.
   extension arrays, channel metadata, or recording nodes outside the defined
   layout during standard export.
 - Check exported metadata against the SigMF schema before writing output.
+- Write archive members with UID and GID 0, empty owner names, fixed modes, and
+  modification time 0, so identical exports produce identical archives.
+- Without `overwrite`, treat a dangling symbolic link as an existing export
+  target, and never replace a target created while export runs.
+- Plan exports without writing output, and project explicitly selected indexes
+  into the `sigmf-zarr-indexes` extension. Planning raises `KeyError` for a
+  missing recording, as export does.
 - Move replaced recordings and collections to a backup during archive import
   instead of copying them.
 - Rename public Python API parameters to match the other importers and

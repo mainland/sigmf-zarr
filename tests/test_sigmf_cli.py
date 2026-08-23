@@ -869,6 +869,7 @@ def test_export_command_passes_force_to_single_export(
         force: bool = False,
         allow_lossy: bool = False,
         item_index: int | None = None,
+        project_indexes: list[str] | tuple[str, ...] = (),
     ) -> Path:
         """Capture single-recording export arguments.
 
@@ -881,6 +882,7 @@ def test_export_command_passes_force_to_single_export(
             force: Whether to bypass stale metadata validation.
             allow_lossy: Whether metadata may be omitted.
             item_index: Optional batch item.
+            project_indexes: Explicit item indexes to project.
 
         Returns:
             Fake metadata path.
@@ -893,6 +895,7 @@ def test_export_command_passes_force_to_single_export(
         captured["force"] = force
         captured["allow_lossy"] = allow_lossy
         captured["item_index"] = item_index
+        captured["project_indexes"] = project_indexes
         return Path("out.sigmf-meta")
 
     monkeypatch.setattr(SigMFZarrStore, "open", fake_open)
@@ -910,6 +913,8 @@ def test_export_command_passes_force_to_single_export(
         force=True,
         allow_lossy=True,
         item_index=3,
+        dry_run=False,
+        project_index=[],
     )
 
     status = sigmf_cli.ExportCommand().handle(args)
@@ -925,6 +930,7 @@ def test_export_command_passes_force_to_single_export(
     assert captured["force"] is True
     assert captured["allow_lossy"] is True
     assert captured["item_index"] == 3
+    assert captured["project_indexes"] == []
     assert "exported recording: out.sigmf-meta" in output
 
 
@@ -1009,6 +1015,8 @@ def test_export_command_passes_force_to_archive_export(
         force=True,
         allow_lossy=True,
         item_index=None,
+        dry_run=False,
+        project_index=[],
     )
 
     status = sigmf_cli.ExportCommand().handle(args)

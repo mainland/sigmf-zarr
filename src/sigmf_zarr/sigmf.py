@@ -16,14 +16,14 @@ from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import dataclass
 from os import PathLike
-from pathlib import Path
-from typing import Any, cast
+from pathlib import Path, PurePosixPath
+from typing import Any, BinaryIO, cast
 
-import jsonschema
 import numpy as np
 import numpy.typing as npt
 from sigmf import SHA512_KEY
-from sigmf.error import SigMFFileError
+from sigmf import __specification__ as SIGMF_SPECIFICATION
+from sigmf.error import SigMFError
 from sigmf.sigmffile import SigMFCollection as StandardSigMFCollection
 from sigmf.sigmffile import (
     SigMFFile,
@@ -34,6 +34,17 @@ from sigmf.sigmffile import (
 from zarr.core.array import CompressorLike, ShardsLike
 
 from sigmf_zarr._dtype import logical_sample_dtype
+from sigmf_zarr._import_target import (
+    open_import_store,
+    remove_new_store_on_failure,
+)
+from sigmf_zarr.export_plan import (
+    export_omissions,
+    project_item_indexes,
+    resolve_projected_indexes,
+    validate_sigmf_collection_schema,
+    validate_sigmf_schema,
+)
 from sigmf_zarr.integrity import integrity_is_supported
 from sigmf_zarr.json import (
     JSONObject,
@@ -48,6 +59,7 @@ from sigmf_zarr.store import (
     SigMFZarrStore,
     ZarrFormat,
 )
+from sigmf_zarr.store._common import _validate_resource_name
 from sigmf_zarr.store._transaction import (
     collection_import_transaction,
     recording_import_transaction,
@@ -1232,6 +1244,32 @@ def _validate_import_zarr_namespace(global_info: JSONObject) -> None:
         )
 
 
+def _validate_import_source(metadata: JSONObject) -> None:
+    """Reject a source document that import cannot store and export again.
+
+    Args:
+        metadata: Original standard SigMF metadata document.
+
+    Raises:
+        ValueError: If `_validate_import_metadata` rejects the document, it
+            violates the SigMF schema that export applies, or a capture or
+            annotation has a reserved `sigmf-zarr:*` field.
+    """
+    _validate_import_metadata(metadata)
+    prefix = f"{SigMFRecording.ZARR_EXTENSION_NAMESPACE}:"
+    for section in ("captures", "annotations"):
+        # The schema check below reports a missing section.
+        entries = json_object_list(metadata.get(section, []), name=section)
+        for index, entry in enumerate(entries):
+            reserved = sorted(key for key in entry if key.startswith(prefix))
+            if reserved:
+                raise ValueError(
+                    f"SigMF import does not accept reserved {prefix!r} "
+                    f"fields in {section} entry {index}: {reserved}"
+                )
+    validate_sigmf_schema(metadata)
+
+
 def _load_json_object(path: Path, *, name: str) -> JSONObject:
     """Read one JSON object from a metadata file.
 
@@ -1397,6 +1435,123 @@ class _SigMFSource:
         )
 
 
+def _read_sigmf_source(
+    source_path: str | PathLike[str], recording_name: str | None
+) -> _SigMFSource:
+    """Check a standard SigMF recording and verify its conversion.
+
+    The check reads every sample once, without changing any store.
+
+    Args:
+        source_path: Source `.sigmf-meta` path, `.sigmf-data` path, or path
+            stem.
+        recording_name: Optional recording name override.
+
+    Returns:
+        Checked source.
+
+    Raises:
+        ValueError: If the recording name or the source is invalid or
+            unsupported, default export would reject the metadata, or the
+            samples cannot reproduce the source bytes or `core:sha512`.
+    """
+    filenames = get_sigmf_filenames(str(source_path))
+    target_name = (
+        Path(filenames["base_fn"]).name
+        if recording_name is None
+        else recording_name
+    )
+    _validate_resource_name(target_name, kind="Recording")
+    # sigmf-python inserts defaults and rewrites core:version while reading.
+    # Keep source metadata separate from its normalized sample reader.
+    meta_path = Path(filenames["meta_fn"])
+    metadata = _load_json_object(meta_path, name="SigMF metadata")
+    _validate_import_source(metadata)
+    global_metadata = json_object(metadata.get("global"), name="global")
+    captures = json_object_list(metadata.get("captures"), name="captures")
+    annotations = json_object_list(
+        metadata.get("annotations"), name="annotations"
+    )
+    num_channels = _sigmf_num_channels(global_metadata)
+    datatype = global_metadata.get("core:datatype")
+    if not isinstance(datatype, str):
+        raise ValueError("SigMF global core:datatype must be a string")
+    data_path = _import_data_path(meta_path, global_metadata)
+    try:
+        sample_dtype, component_shape = sigmf_dtype_to_zarr(datatype)
+        bytes_per_time_sample = (
+            sample_dtype.itemsize
+            * num_channels
+            * (2 if component_shape else 1)
+        )
+        sample_count = _import_sample_count(data_path, bytes_per_time_sample)
+        if sample_count is not None:
+            # Apply the checks of default export, so that the recording can
+            # be exported again.
+            _validate_sample_metadata(
+                global_metadata,
+                captures,
+                annotations,
+                sample_count=sample_count,
+            )
+        # The core:sha512 check below verifies the converted byte stream, so
+        # sigmf-python's own full read of the dataset is redundant.
+        sigmf_file = fromfile(str(meta_path), skip_checksum=True)
+    except SigMFError as exc:
+        raise ValueError(f"Invalid SigMF recording: {exc}") from exc
+    sample_count = int(sigmf_file.sample_count)
+    sample_shape = (
+        *((num_channels,) if num_channels > 1 else ()),
+        *component_shape,
+        sample_count,
+    )
+    sample_axes = (
+        *(("channel",) if num_channels > 1 else ()),
+        *(("iq",) if component_shape else ()),
+        "time",
+    )
+    # Limit conversion buffers to approximately eight MiB of source samples.
+    chunk_size = max(1, (8 * 1024 * 1024) // bytes_per_time_sample)
+
+    # Verify representability before changing the target store. Conversion of
+    # a source datatype must reproduce the exact standard SigMF byte stream.
+    source_sha512 = sigmf_file.get_global_field(SHA512_KEY)
+    digest = hashlib.sha512()
+    for samples in _iter_import_sample_chunks(
+        sigmf_file, chunk_size=chunk_size
+    ):
+        digest.update(
+            _encode_sigmf_samples(
+                samples,
+                sample_axes=sample_axes,
+                global_metadata=global_metadata,
+            ).tobytes()
+        )
+    imported_sha512 = digest.hexdigest()
+    if isinstance(source_sha512, str) and not hmac.compare_digest(
+        source_sha512.lower(), imported_sha512
+    ):
+        raise ValueError(
+            "Imported samples do not reproduce the source core:sha512. "
+            "The declared hash is stale, or the source datatype or byte "
+            "layout cannot be represented losslessly"
+        )
+    return _SigMFSource(
+        name=target_name,
+        meta_path=meta_path,
+        data_path=data_path,
+        sigmf_file=sigmf_file,
+        global_metadata=global_metadata,
+        captures=captures,
+        annotations=annotations,
+        sample_dtype=sample_dtype,
+        sample_shape=sample_shape,
+        sample_axes=sample_axes,
+        chunk_size=chunk_size,
+        sha512=imported_sha512,
+    )
+
+
 def _write_sigmf_recording(
     store: SigMFZarrStore,
     source: _SigMFSource,
@@ -1459,27 +1614,22 @@ def _write_sigmf_recording(
 
 
 def _check_export_loss(
-    recording: SigMFRecording, *, allow_lossy: bool
+    recording: SigMFRecording,
+    *,
+    allow_lossy: bool,
+    project_indexes: Sequence[str] = (),
 ) -> None:
     """Require explicit permission to omit native metadata structures.
 
     Args:
         recording: Source recording.
         allow_lossy: Whether omissions may be reported as warnings.
+        project_indexes: Explicit item indexes preserved in extension JSON.
 
     Raises:
         ValueError: If export would discard metadata without permission.
     """
-    omitted = []
-    if len(recording.indexes) or recording.indexes.attrs:
-        omitted.append("indexes")
-    if len(recording.extensions) or recording.extensions.attrs:
-        omitted.append("extension groups or arrays")
-    if "channel" in recording.sample_axes and any(
-        recording.channel_metadata(index)
-        for index in range(recording.num_channels)
-    ):
-        omitted.append("per-channel metadata")
+    omitted = export_omissions(recording, project_indexes)
     if not omitted:
         return
     message = "Standard SigMF export omits " + ", ".join(omitted)
@@ -1488,9 +1638,10 @@ def _check_export_loss(
     warnings.warn(message, UserWarning, stacklevel=3)
 
 
+@remove_new_store_on_failure
 def import_sigmf(
     store_path: str | PathLike[str],
-    sigmf_path: str | PathLike[str],
+    source_path: str | PathLike[str],
     *,
     recording_name: str | None = None,
     overwrite_store: bool = False,
@@ -1505,9 +1656,13 @@ def import_sigmf(
 
     Args:
         store_path: Target SigMF-Zarr store path.
-        sigmf_path: Source `.sigmf-meta` path.
-        recording_name: Optional recording name override.
-        overwrite_store: Whether to recreate the target store root.
+        source_path: Source `.sigmf-meta` path, `.sigmf-data` path, or path
+            stem.
+        recording_name: Optional recording name override. The default is
+            the source file name without its SigMF suffix.
+        overwrite_store: Whether to replace an existing SigMF-Zarr store at
+            `store_path`. The target must be absent, an empty directory, or
+            a SigMF-Zarr store, and must not contain the source files.
         overwrite_recording: Whether to replace an existing recording.
         sample_chunks: Optional sample-array chunk shape.
         sample_shards: Optional sample-array shard shape.
@@ -1522,124 +1677,40 @@ def import_sigmf(
         Imported recording wrapper.
 
     Raises:
-        ValueError: If source bytes cannot be represented losslessly, the
-            target exists without overwrite permission, or replacement uses
-            a backend other than a local directory store.
+        ValueError: If the recording name is invalid, the source metadata or
+            datatype is invalid or unsupported, the source metadata violates
+            the SigMF schema or the checks of default export, a
+            `core:dataset` file is a symbolic link or the dataset is not a
+            regular file, the dataset holds no complete sample, the source
+            bytes do not match `core:sha512` or cannot be represented
+            losslessly, a sample chunk or shard shape is invalid,
+            `overwrite_store` names a target that it may not replace, the
+            recording exists without overwrite permission, or replacement
+            uses a backend other than a local directory store.
     """
-    # sigmf-python inserts defaults and rewrites core:version while reading.
-    # Keep source metadata separate from its normalized sample reader.
-    meta_path = get_sigmf_filenames(str(sigmf_path))["meta_fn"]
-    with Path(meta_path).open(encoding="utf-8") as handle:
-        metadata = json_object(json.load(handle), name="SigMF metadata")
-    _validate_import_metadata(metadata)
-    global_metadata = json_object(metadata.get("global"), name="global")
-    captures = json_object_list(metadata.get("captures"), name="captures")
-    annotations = json_object_list(
-        metadata.get("annotations"), name="annotations"
-    )
-    sigmf_file = fromfile(str(sigmf_path))
-    num_channels = _sigmf_num_channels(global_metadata)
-    datatype = cast(str, global_metadata["core:datatype"])
-    sample_dtype, component_shape = sigmf_dtype_to_zarr(datatype)
-    sample_shape = (
-        *((num_channels,) if num_channels > 1 else ()),
-        *component_shape,
-        int(sigmf_file.sample_count),
-    )
-    sample_axes = (
-        *(("channel",) if num_channels > 1 else ()),
-        *(("iq",) if component_shape else ()),
-        "time",
-    )
-    # Limit conversion buffers to approximately eight MiB of source samples.
-    bytes_per_time_sample = (
-        sample_dtype.itemsize * num_channels * (2 if component_shape else 1)
-    )
-    chunk_size = max(1, (8 * 1024 * 1024) // bytes_per_time_sample)
-
-    # Verify representability before changing the target store. Conversion of
-    # a source datatype must reproduce the exact standard SigMF byte stream.
-    source_sha512 = sigmf_file.get_global_field(SHA512_KEY)
-    digest = hashlib.sha512()
-    for samples in _iter_import_sample_chunks(
-        sigmf_file, chunk_size=chunk_size
-    ):
-        digest.update(
-            _encode_sigmf_samples(
-                samples,
-                sample_axes=sample_axes,
-                global_metadata=global_metadata,
-            ).tobytes()
-        )
-    imported_sha512 = digest.hexdigest()
-    if isinstance(source_sha512, str) and not hmac.compare_digest(
-        source_sha512.lower(), imported_sha512
-    ):
-        raise ValueError(
-            "Imported samples do not reproduce the source core:sha512. "
-            "The source datatype or byte layout cannot be represented "
-            "losslessly"
-        )
-
-    target_name = recording_name or Path(sigmf_path).name.removesuffix(
-        ".sigmf-meta"
-    )
-    store = SigMFZarrStore(
+    source = _read_sigmf_source(source_path, recording_name)
+    store, sample_storage = open_import_store(
         store_path,
-        overwrite=overwrite_store,
+        overwrite_store=overwrite_store,
         zarr_format=zarr_format,
-    )
-    resolved_sample_chunks, resolved_sample_shards = (
-        resolve_import_sample_storage(
-            sample_dtype,
-            sample_shape,
-            1,
-            batched=False,
-            zarr_format=store.zarr_format,
+        sources=(source.meta_path, source.data_path),
+        resolve_storage=lambda target_format: source.sample_storage(
+            target_format,
             sample_chunks=sample_chunks,
             sample_shards=sample_shards,
             automatic_sharding=automatic_sharding,
-        )
+        ),
     )
     with recording_import_transaction(
-        store, target_name, overwrite=overwrite_recording
+        store, source.name, overwrite=overwrite_recording
     ):
-        recording = store.recordings.create(
-            target_name,
-            batched=False,
-            sample_dtype=sample_dtype,
-            sample_shape=sample_shape,
-            sample_axes=sample_axes,
-            global_metadata=global_metadata,
-            captures=captures,
-            annotations=annotations,
-            sample_chunks=resolved_sample_chunks,
-            sample_shards=resolved_sample_shards,
+        recording = _write_sigmf_recording(
+            store,
+            source,
+            sample_storage=sample_storage,
             sample_compressor=sample_compressor,
-            overwrite=overwrite_recording,
+            overwrite_recording=overwrite_recording,
         )
-        written_digest = hashlib.sha512()
-        with recording.mutate_samples() as destination:
-            start = 0
-            for samples in _iter_import_sample_chunks(
-                sigmf_file, chunk_size=chunk_size
-            ):
-                stop = start + samples.shape[-1]
-                destination[..., start:stop] = samples
-                written_digest.update(
-                    _encode_sigmf_samples(
-                        samples,
-                        sample_axes=sample_axes,
-                        global_metadata=global_metadata,
-                    ).tobytes()
-                )
-                start = stop
-        if not hmac.compare_digest(
-            imported_sha512, written_digest.hexdigest()
-        ):
-            raise ValueError("SigMF source data changed during import")
-        recording.set_global_field(SHA512_KEY, imported_sha512)
-        recording.update_integrity()
         store._update_metadata_integrity_when_complete()
     return recording
 
@@ -1664,80 +1735,29 @@ def _project_item_metadata(
     return recording.signal(item_index).metadata
 
 
-def _validate_sigmf_schema(sigmf_file: SigMFFile) -> None:
-    """Check exported metadata against the SigMF schema before writing data.
+def _validate_export_integrity(
+    recording: SigMFRecording, *, samples: bool = True
+) -> None:
+    """Check declared internal hashes before planning or publishing samples.
 
     Args:
-        sigmf_file: Standard SigMF file holding the prepared metadata.
+        recording: Source recording.
+        samples: Whether to verify the whole-recording sample hash. Exports
+            of one batch item skip it, because the hash covers every item.
+            Chunk CRC32C checks the selected item's reads, and export
+            computes `core:sha512` from the emitted bytes.
 
     Raises:
-        ValueError: If the metadata violates the SigMF schema, including
-            unsorted capture or annotation starts.
+        ValueError: If integrity metadata is unsupported or does not match.
     """
-    try:
-        sigmf_file.validate()
-    except jsonschema.exceptions.ValidationError as exc:
-        raise ValueError(
-            f"Exported metadata does not satisfy the SigMF schema: "
-            f"{exc.message}"
-        ) from exc
-
-
-def export_sigmf(
-    store: SigMFZarrStore,
-    recording_name: str,
-    output_path: str | PathLike[str],
-    *,
-    overwrite: bool = False,
-    pretty: bool = True,
-    force: bool = False,
-    allow_lossy: bool = False,
-    item_index: int | None = None,
-) -> Path:
-    """Export one recording from a SigMF-Zarr store to standard SigMF files.
-
-    Args:
-        store: Source SigMF-Zarr store.
-        recording_name: Recording name to export.
-        output_path: Target `.sigmf-meta` path or path stem. Dots in a stem
-            are retained.
-        overwrite: Whether to replace existing target files.
-        pretty: Whether to pretty-print metadata JSON.
-        force: Whether to export even when sample-indexed metadata appears
-            stale. This does not permit metadata loss.
-        allow_lossy: Whether to warn and omit native indexes, extension
-            arrays, and per-channel metadata. Defaults to rejection.
-        item_index: Nonnegative item position to export from a batch. Each
-            selected item becomes a separate standard SigMF recording.
-
-    Returns:
-        Written `.sigmf-meta` path.
-
-    Raises:
-        ValueError: If a batch has no valid selected item, target files exist,
-            metadata cannot be preserved or violates the SigMF schema, or
-            sample coordinates are invalid.
-    """
-    recording = store.recordings.open(recording_name)
-    if recording.batched and item_index is None:
-        raise ValueError(
-            "Standard SigMF export only supports unbatched recordings "
-            "unless item_index is selected"
-        )
-    if item_index is not None and (
-        not recording.batched
-        or type(item_index) is not int
-        or not 0 <= item_index < len(recording)
-    ):
-        raise ValueError("item_index must select an existing batch item")
-    _check_export_loss(recording, allow_lossy=allow_lossy)
     if recording.integrity and not integrity_is_supported(recording.integrity):
         raise ValueError(
             "Recording uses an unsupported internal integrity algorithm or "
             "version"
         )
     if (
-        recording.sample_sha512 is not None
+        samples
+        and recording.sample_sha512 is not None
         and recording.sample_sha512 != recording.calculate_sample_sha512()
     ):
         raise ValueError(
@@ -1751,6 +1771,39 @@ def export_sigmf(
             "Recording internal metadata SHA-512 does not match current "
             "metadata"
         )
+
+
+def _export_metadata(
+    recording: SigMFRecording,
+    *,
+    item_index: int | None,
+    force: bool,
+    project_indexes: Sequence[str],
+) -> JSONObject:
+    """Prepare the same metadata for preflight and actual export.
+
+    Args:
+        recording: Source recording.
+        item_index: Optional selected batch item.
+        force: Whether stale sample spans are permitted.
+        project_indexes: Explicit indexes projected to extension JSON.
+
+    Returns:
+        Detached metadata ready for serialization.
+
+    Raises:
+        ValueError: If selection, layout, or metadata is incompatible.
+    """
+    _validate_sigmf_sample_axes(recording.sample_axes)
+    _require_real_iq(recording.sample_dtype, recording.sample_axes)
+    if recording.batched and item_index is None:
+        raise ValueError("Batched export requires item_index")
+    if item_index is not None and (
+        not recording.batched
+        or type(item_index) is not int
+        or not 0 <= item_index < len(recording)
+    ):
+        raise ValueError("item_index must select an existing batch item")
     projected = (
         None
         if item_index is None
@@ -1777,20 +1830,105 @@ def export_sigmf(
     }
 
     _validate_import_metadata(json_object(metadata, name="export metadata"))
+    if not isinstance(global_metadata.get("core:datatype"), str):
+        raise ValueError("Export requires a declared core:datatype")
+    return project_item_indexes(
+        recording,
+        json_object(metadata, name="export metadata"),
+        project_indexes,
+        item_index,
+    )
+
+
+def export_sigmf(
+    store: SigMFZarrStore,
+    recording_name: str,
+    output_path: str | PathLike[str],
+    *,
+    overwrite: bool = False,
+    pretty: bool = True,
+    force: bool = False,
+    allow_lossy: bool = False,
+    item_index: int | None = None,
+    project_indexes: Sequence[str] = (),
+) -> Path:
+    """Export one recording from a SigMF-Zarr store to standard SigMF files.
+
+    Args:
+        store: Source SigMF-Zarr store.
+        recording_name: Recording name to export.
+        output_path: Target `.sigmf-meta` path or path stem. Dots in a stem
+            are retained.
+        overwrite: Whether to replace existing target files.
+        pretty: Whether to pretty-print metadata JSON.
+        force: Whether to export even when sample-indexed metadata appears
+            stale. This does not permit metadata loss.
+        allow_lossy: Whether to warn and omit native indexes, extension
+            arrays, and per-channel metadata. Defaults to rejection.
+        item_index: Nonnegative item position to export from a batch. Each
+            selected item becomes a separate standard SigMF recording.
+        project_indexes: Explicit item indexes retained with their descriptors
+            in the sigmf-zarr-indexes extension.
+
+    Returns:
+        Written `.sigmf-meta` path.
+
+    Raises:
+        KeyError: If the recording or a projected index does not exist.
+        ValueError: If a batch has no valid selected item, the target is
+            empty or a directory name, target files or symbolic links exist
+            without overwrite permission, a target is neither a regular file
+            nor a symbolic link, metadata cannot be preserved or violates the
+            SigMF schema, sample coordinates are invalid, or a declared hash
+            is stale.
+            Item exports check the recording metadata hash but not the
+            whole-recording sample hash.
+    """
+    recording = store.recordings.open(recording_name)
+    resolve_projected_indexes(recording, project_indexes)
+    if recording.batched and item_index is None:
+        raise ValueError(
+            "Standard SigMF export only supports unbatched recordings "
+            "unless item_index is selected"
+        )
+    if item_index is not None and (
+        not recording.batched
+        or type(item_index) is not int
+        or not 0 <= item_index < len(recording)
+    ):
+        raise ValueError("item_index must select an existing batch item")
+    _check_export_loss(
+        recording,
+        allow_lossy=allow_lossy,
+        project_indexes=project_indexes,
+    )
+    _validate_export_integrity(recording, samples=item_index is None)
+    metadata = _export_metadata(
+        recording,
+        item_index=item_index,
+        force=force,
+        project_indexes=project_indexes,
+    )
+    global_metadata = json_object(metadata["global"], name="global")
     sigmf_file = SigMFFile(metadata=deepcopy(metadata))
     if "core:version" in global_metadata:
         sigmf_file.set_global_field(
             "core:version", global_metadata["core:version"]
         )
-    _validate_sigmf_schema(sigmf_file)
+    validate_sigmf_schema(metadata)
     meta_path = _metadata_path(output_path)
     data_path = meta_path.with_suffix(".sigmf-data")
 
-    if not overwrite and (meta_path.exists() or data_path.exists()):
-        raise ValueError(
-            "Target SigMF files already exist. Pass overwrite=True to "
-            "replace them"
-        )
+    exists_message = (
+        "Target SigMF files already exist. Pass overwrite=True to replace them"
+    )
+    # A dangling symbolic link is an existing target.
+    if not overwrite and (
+        os.path.lexists(meta_path) or os.path.lexists(data_path)
+    ):
+        raise ValueError(exists_message)
+    for target in (meta_path, data_path):
+        _check_replaceable_target(target)
 
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
@@ -1821,85 +1959,148 @@ def export_sigmf(
         sigmf_file.set_data_file(data_file=tmp_data, skip_checksum=True)
         sigmf_file.set_global_field(SHA512_KEY, exported_sha512)
         sigmf_file.tofile(str(tmp_meta), pretty=pretty, overwrite=True)
-        _replace_sigmf_pair(
-            tmp_meta=tmp_meta,
-            tmp_data=tmp_data,
-            meta_path=meta_path,
-            data_path=data_path,
-        )
+        if overwrite:
+            _replace_sigmf_pair(
+                tmp_meta=tmp_meta,
+                tmp_data=tmp_data,
+                meta_path=meta_path,
+                data_path=data_path,
+            )
+        else:
+            try:
+                _publish_new_sigmf_pair(
+                    tmp_meta=tmp_meta,
+                    tmp_data=tmp_data,
+                    meta_path=meta_path,
+                    data_path=data_path,
+                )
+            except FileExistsError as exc:
+                raise ValueError(exists_message) from exc
     return meta_path
 
 
 def _archive_collection_recording_ids(
-    collection: StandardSigMFCollection,
+    collection: JSONObject,
     meta_files: list[Path],
 ) -> tuple[str, ...]:
     """Resolve collection identifiers and verify their exact metadata files.
 
     Args:
-        collection: Parsed standard collection metadata.
+        collection: Standard collection object.
         meta_files: Metadata files extracted from the source archive.
 
     Returns:
-        Recording identifiers in collection order.
+        Distinct recording identifiers in collection order.
 
     Raises:
-        SigMFFileError: If a stream is missing or its metadata hash differs.
+        ValueError: If `core:streams` is not a list of objects, a stream has
+            unsupported fields, a name with path components, a missing
+            metadata file, or a differing metadata hash, or two streams name
+            the same recording.
     """
     by_name = {
         path.name.removesuffix(".sigmf-meta"): path for path in meta_files
     }
     recording_ids: list[str] = []
-    for stream in collection.get_collection_field("core:streams", []):
+    streams = json_object_list(
+        collection.get("core:streams", []),
+        name="collection core:streams",
+    )
+    for stream in streams:
         if set(stream) - {"name", "hash"}:
             raise ValueError("Unsupported metadata in collection core:streams")
-        name = Path(stream["name"]).name
+        name = stream.get("name")
+        if (
+            not isinstance(name, str)
+            or not name
+            or Path(name).name != name
+            or "\\" in name
+            or name in {".", ".."}
+        ):
+            raise ValueError(
+                "Collection stream names must be single path components, "
+                f"not {name!r}"
+            )
         if name not in by_name:
             name = name.removesuffix(".sigmf-meta")
         if name not in by_name:
-            raise SigMFFileError(f"Collection stream {name!r} is missing")
+            raise ValueError(f"Collection stream {name!r} is missing")
+        if name in recording_ids:
+            raise ValueError(
+                f"Collection streams name recording {name!r} more than once"
+            )
         with by_name[name].open("rb") as handle:
             digest = hashlib.file_digest(handle, "sha512").hexdigest()
         declared = stream.get("hash")
         if not isinstance(declared, str) or not hmac.compare_digest(
             declared.lower(), digest
         ):
-            raise SigMFFileError(
+            raise ValueError(
                 f"Collection stream {name!r} metadata hash does not match"
             )
         recording_ids.append(name)
     return tuple(recording_ids)
 
 
-def _validate_archive_contents(
-    root: Path, meta_files: list[Path], collection_files: list[Path]
+def _read_archive_collection(
+    collection_file: Path, meta_files: list[Path]
+) -> tuple[str, JSONObject, tuple[str, ...]]:
+    """Read and check the collection of a SigMF archive.
+
+    Args:
+        collection_file: Extracted `.sigmf-collection` file.
+        meta_files: Metadata files extracted from the source archive.
+
+    Returns:
+        Collection name, collection metadata without `core:streams`, and
+        recording identifiers in collection order.
+
+    Raises:
+        ValueError: If the document is not a JSON object with only a
+            `collection` object, the collection violates the SigMF
+            collection schema, or `_archive_collection_recording_ids`
+            rejects its streams.
+    """
+    metadata = _load_json_object(
+        collection_file, name="SigMF collection metadata"
+    )
+    extra = sorted(set(metadata) - {"collection"})
+    if extra:
+        raise ValueError(
+            f"Unsupported SigMF collection top-level metadata: {extra}"
+        )
+    collection_info = json_object(
+        metadata.get("collection"), name="SigMF collection"
+    )
+    validate_sigmf_collection_schema(collection_info)
+    recording_ids = _archive_collection_recording_ids(
+        collection_info, meta_files
+    )
+    collection_metadata = dict(collection_info)
+    collection_metadata.pop("core:streams", None)
+    name = collection_file.name.removesuffix(".sigmf-collection")
+    return name, collection_metadata, recording_ids
+
+
+def _check_archive_files(
+    root: Path,
+    sources: Sequence[_SigMFSource],
+    collection_files: list[Path],
 ) -> None:
-    """Reject archive members that import would otherwise discard.
+    """Reject archive files that import would otherwise discard.
 
     Args:
         root: Extracted archive root.
-        meta_files: Recording metadata files.
+        sources: Checked recordings.
         collection_files: Collection metadata files.
 
     Raises:
-        ValueError: If the archive has no recordings, multiple collections,
-            or auxiliary files without a supported storage representation.
+        ValueError: If the archive has a file other than recording metadata,
+            recording datasets, and collection metadata.
     """
-    if not meta_files:
-        raise ValueError("No SigMF recordings in archive")
-    if len(collection_files) > 1:
-        raise ValueError("Multiple SigMF collections in one archive")
-    retained = set(meta_files + collection_files)
-    for path in meta_files:
-        with path.open(encoding="utf-8") as handle:
-            metadata = json_object(json.load(handle), name="SigMF metadata")
-        _validate_import_metadata(metadata)
-        global_info = json_object(metadata.get("global", {}), name="global")
-        dataset = global_info.get("core:dataset")
-        if isinstance(dataset, str):
-            retained.add(path.parent / dataset)
-        else:
-            retained.add(path.with_suffix(".sigmf-data"))
+    retained = set(collection_files)
+    for source in sources:
+        retained.update((source.meta_path, source.data_path))
     extra = sorted(
         str(path.relative_to(root))
         for path in root.rglob("*")
@@ -1909,12 +2110,248 @@ def _validate_archive_contents(
         raise ValueError(f"Unsupported auxiliary SigMF archive files: {extra}")
 
 
+# Leading bytes of compressed streams that tarfile would otherwise expand.
+_COMPRESSION_SIGNATURES = (
+    ("gzip", b"\x1f\x8b"),
+    ("bzip2", b"BZh"),
+    ("xz", b"\xfd7zXZ\x00"),
+    ("Zstandard", b"\x28\xb5\x2f\xfd"),
+)
+
+# File suffixes that name SigMF files, which a directory must not use.
+_SIGMF_FILE_SUFFIXES = (".sigmf-meta", ".sigmf-data", ".sigmf-collection")
+
+# Errors that a malformed header, member name, or member layout causes,
+# rather than the file system that holds or receives the files.
+_ARCHIVE_LAYOUT_ERRNOS = frozenset(
+    {
+        errno.EEXIST,
+        errno.EILSEQ,
+        errno.EINVAL,
+        errno.EISDIR,
+        errno.ENAMETOOLONG,
+        errno.ENOTDIR,
+    }
+)
+
+
+def _archive_compression(handle: BinaryIO) -> str | None:
+    """Name the compression format of a stream that is not a tar file.
+
+    Args:
+        handle: Seekable binary archive stream.
+
+    Returns:
+        Compression format name, or None when no known signature matches.
+    """
+    handle.seek(0)
+    header = handle.read(6)
+    for name, signature in _COMPRESSION_SIGNATURES:
+        if header.startswith(signature):
+            return name
+    return None
+
+
+def _read_archive_members(
+    archive: tarfile.TarFile, archive_size: int
+) -> list[tarfile.TarInfo]:
+    """Read every member header with a bound that does not trust `tarfile`.
+
+    Some CPython releases loop without bound on a header whose negative size
+    points back at itself (CVE-2025-8194). Each header occupies at least one
+    512-byte block of the archive, so header offsets must increase and the
+    archive holds at most `archive_size // 512` members.
+
+    Args:
+        archive: Archive opened for reading.
+        archive_size: Size of the archive file in bytes.
+
+    Returns:
+        Every member in archive order.
+
+    Raises:
+        ValueError: If a header offset does not increase or the archive
+            declares more members than its size allows.
+    """
+    limit = archive_size // tarfile.BLOCKSIZE
+    members: list[tarfile.TarInfo] = []
+    previous_offset = -1
+    while (member := archive.next()) is not None:
+        if member.offset <= previous_offset:
+            raise ValueError(
+                f"SigMF archive member {member.name!r} does not follow the "
+                "previous member"
+            )
+        previous_offset = member.offset
+        members.append(member)
+        if len(members) > limit:
+            raise ValueError(
+                f"SigMF archive declares more members than its {archive_size} "
+                "bytes can hold"
+            )
+    return members
+
+
+def _archive_member_path(member: tarfile.TarInfo) -> PurePosixPath:
+    """Check the type, size, and name of one archive member.
+
+    Args:
+        member: Member header.
+
+    Returns:
+        Member name as a path without `.` components.
+
+    Raises:
+        ValueError: If the member is sparse, is neither a regular file nor a
+            directory, has a negative size, has an absolute name, a `..`
+            component, or a NUL character, or names the archive root as a
+            regular file.
+    """
+    name = member.name
+    if member.issparse():
+        raise ValueError(f"SigMF archive member {name!r} is a sparse file")
+    if not (member.isreg() or member.isdir()):
+        raise ValueError(
+            f"SigMF archive member {name!r} is not a regular file or directory"
+        )
+    if member.size < 0:
+        raise ValueError(f"SigMF archive member {name!r} has a negative size")
+    if "\x00" in name:
+        raise ValueError(f"SigMF archive member {name!r} has a NUL character")
+    # PurePosixPath drops "." components, so "./a" and "a" name one entry.
+    path = PurePosixPath(name)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError(
+            f"SigMF archive member {name!r} is outside the archive root"
+        )
+    if member.isreg() and not path.parts:
+        raise ValueError(
+            f"SigMF archive member {name!r} names the archive root as a file"
+        )
+    return path
+
+
+def _check_archive_members(
+    members: Sequence[tarfile.TarInfo], archive_size: int
+) -> None:
+    """Require archive members that extract within bounds and the root.
+
+    These checks do not depend on the `tarfile` data filter, which has
+    known bypasses in CPython releases before 3.12.11 and 3.13.4.
+
+    Args:
+        members: Every member of an uncompressed tar archive.
+        archive_size: Size of the archive file in bytes.
+
+    Raises:
+        ValueError: If `_archive_member_path` rejects a member, two regular
+            files have the same name, a name is both a regular file and a
+            directory, a directory has a SigMF file suffix, the regular
+            files declare more bytes than the archive holds, or extraction
+            would create more files and directories than the archive has
+            512-byte blocks.
+    """
+    total = 0
+    files: set[PurePosixPath] = set()
+    directories: set[PurePosixPath] = set()
+    for member in members:
+        path = _archive_member_path(member)
+        # Extraction creates the parents of every member as directories.
+        directories.update(path.parents)
+        if member.isdir():
+            directories.add(path)
+        elif path in files:
+            raise ValueError(
+                f"SigMF archive has more than one member {member.name!r}"
+            )
+        else:
+            files.add(path)
+            total += member.size
+    directories.discard(PurePosixPath("."))
+    conflicts = sorted(str(path) for path in files & directories)
+    if conflicts:
+        raise ValueError(
+            "SigMF archive members are both files and directories: "
+            f"{conflicts}"
+        )
+    misnamed = sorted(
+        str(path)
+        for path in directories
+        if path.name.endswith(_SIGMF_FILE_SUFFIXES)
+    )
+    if misnamed:
+        raise ValueError(
+            f"SigMF archive directories have SigMF file suffixes: {misnamed}"
+        )
+    # Without compression or sparse members, the data of each regular file
+    # occupies the archive itself.
+    if total > archive_size:
+        raise ValueError(
+            f"SigMF archive members declare {total} bytes, more than the "
+            f"{archive_size}-byte archive holds"
+        )
+    # Each explicit member has its own header block. Implied parent
+    # directories have none, so count them against the same bound.
+    if len(files) + len(directories) > archive_size // tarfile.BLOCKSIZE:
+        raise ValueError(
+            "SigMF archive would extract more files and directories than "
+            f"its {archive_size} bytes hold headers for"
+        )
+
+
+def _extract_sigmf_archive(
+    archive_source: str | PathLike[str], destination: Path
+) -> None:
+    """Extract an uncompressed SigMF archive after checking every member.
+
+    Args:
+        archive_source: Source `.sigmf` archive path.
+        destination: Empty extraction directory.
+
+    Raises:
+        ValueError: If the archive is compressed, is not a readable tar file,
+            has a member that `_check_archive_members` or the `tarfile` data
+            filter rejects, or has member names that the file system cannot
+            hold.
+    """
+    with Path(archive_source).open("rb") as handle:
+        archive_size = os.fstat(handle.fileno()).st_size
+        try:
+            with tarfile.open(fileobj=handle, mode="r:") as archive:
+                members = _read_archive_members(archive, archive_size)
+                _check_archive_members(members, archive_size)
+                # The data filter is a second check on member names, types,
+                # and permissions.
+                archive.extractall(destination, members, filter="data")
+        except tarfile.TarError as exc:
+            compression = _archive_compression(handle)
+            if compression is not None:
+                raise ValueError(
+                    f"SigMF archive is {compression}-compressed. A .sigmf "
+                    "archive must be an uncompressed tar file"
+                ) from exc
+            # Some tarfile messages span lines. Keep the error on one line.
+            detail = " ".join(str(exc).split())
+            raise ValueError(f"Invalid SigMF archive: {detail}") from exc
+        except OSError as exc:
+            if exc.errno not in _ARCHIVE_LAYOUT_ERRNOS:
+                raise
+            detail = os.strerror(exc.errno)
+            if exc.filename is not None:
+                detail += f": {exc.filename!r}"
+            raise ValueError(f"Invalid SigMF archive: {detail}") from exc
+
+
+@remove_new_store_on_failure
 def import_sigmf_archive(
     store_path: str | PathLike[str],
-    archive_source: str | PathLike[str],
+    source_path: str | PathLike[str],
     *,
     overwrite_store: bool = False,
-    overwrite_recordings: bool = False,
+    overwrite_recording: bool = False,
+    overwrite_collection: bool = False,
+    sample_chunks: tuple[int, ...] | None = None,
+    sample_shards: ShardsLike | None = None,
     automatic_sharding: bool = True,
     sample_compressor: CompressorLike = "auto",
     zarr_format: ZarrFormat | None = None,
@@ -1923,11 +2360,20 @@ def import_sigmf_archive(
 
     Args:
         store_path: Target SigMF-Zarr store path.
-        archive_source: Source `.sigmf` archive path.
-        overwrite_store: Whether to recreate the target store root.
-        overwrite_recordings: Whether to replace existing recordings.
+        source_path: Source `.sigmf` archive path.
+        overwrite_store: Whether to replace an existing SigMF-Zarr store at
+            `store_path`. The target must be absent, an empty directory, or
+            a SigMF-Zarr store, and must not contain the archive.
+        overwrite_recording: Whether to replace each existing recording that
+            has the same name as an archived recording.
+        overwrite_collection: Whether to replace an existing collection that
+            has the same name as the archived collection.
+        sample_chunks: Optional sample-array chunk shape for every imported
+            recording. Its rank must match each recording's sample array.
+        sample_shards: Optional sample-array shard shape for every imported
+            recording.
         automatic_sharding: Whether to derive format-3 shards for imported
-            recordings.
+            recordings when explicit shards are not supplied.
         sample_compressor: Optional sample-array compressor.
         zarr_format: Optional physical Zarr format requirement. Existing
             stores are auto-detected when omitted. New stores default to Zarr
@@ -1935,13 +2381,21 @@ def import_sigmf_archive(
 
     Returns:
         Updated SigMF-Zarr store.
+
+    Raises:
+        ValueError: If the archive is compressed or is not a readable tar
+            file, has a sparse member, a member other than a regular file or
+            directory, a member outside the archive root, conflicting or
+            duplicate member names, or members that declare more bytes or
+            entries than the archive holds, or has invalid, unsupported, or
+            inconsistent SigMF content. Also if a sample chunk or shard shape
+            is invalid, sample sharding is requested for Zarr format 2,
+            `overwrite_store` names a target that it may not replace, or a
+            recording or the collection exists without overwrite permission.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
-        with tarfile.open(archive_source, mode="r") as archive:
-            # The data filter rejects archive members that could escape the
-            # temporary extraction directory.
-            archive.extractall(tmp_path, filter="data")
+        _extract_sigmf_archive(source_path, tmp_path)
 
         meta_files = sorted(tmp_path.rglob("*.sigmf-meta"))
         target_names = tuple(
@@ -1949,66 +2403,73 @@ def import_sigmf_archive(
         )
         _validate_archive_names(target_names)
         collection_files = sorted(tmp_path.rglob("*.sigmf-collection"))
-        _validate_archive_contents(tmp_path, meta_files, collection_files)
-        collection_name: str | None = None
-        collection_metadata: JSONObject | None = None
-        recording_ids: tuple[str, ...] = ()
-        if collection_files:
-            collection_file = collection_files[0]
-            with collection_file.open("r", encoding="utf-8") as handle:
-                metadata = cast(dict[str, object], json.load(handle))
-            collection_obj = StandardSigMFCollection(
-                metadata=deepcopy(metadata),
-                base_path=collection_file.parent,
-                skip_checksums=True,
-            )
-            collection_info = json_object(
-                metadata.get("collection"), name="collection"
-            )
-            recording_ids = _archive_collection_recording_ids(
-                collection_obj, meta_files
-            )
-            collection_metadata = dict(collection_info)
-            collection_metadata.pop("core:streams", None)
-            collection_name = collection_file.name.removesuffix(
-                ".sigmf-collection"
-            )
-
-        store = SigMFZarrStore(
-            store_path,
-            overwrite=overwrite_store,
-            zarr_format=zarr_format,
+        if not meta_files:
+            raise ValueError("No SigMF recordings in archive")
+        if len(collection_files) > 1:
+            raise ValueError("Multiple SigMF collections in one archive")
+        sources = [_read_sigmf_source(path, None) for path in meta_files]
+        _check_archive_files(tmp_path, sources, collection_files)
+        collection = (
+            _read_archive_collection(collection_files[0], meta_files)
+            if collection_files
+            else None
         )
+
+        store, sample_storage = open_import_store(
+            store_path,
+            overwrite_store=overwrite_store,
+            zarr_format=zarr_format,
+            sources=(source_path,),
+            resolve_storage=lambda target_format: [
+                source.sample_storage(
+                    target_format,
+                    sample_chunks=sample_chunks,
+                    sample_shards=sample_shards,
+                    automatic_sharding=automatic_sharding,
+                )
+                for source in sources
+            ],
+        )
+        if (
+            collection is not None
+            and not overwrite_collection
+            and collection[0] in store.collections
+        ):
+            raise ValueError(
+                f"Collection {collection[0]!r} already exists. Pass "
+                "overwrite_collection=True to replace it"
+            )
         with ExitStack() as rollback:
             for name in target_names:
                 rollback.enter_context(
                     recording_import_transaction(
-                        store, name, overwrite=overwrite_recordings
+                        store, name, overwrite=overwrite_recording
                     )
                 )
-            if collection_name is not None:
+            if collection is not None:
                 rollback.enter_context(
-                    collection_import_transaction(store, collection_name)
+                    collection_import_transaction(store, collection[0])
                 )
-            for meta_file in meta_files:
-                import_sigmf(
-                    store_path,
-                    meta_file,
-                    overwrite_store=False,
-                    overwrite_recording=overwrite_recordings,
-                    automatic_sharding=automatic_sharding,
+            for source, storage in zip(sources, sample_storage, strict=True):
+                _write_sigmf_recording(
+                    store,
+                    source,
+                    sample_storage=storage,
                     sample_compressor=sample_compressor,
-                    zarr_format=zarr_format,
+                    overwrite_recording=overwrite_recording,
                 )
 
-            if collection_name is not None:
-                collection = store.collections.create(
+            if collection is not None:
+                collection_name, collection_metadata, recording_ids = (
+                    collection
+                )
+                imported = store.collections.create(
                     collection_name,
                     metadata=collection_metadata,
                     recording_ids=recording_ids,
                     overwrite=True,
                 )
-                collection.update_integrity()
+                imported.update_integrity()
             store._update_metadata_integrity_when_complete()
 
     return store
@@ -2049,19 +2510,30 @@ def _archive_selection(
     Raises:
         KeyError: If the selected collection does not exist.
         ValueError: If no recordings are selected, names are not valid
-            archive members, the collection hash is stale or unsupported, or
-            the collection references recordings outside the selection.
+            archive members, the collection hash is stale or unsupported,
+            the collection metadata violates the SigMF collection schema,
+            the collection lists a recording more than once, or the
+            collection references recordings outside the selection.
     """
     collection: SigMFCollection | None = None
     if collection_name is not None:
         _validate_archive_names((collection_name,))
         collection = store.collections.open(collection_name)
+        if len(set(collection.recording_ids)) != len(collection.recording_ids):
+            raise ValueError(
+                f"Collection {collection_name!r} lists a recording more "
+                "than once"
+            )
+        # Export writes the sigmf-python specification version when the
+        # collection declares none.
+        validate_sigmf_collection_schema(
+            {"core:version": SIGMF_SPECIFICATION, **collection.metadata}
+        )
 
     if recording_names is not None:
         selected_recordings = tuple(recording_names)
     elif collection is not None:
-        # A collection may list a recording more than once. Export it once.
-        selected_recordings = tuple(dict.fromkeys(collection.recording_ids))
+        selected_recordings = collection.recording_ids
     else:
         selected_recordings = store.list_recordings()
     if not selected_recordings:

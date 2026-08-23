@@ -816,16 +816,23 @@ Captures and annotations are sorted by sample start. Export calculates a new
 item hash and checks any hash explicitly supplied in the item's global metadata.
 The source batch remains unchanged.
 
+Item export checks a declared recording `metadata_sha512` but not the recording
+`sample_sha512`, because that hash covers every item and verifying it would
+read the whole batch. Chunk CRC32C checks each sample chunk that export reads.
+Unbatched export verifies both hashes.
+
 Export checks the prepared metadata against the SigMF schema before writing any
 output and raises `ValueError` if it does not conform. For example, captures
 and annotations must be ordered by `core:sample_start`.
 
 Standard SigMF export supports only `time`, `iq`, and `channel` sample axes.
-Export rejects other axes, including when `force=True` or
-`allow_lossy=True`. Select a compatible signal layout before export.
+Export preflight and encoding reject other axes, including when `force=True`
+or `allow_lossy=True`. Select a compatible signal layout before export.
 
-Export rejects indexes, extension groups or arrays, and nonempty
-per-channel metadata because they have no selected interchange representation.
+Export rejects unprojected indexes, extension groups or arrays, nonempty
+per-channel metadata, and recording nodes outside the defined layout, such as an
+array inside a channel group, because they have no selected interchange
+representation.
 Pass `allow_lossy=True` or `--allow-lossy` to omit them with a warning. This option
 also applies to archive export. `force=True` and `--force` bypass stale sample
 span checks only. They do not authorize metadata loss or bypass hash checks.
@@ -1039,3 +1046,40 @@ store unchanged. A chunk or shard extent must be a positive integer, and a
 chunk or shard shape must have one extent per sample-array dimension. Import
 rollback and export replacement handle operation failures. They do not provide
 a transaction across process termination, power loss, or concurrent access.
+
+## Review an export before writing
+
+`plan_sigmf_export()` returns proposed metadata and lists of preserved,
+translated, regenerated, omitted, and rejected content. By default it streams
+samples to verify exact encoding and declared integrity. Use
+`verify_samples=False` for metadata inspection without sample reads. Such a
+plan does not establish lossless sample conversion. Planning never writes
+output or repairs source metadata, and export revalidates the source. As with
+export, a missing recording or projected index raises `KeyError` instead of
+appearing as a rejection.
+
+```python
+from sigmf_zarr import SigMFZarrStore, plan_sigmf_export
+
+with SigMFZarrStore.open("store.zarr") as store:
+    plan = plan_sigmf_export(
+        store, "rec", item_index=0, project_indexes=("mod_class_id", "snr_db")
+    )
+    print(plan.as_dict())
+```
+
+The equivalent command prints a JSON report and returns a nonzero status when
+rejections or unauthorized omissions prevent export:
+
+```bash
+sigmf-zarr export store.zarr item.sigmf-meta --recording-name rec \
+  --item-index 0 --project-index mod_class_id --project-index snr_db --dry-run
+```
+
+Remove `--dry-run` to write the recording. Explicitly selected indexes retain
+scalar values, category IDs and labels, units, and all JSON descriptors in the
+[SigMF-Zarr index projection extension](sigmf-zarr-indexes.sigmf-ext.md).
+Unselected native metadata remains an omission. Projection rejects conflicting
+existing JSON and does not infer canonical modulation or SNR meanings.
+The same options are available through the recording resource export command.
+Archive exports do not accept item selection, projection, or dry runs.

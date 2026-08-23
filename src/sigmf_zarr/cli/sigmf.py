@@ -173,11 +173,12 @@ class ImportSigMFCommand(ImportCommand):
                 args.store,
                 args.source,
                 overwrite_store=args.overwrite_store,
-                overwrite_recordings=args.overwrite_recording,
+                overwrite_recording=args.overwrite_recording,
+                overwrite_collection=args.overwrite_collection,
                 automatic_sharding=not args.no_sample_sharding,
                 zarr_format=args.zarr_format,
             )
-            print(store.info())
+            print_text(store.info())
             return 0
 
         if import_format == "sigmf":
@@ -190,7 +191,7 @@ class ImportSigMFCommand(ImportCommand):
                 automatic_sharding=not args.no_sample_sharding,
                 zarr_format=args.zarr_format,
             )
-            print(recording.info())
+            print_text(recording.info())
             return 0
 
         raise ValueError(f"Unsupported SigMF import format: {import_format}")
@@ -303,11 +304,6 @@ class ExportCommand(Command):
 
         Returns:
             Process exit status.
-
-        Raises:
-            SystemExit: If a single-recording export omits
-                `--recording-name`, or options do not apply to the selected
-                export kind.
         """
         store = SigMFZarrStore.open(args.store)
 
@@ -316,8 +312,6 @@ class ExportCommand(Command):
                 require_recording(store, name)
             if args.collection_name is not None:
                 require_collection(store, args.collection_name)
-            if args.item_index is not None:
-                raise SystemExit("--item-index cannot be used with --archive")
             archive_path = export_archive(
                 store,
                 args,

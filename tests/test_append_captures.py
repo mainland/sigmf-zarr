@@ -11,6 +11,7 @@ import pytest
 
 from sigmf_zarr.json import JSONObject, json_object_list
 from sigmf_zarr.store import SigMFZarrStore, ZarrFormat
+from sigmf_zarr.validation import validate_store
 
 
 @pytest.mark.parametrize("zarr_format", [2, 3])
@@ -223,3 +224,50 @@ def test_unbatched_append_rejects_item_captures(
             recording.append_samples(np.zeros(8), item_captures=[[{}]])
         np.testing.assert_array_equal(recording.samples[:], original)
         assert store.verify_integrity()
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize(
+    ("capture", "error"),
+    [
+        ({"core:sample_start": -5}, "nonnegative integer"),
+        ({"core:sample_start": "x"}, "nonnegative integer"),
+        ({"core:sample_start": True}, "nonnegative integer"),
+        ({"core:sample_start": 10**30}, "SigMF schema"),
+        ({"core:sample_start": 0}, "precedes the last stored capture"),
+        ({"core:frequency": "high"}, "SigMF schema"),
+    ],
+)
+def test_invalid_shared_capture_leaves_recording_unchanged(
+    tmp_path: Path,
+    zarr_format: ZarrFormat,
+    batched: bool,
+    capture: JSONObject,
+    error: str,
+) -> None:
+    """A shared capture must pass the checks that validation applies.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+        batched: Whether appends extend the item axis.
+        capture: Shared capture that validation would reject.
+        error: Expected validation error text.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=zarr_format
+    )
+    recording = store.recordings.create(
+        "rec", batched=batched, sample_shape=(4,), sample_axes=("time",)
+    )
+    first = np.zeros((2, 4) if batched else (4,), np.float32)
+    recording.append_samples(first, capture={"core:sample_start": 1})
+    store.update_integrity()
+    original_samples = recording.samples[:]
+    original_metadata = recording.metadata()
+    with pytest.raises(ValueError, match=error):
+        recording.append_samples(first, capture=capture)
+    np.testing.assert_array_equal(recording.samples[:], original_samples)
+    assert recording.metadata() == original_metadata
+    assert validate_store(store, require_integrity=True).valid

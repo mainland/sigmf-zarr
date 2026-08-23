@@ -43,6 +43,7 @@ from sigmf_zarr._dtype import (
     is_numeric_sample_dtype,
     logical_sample_dtype,
 )
+from sigmf_zarr.export_plan import validate_sigmf_schema
 from sigmf_zarr.integrity import (
     INTEGRITY_ALGORITHM,
     INTEGRITY_ATTR,
@@ -213,6 +214,41 @@ def _is_channel_group_name(name: str, count: int) -> bool:
         and (name == "0" or not name.startswith("0"))
         and int(name) < count
     )
+
+
+def _check_sigmf_schema(
+    global_fields: JSONObject,
+    captures: list[JSONValue],
+    *,
+    name: str,
+) -> None:
+    """Check metadata fields against the schema that validation applies.
+
+    `validate_store()` checks recording metadata against the SigMF core
+    schema, with a placeholder `core:datatype` when none is declared.
+    Managed setters apply the same check to the fields they write, so they
+    cannot store metadata that validation rejects.
+
+    Args:
+        global_fields: Global fields to check.
+        captures: Ordered capture records to check.
+        name: Metadata name for error messages.
+
+    Raises:
+        ValueError: If the fields violate the SigMF schema.
+    """
+    document: JSONObject = {
+        "global": {"core:datatype": "rf32_le", **global_fields},
+        "captures": captures,
+        "annotations": [],
+    }
+    with warnings.catch_warnings():
+        # sigmf warns about undeclared namespaces, which SigMF-Zarr permits.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            validate_sigmf_schema(document)
+        except ValueError as exc:
+            raise ValueError(f"Invalid {name}: {exc}") from exc
 
 
 class SigMFRecording:
@@ -2282,8 +2318,9 @@ class SigMFRecording:
 
         Raises:
             ValueError: If the key is empty, contains a lone surrogate, or
-                names a managed `sigmf-zarr` storage field, or the value is
-                not finite JSON.
+                names a managed `sigmf-zarr` storage field, the value is not
+                finite JSON, or the field violates the SigMF schema that
+                `validate_store()` applies.
         """
         # Untyped callers can pass any value.
         if not isinstance(key, str) or not key:  # type: ignore[redundant-expr]
@@ -2304,6 +2341,9 @@ class SigMFRecording:
             normalized_value = json_value(
                 value, name=f"global metadata {key!r}"
             )
+        _check_sigmf_schema(
+            {key: normalized_value}, [], name=f"global metadata {key!r}"
+        )
         self._invalidate_integrity(metadata=True)
         metadata = dict(self.global_metadata)
         if key in self._SHA512_ENCODING_FIELDS:
@@ -2921,24 +2961,59 @@ class SigMFRecording:
         # channel with only some of its old or new attributes.
         channel.attrs.put(cast(dict[str, Any], copied))
 
-    def _append_capture(
+    def _shared_capture(
         self,
         capture: JSONObject | None,
         *,
         sample_start: int,
-    ) -> None:
-        """Append one optional capture metadata entry.
+    ) -> JSONObject | None:
+        """Prepare an appended shared capture before storage changes.
+
+        The capture must pass the checks that `validate_store()` applies to
+        recording captures, so an append cannot store a capture that
+        validation rejects.
 
         Args:
             capture: Optional capture metadata to append.
             sample_start: Default `core:sample_start` value.
+
+        Returns:
+            Detached capture with an explicit start, or `None` without a
+            capture.
+
+        Raises:
+            ValueError: If the start is not a nonnegative integer, precedes
+                the start of the last stored capture, or the capture
+                violates the SigMF schema.
+        """
+        if capture is None:
+            return None
+        entry = dict(capture)
+        entry.setdefault("core:sample_start", sample_start)
+        self._validate_capture_start(entry, name="capture")
+        start = cast(int, entry["core:sample_start"])
+        captures = self.captures
+        if captures:
+            previous = captures[-1].get("core:sample_start")
+            # A malformed stored start is reported by validation, not here.
+            if type(previous) is int and start < previous:
+                raise ValueError(
+                    f"capture core:sample_start {start} precedes the last "
+                    f"stored capture start {previous}"
+                )
+        _check_sigmf_schema({}, [entry], name="capture")
+        return entry
+
+    def _append_capture(self, capture: JSONObject | None) -> None:
+        """Append one optional capture prepared by `_shared_capture()`.
+
+        Args:
+            capture: Optional prepared capture metadata to append.
         """
         if capture is None:
             return
         self._invalidate_integrity(metadata=True)
-        entry = dict(capture)
-        entry.setdefault("core:sample_start", sample_start)
-        self._raw_group.attrs["captures"] = [*self.captures, entry]
+        self._raw_group.attrs["captures"] = [*self.captures, capture]
 
     @staticmethod
     def _validate_capture_start(entry: JSONObject, *, name: str) -> None:
@@ -3176,6 +3251,7 @@ class SigMFRecording:
         start = len(self)
         stop = start + append_count
         sample_shape = self.sample_shape
+        shared_capture = self._shared_capture(capture, sample_start=start)
         with self._length_change_rollback():
             if append_count:
                 # Existing item indexes no longer align after the axis grows.
@@ -3199,7 +3275,7 @@ class SigMFRecording:
                     ),
                     overwrite=False,
                 )
-            self._append_capture(capture, sample_start=start)
+            self._append_capture(shared_capture)
 
     def _append_unbatched_samples(
         self,
@@ -3254,6 +3330,9 @@ class SigMFRecording:
             return
         shape = [int(dim) for dim in self._samples_array.shape]
         shape[time_axis] = stop
+        shared_capture = self._shared_capture(
+            capture, sample_start=capture_start
+        )
         with self._length_change_rollback():
             if stop != start:
                 # A longer time axis invalidates every time-aligned index.
@@ -3271,7 +3350,7 @@ class SigMFRecording:
                 int(dim) for dim in shape
             ]
             self._raw_group.attrs["global"] = metadata
-            self._append_capture(capture, sample_start=capture_start)
+            self._append_capture(shared_capture)
 
     def append_samples(
         self,

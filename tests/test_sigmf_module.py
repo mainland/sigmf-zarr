@@ -15,11 +15,13 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 from sigmf import DATATYPE_KEY, SAMPLE_COUNT_KEY, SAMPLE_START_KEY, SHA512_KEY
-from sigmf.error import SigMFFileError
+from sigmf.error import SigMFError
 from sigmf.sigmffile import SigMFCollection as StandardSigMFCollection
 from sigmf.sigmffile import SigMFFile, fromfile
 
+import sigmf_zarr._import_target as import_target_module
 import sigmf_zarr.sigmf as sigmf_module
+from sigmf_zarr.export_plan import plan_sigmf_export
 from sigmf_zarr.json import (
     JSONObject,
     json_object,
@@ -33,8 +35,10 @@ from sigmf_zarr.store import (
     ZarrFormat,
 )
 from tests.testdata import (
+    INVALID_SIGMF_SOURCES,
     TEST_FLOAT32_DATA,
     TEST_METADATA,
+    write_invalid_sigmf_source,
 )
 
 
@@ -561,7 +565,7 @@ def test_import_sigmf_reads_standard_recording(
     write_standard_sigmf(meta_path, samples, TEST_METADATA)
 
     monkeypatch.setattr(
-        sigmf_module,
+        import_target_module,
         "SigMFZarrStore",
         lambda *args, **kwargs: store,
     )
@@ -661,7 +665,7 @@ def test_import_sigmf_stores_complex_samples_with_iq_axis(
     write_standard_sigmf(meta_path, samples, metadata)
 
     monkeypatch.setattr(
-        sigmf_module,
+        import_target_module,
         "SigMFZarrStore",
         lambda *args, **kwargs: store,
     )
@@ -817,7 +821,7 @@ def test_import_sigmf_stores_real_multichannel_samples(
     write_standard_sigmf(meta_path, samples, metadata)
 
     monkeypatch.setattr(
-        sigmf_module,
+        import_target_module,
         "SigMFZarrStore",
         lambda *args, **kwargs: store,
     )
@@ -857,7 +861,7 @@ def test_import_sigmf_stores_complex_multichannel_samples(
     write_standard_sigmf(meta_path, samples.astype(np.complex64), metadata)
 
     monkeypatch.setattr(
-        sigmf_module,
+        import_target_module,
         "SigMFZarrStore",
         lambda *args, **kwargs: store,
     )
@@ -1537,19 +1541,20 @@ def test_export_sigmf_removes_empty_extensions_after_stripping(
 
 
 def test_import_sigmf_archive_normalizes_collection_stream_names(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     """Archive import should store bare recording ids in collections.
 
     Args:
         tmp_path: Pytest temporary path fixture.
-        monkeypatch: Pytest monkeypatch fixture.
     """
     archive_root = tmp_path / "bundle"
     archive_root.mkdir()
     for name in ("rec-a", "rec-b"):
-        (archive_root / f"{name}.sigmf-meta").write_text(
-            json.dumps(metadata_without_hash()), encoding="utf-8"
+        write_standard_sigmf(
+            archive_root / f"{name}.sigmf-meta",
+            TEST_FLOAT32_DATA,
+            metadata_without_hash(),
         )
 
     collection = StandardSigMFCollection(
@@ -1564,65 +1569,16 @@ def test_import_sigmf_archive_normalizes_collection_stream_names(
     with tarfile.open(archive_path, mode="w") as archive:
         archive.add(archive_root, arcname="bundle")
 
-    store = FakeStore()
-    imported_sources: list[Path] = []
-
-    def fake_import_sigmf(
-        store_path: str | Path,
-        sigmf_path: str | Path,
-        *,
-        recording_name: str | None = None,
-        overwrite_store: bool = False,
-        overwrite_recording: bool = False,
-        automatic_sharding: bool = True,
-        sample_compressor: object = "auto",
-        zarr_format: ZarrFormat = 3,
-    ) -> FakeRecording:
-        """Capture archive import source paths.
-
-        Args:
-            store_path: Target store path.
-            sigmf_path: Source metadata path.
-            recording_name: Optional recording name override.
-            overwrite_store: Whether to recreate the store.
-            overwrite_recording: Whether to replace a recording.
-            automatic_sharding: Whether automatic sharding is enabled.
-            sample_compressor: Sample-array compressor.
-            zarr_format: Physical Zarr format.
-
-        Returns:
-            Fake imported recording.
-        """
-        del (
-            store_path,
-            recording_name,
-            overwrite_store,
-            overwrite_recording,
-            automatic_sharding,
-            sample_compressor,
-            zarr_format,
-        )
-        imported_sources.append(Path(sigmf_path))
-        return FakeRecording(name=Path(sigmf_path).stem)
-
-    monkeypatch.setattr(
-        sigmf_module,
-        "SigMFZarrStore",
-        lambda *args, **kwargs: store,
-    )
-    monkeypatch.setattr(sigmf_module, "import_sigmf", fake_import_sigmf)
-
     imported = sigmf_module.import_sigmf_archive(
         tmp_path / "store.zarr",
         archive_path,
     )
 
-    assert imported is as_store(store)
-    assert sorted(path.name for path in imported_sources) == [
-        "rec-a.sigmf-meta",
-        "rec-b.sigmf-meta",
-    ]
-    assert store.collections.open("paired").recording_ids == ("rec-a", "rec-b")
+    assert imported.list_recordings() == ("rec-a", "rec-b")
+    assert imported.collections.open("paired").recording_ids == (
+        "rec-a",
+        "rec-b",
+    )
 
 
 def test_import_sigmf_archive_rejects_stale_metadata_hash(
@@ -1652,13 +1608,51 @@ def test_import_sigmf_archive_rejects_stale_metadata_hash(
     with tarfile.open(archive_path, mode="w") as archive:
         archive.add(archive_root, arcname="bundle")
 
-    with pytest.raises(SigMFFileError) as excinfo:
+    with pytest.raises(ValueError, match="does not match") as excinfo:
         sigmf_module.import_sigmf_archive(
             tmp_path / "store.zarr",
             archive_path,
         )
     assert "hash" in str(excinfo.value).lower()
     assert "does not match" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("kind", INVALID_SIGMF_SOURCES)
+def test_import_reports_invalid_source_as_value_error(
+    tmp_path: Path, kind: str
+) -> None:
+    """Translate tar and sigmf-python failures before store creation.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        kind: Invalid source to import.
+    """
+    source = write_invalid_sigmf_source(tmp_path, kind)
+    destination = tmp_path / "store.zarr"
+    member_errors = {
+        "traversal-archive": "outside the archive root",
+        "absolute-link-archive": "not a regular file or directory",
+    }
+    if kind in member_errors:
+        with pytest.raises(ValueError, match=member_errors[kind]):
+            sigmf_module.import_sigmf_archive(destination, source)
+    elif source.suffix == ".sigmf":
+        with pytest.raises(ValueError, match="Invalid SigMF archive") as info:
+            sigmf_module.import_sigmf_archive(destination, source)
+        assert isinstance(info.value.__cause__, tarfile.TarError)
+    elif kind == "hash-mismatch":
+        with pytest.raises(ValueError, match="do not reproduce the source"):
+            sigmf_module.import_sigmf(destination, source)
+    elif kind == "unknown-datatype":
+        with pytest.raises(ValueError, match="SigMF schema"):
+            sigmf_module.import_sigmf(destination, source)
+    else:
+        with pytest.raises(
+            ValueError, match="Invalid SigMF recording"
+        ) as info:
+            sigmf_module.import_sigmf(destination, source)
+        assert isinstance(info.value.__cause__, SigMFError)
+    assert not destination.exists()
 
 
 def test_export_sigmf_archive_writes_collection_file(
@@ -2419,7 +2413,10 @@ def test_archive_failure_restores_replaced_recordings_and_collection(
         )
     with pytest.raises(OSError, match="injected late archive"):
         sigmf_module.import_sigmf_archive(
-            original_path, archive, overwrite_recordings=True
+            original_path,
+            archive,
+            overwrite_recording=True,
+            overwrite_collection=True,
         )
 
     reopened = SigMFZarrStore.open(original_path)
@@ -2473,12 +2470,61 @@ def test_archive_replacement_moves_rather_than_copies_recordings(
         "sigmf_zarr.store._transaction.shutil.copytree", forbid_copy
     )
     store = sigmf_module.import_sigmf_archive(
-        destination, archive, overwrite_recordings=True
+        destination, archive, overwrite_recording=True
     )
 
     np.testing.assert_array_equal(store.recordings["a"].samples[:], [7, 8, 9])
     assert store.verify_integrity()
     assert list(tmp_path.glob(".sigmf-zarr-backup-*")) == []
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_archive_import_applies_sample_storage_to_each_recording(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """Explicit sample chunks and shards must apply to every recording.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+        zarr_format: Physical storage format.
+    """
+    source = SigMFZarrStore.create(tmp_path / "source.zarr")
+    for name, length in (("a", 40), ("b", 70)):
+        recording = source.recordings.create(
+            name,
+            sample_shape=(length,),
+            sample_axes=("time",),
+            global_metadata={"core:datatype": "rf32_le"},
+        )
+        recording.set_samples(np.arange(length, dtype=np.float32))
+    archive = sigmf_module.export_sigmf_archive(
+        source, tmp_path / "source.sigmf"
+    )
+    sample_shards = (32,) if zarr_format == 3 else None
+
+    store = sigmf_module.import_sigmf_archive(
+        tmp_path / "store.zarr",
+        archive,
+        sample_chunks=(16,),
+        sample_shards=sample_shards,
+        zarr_format=zarr_format,
+    )
+
+    for name, length in (("a", 40), ("b", 70)):
+        samples = store.recordings[name].samples
+        assert samples.chunks == (16,)
+        assert samples.shards == sample_shards
+        np.testing.assert_array_equal(samples[:], np.arange(length))
+    assert store.verify_integrity()
+    if zarr_format == 2:
+        with pytest.raises(ValueError, match="requires Zarr format 3"):
+            sigmf_module.import_sigmf_archive(
+                tmp_path / "rejected.zarr",
+                archive,
+                sample_shards=(32,),
+                zarr_format=2,
+            )
+        assert not (tmp_path / "rejected.zarr").exists()
 
 
 def _write_source(
@@ -2524,3 +2570,131 @@ def _write_source(
     )
     meta.with_suffix(".sigmf-data").write_bytes(data)
     return meta
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            {"captures": [{"core:sample_start": 2}, {"core:sample_start": 0}]},
+            "incorrect sample start ordering",
+        ),
+        ({"global_fields": {"core:sample_rate": 1e300}}, "greater than"),
+        (
+            {"captures": [{"core:sample_start": 0, "sigmf-zarr:x": 1}]},
+            "captures entry 0",
+        ),
+        (
+            {
+                "annotations": [
+                    {"core:sample_start": 0, "sigmf-zarr:valid": True}
+                ]
+            },
+            "annotations entry 0",
+        ),
+    ],
+)
+@pytest.mark.parametrize("archive", [False, True])
+def test_import_rejects_metadata_that_export_rejects(
+    tmp_path: Path, source: dict[str, Any], message: str, archive: bool
+) -> None:
+    """Every imported recording satisfies the schema that export applies.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        source: Invalid metadata for `_write_source`.
+        message: Expected error text.
+        archive: Whether the invalid recording is an archive member.
+    """
+    root = tmp_path / "source"
+    root.mkdir()
+    meta = _write_source(root, "bad", **source)
+    destination = tmp_path / "store.zarr"
+    if archive:
+        _write_source(root, "good")
+        path = tmp_path / "source.sigmf"
+        with tarfile.open(path, "w") as output:
+            output.add(root, arcname="source")
+        with pytest.raises(ValueError, match=message):
+            sigmf_module.import_sigmf_archive(destination, path)
+    else:
+        with pytest.raises(ValueError, match=message):
+            sigmf_module.import_sigmf(destination, meta)
+    assert not destination.exists()
+
+
+def test_import_names_recording_from_any_sigmf_file_name(
+    tmp_path: Path,
+) -> None:
+    """A dataset path names the recording by its SigMF base name.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    meta = _write_source(tmp_path, "rec.v2")
+    destination = tmp_path / "store.zarr"
+    by_data = sigmf_module.import_sigmf(
+        destination, meta.with_suffix(".sigmf-data")
+    )
+    assert by_data.name == "rec.v2"
+    with pytest.raises(ValueError, match="nonempty"):
+        sigmf_module.import_sigmf(
+            tmp_path / "other.zarr", meta, recording_name=""
+        )
+    assert not (tmp_path / "other.zarr").exists()
+
+
+@pytest.mark.parametrize("data", [b"", b"\0\0\0"])
+def test_import_rejects_dataset_without_a_sample(
+    tmp_path: Path, data: bytes
+) -> None:
+    """SigMF-Zarr recordings need at least one sample.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        data: Dataset shorter than one four-byte `ci16_le` sample.
+    """
+    meta = _write_source(tmp_path, "empty", data=data)
+    destination = tmp_path / "store.zarr"
+    with pytest.raises(ValueError, match="need at least one sample"):
+        sigmf_module.import_sigmf(destination, meta)
+    assert not destination.exists()
+
+
+def test_export_rejects_complex_values_on_an_iq_axis(tmp_path: Path) -> None:
+    """Complex I/Q planes have no SigMF encoding and must not be combined.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    samples = np.array([[1 + 2j, 5 + 6j], [3 + 4j, 7 + 8j]], np.complex64)
+    store = FakeStore(
+        recordings=FakeRecordings(
+            {
+                "rec": FakeRecording(
+                    name="rec",
+                    global_metadata={"core:datatype": "cf32_le"},
+                    captures=[{"core:sample_start": 0}],
+                    samples=samples,
+                    sample_axes=("iq", "time"),
+                )
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="real dtype"):
+        sigmf_module.export_sigmf(as_store(store), "rec", tmp_path / "out")
+    plan = plan_sigmf_export(as_store(store), "rec")
+    assert any("real dtype" in reason for reason in plan.rejected)
+    with pytest.raises(ValueError, match="real dtype"):
+        sigmf_module.coerce_samples_for_sigmf(
+            samples, sample_axes=("iq", "time")
+        )
+    with pytest.raises(ValueError, match="must be real"):
+        sigmf_module._complex_from_iq(samples[0], samples[1])
+    with pytest.raises(ValueError, match="real dtype"):
+        sigmf_module._encode_sigmf_samples(
+            samples,
+            sample_axes=("iq", "time"),
+            global_metadata={"core:datatype": "cf32_le"},
+        )
+    assert list(tmp_path.iterdir()) == []

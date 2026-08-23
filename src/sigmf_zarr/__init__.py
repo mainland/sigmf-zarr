@@ -10,6 +10,7 @@ from sigmf_zarr.cspb import (
     import_cspb_dataset,
     load_cspb_truth,
 )
+from sigmf_zarr.export_plan import SigMFExportPlan, plan_sigmf_export
 from sigmf_zarr.provenance import capture_inputs, verify_inputs
 from sigmf_zarr.radioml2016 import (
     RadioML2016Dict,
@@ -18,6 +19,7 @@ from sigmf_zarr.radioml2016 import (
     as_radioml2016_dict,
     flatten_radioml2016_dataset,
     import_radioml2016_dataset,
+    load_radioml2016_pickle,
 )
 from sigmf_zarr.radioml2018 import (
     RADIOML2018_MODULATION_CLASSES,
@@ -59,6 +61,7 @@ __all__ = [
     "ReadOnlyArray",
     "ReadOnlyGroup",
     "SigMFCollection",
+    "SigMFExportPlan",
     "SigMFRecording",
     "SigMFZarrStore",
     "ValidationIssue",
@@ -79,6 +82,8 @@ __all__ = [
     "import_sigmf",
     "import_sigmf_archive",
     "load_cspb_truth",
+    "load_radioml2016_pickle",
+    "plan_sigmf_export",
     "read_tim",
     "validate_store",
     "verify_inputs",

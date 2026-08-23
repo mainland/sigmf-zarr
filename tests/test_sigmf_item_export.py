@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from sigmf_zarr.json import json_object
 from sigmf_zarr.sigmf import export_sigmf, import_sigmf
 from sigmf_zarr.store import SigMFZarrStore, ZarrFormat
 
@@ -184,3 +185,75 @@ def test_export_does_not_broadcast_source_anchors(tmp_path: Path) -> None:
             {"core:sample_start": 0},
             {"core:sample_start": 2},
         ]
+
+
+def _hashed_batch(tmp_path: Path) -> SigMFZarrStore:
+    """Create a hashed batched recording suitable for item export.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+
+    Returns:
+        Store containing recording `rec` with three items.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr")
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 8),
+        global_metadata={"core:datatype": "cf32_le", "core:sample_rate": 1.0},
+    )
+    recording.append_samples(np.arange(48, dtype=np.float32).reshape(3, 2, 8))
+    store.update_integrity()
+    return store
+
+
+def test_item_export_does_not_hash_every_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Item export must not read the whole batch to check one item.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+        monkeypatch: Monkeypatch fixture.
+    """
+    store = _hashed_batch(tmp_path)
+
+    def fail(recording: object) -> str:
+        """Reject a whole-recording sample hash.
+
+        Args:
+            recording: Recording being hashed.
+
+        Raises:
+            AssertionError: Always.
+        """
+        raise AssertionError("whole-recording sample hash was computed")
+
+    monkeypatch.setattr(
+        type(store.recordings["rec"]), "calculate_sample_sha512", fail
+    )
+    meta = export_sigmf(store, "rec", tmp_path / "item", item_index=1)
+    exported = json.loads(meta.read_text())
+    data = (tmp_path / "item.sigmf-data").read_bytes()
+    digest = hashlib.sha512(data).hexdigest()
+    assert exported["global"]["core:sha512"] == digest
+
+
+def test_item_export_still_checks_the_metadata_hash(tmp_path: Path) -> None:
+    """A stale recording metadata hash must still block item export.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+    """
+    store = _hashed_batch(tmp_path)
+    recording = store.recordings["rec"]
+    # Bypass managed invalidation, as a direct backend edit would.
+    raw = json_object(
+        recording._raw_group.attrs.asdict()["global"], name="global"
+    )
+    raw["core:description"] = "edited outside the API"
+    recording._raw_group.attrs["global"] = raw
+
+    with pytest.raises(ValueError, match="metadata SHA-512"):
+        export_sigmf(store, "rec", tmp_path / "item", item_index=0)
