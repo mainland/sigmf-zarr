@@ -60,6 +60,10 @@
 .. automodule:: sigmf_zarr.sigmf
    :members:
    :undoc-members:
+
+.. automodule:: sigmf_zarr.export_plan
+   :members:
+   :undoc-members:
 ```
 
 ## RadioML

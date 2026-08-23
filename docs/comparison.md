@@ -172,16 +172,23 @@ conversion copies SigMF metadata into Zarr attributes, maps complex and channel
 interleaving to explicit axes, and rechunks the samples. Available standard
 hashes are checked during this process.
 
-An unbatched SigMF-Zarr recording can be exported as a standard SigMF
-recording. Export restores standard sample order and byte encoding, removes
-SigMF-Zarr storage fields, validates sample-indexed metadata, and calculates
-hashes over the files it writes. Batched recordings have no direct standard
-SigMF recording equivalent and must first be separated or otherwise mapped by
-the application.
+An unbatched recording or one explicitly selected batch item can be exported
+as a standard SigMF recording. Export restores standard sample order and byte
+encoding, removes SigMF-Zarr storage fields, validates absolute sample indices,
+and calculates hashes over the files it writes. Item export resolves capture
+scopes while retaining independently declared timestamps.
 
-Conversion is therefore semantic rather than a byte-for-byte wrapper around
-the original files. Standard SigMF tools consume exported recordings without
-needing to understand the SigMF-Zarr schema.
+Export rejects native indexes, extension arrays, and per-channel metadata unless
+the caller explicitly permits their omission with a warning. Import rejects
+metadata-only inputs, non-sample header/footer bytes, additional top-level
+objects, and auxiliary archive files. Conversion therefore supports a defined
+subset of SigMF. See [interchange limits](usage.md).
+
+Conversion preserves supported metadata values, including source versions and
+exact timestamp strings, but may add defaults and regenerate file references
+and hashes. It does not preserve original JSON bytes or archive layout.
+Exported recordings use standard SigMF files. Consumers must still understand
+any required extension namespaces.
 
 ## Choosing a representation
 

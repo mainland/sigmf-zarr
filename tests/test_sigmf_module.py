@@ -1373,8 +1373,10 @@ def test_import_sigmf_archive_normalizes_collection_stream_names(
     """
     archive_root = tmp_path / "bundle"
     archive_root.mkdir()
-    (archive_root / "rec-a.sigmf-meta").write_text("{}", encoding="utf-8")
-    (archive_root / "rec-b.sigmf-meta").write_text("{}", encoding="utf-8")
+    for name in ("rec-a", "rec-b"):
+        (archive_root / f"{name}.sigmf-meta").write_text(
+            json.dumps(metadata_without_hash()), encoding="utf-8"
+        )
 
     collection = StandardSigMFCollection(
         metafiles=["rec-a.sigmf-meta", "rec-b.sigmf-meta"],
@@ -1529,6 +1531,7 @@ def test_export_sigmf_archive_writes_collection_file(
         overwrite: bool = False,
         pretty: bool = True,
         force: bool = False,
+        allow_lossy: bool = False,
     ) -> Path:
         """Write fake exported SigMF files.
 
@@ -1539,11 +1542,12 @@ def test_export_sigmf_archive_writes_collection_file(
             overwrite: Whether to replace existing files.
             pretty: Whether to pretty-print JSON.
             force: Whether to bypass stale metadata validation.
+            allow_lossy: Whether metadata may be omitted.
 
         Returns:
             Written metadata path.
         """
-        del _store, overwrite, pretty, force
+        del _store, overwrite, pretty, force, allow_lossy
         meta_path = Path(output_path).with_suffix(".sigmf-meta")
         write_standard_sigmf(
             meta_path,
@@ -1943,6 +1947,65 @@ def test_export_regenerates_external_dataset_reference(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_archive_preserves_dotted_names_and_collection_subset_order(
+    tmp_path: Path, zarr_format: int
+) -> None:
+    """Archive round trips must preserve dotted names and ordered membership.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+        zarr_format: Physical storage format.
+    """
+    names = ("rec.a", "rec.b", "other", "rec", "rec.sigmf-meta")
+    members = ("rec.sigmf-meta", "rec.b", "rec", "rec.a")
+    store = sigmf_module.SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=zarr_format
+    )
+    for index, name in enumerate(names):
+        recording = store.recordings.open(
+            name,
+            create=True,
+            sample_dtype=np.float32,
+            sample_shape=(3,),
+            sample_axes=("time",),
+            global_metadata={"core:datatype": "rf32_le"},
+        )
+        recording.set_samples(np.arange(3, dtype=np.float32) + index)
+    store.collections.open(
+        "pair.v1", create=True, recording_ids=members
+    )
+    archive = sigmf_module.export_sigmf_archive(
+        store, tmp_path / "bundle.sigmf", collection_name="pair.v1"
+    )
+    imported = sigmf_module.import_sigmf_archive(
+        tmp_path / "imported.zarr", archive, zarr_format=zarr_format
+    )
+    assert set(imported.list_recordings()) == set(names)
+    assert imported.collections.open("pair.v1").recording_ids == members
+    for index, name in enumerate(names):
+        np.testing.assert_array_equal(
+            imported.recordings.open(name).samples[:],
+            np.arange(3, dtype=np.float32) + index,
+        )
+    assert imported.verify_integrity()
+
+
+def test_archive_rejects_duplicate_recording_names(tmp_path: Path) -> None:
+    """Repeated selections must be rejected before archive publication.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+    """
+    with pytest.raises(ValueError, match="must be unique"):
+        sigmf_module.export_sigmf_archive(
+            FakeStore(),
+            tmp_path / "bundle.sigmf",
+            recording_names=["rec", "rec"],
+        )
+    assert not (tmp_path / "bundle.sigmf").exists()
+
+
 def test_sigmf_import_reads_bounded_chunks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2109,3 +2172,117 @@ def test_export_retains_backup_when_rollback_fails(
     assert (
         (backups[0] / ".previous.sigmf-data").read_bytes() == b"original data"
     )
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+@pytest.mark.parametrize("failure_phase", ["recording", "collection"])
+def test_archive_failure_restores_replaced_recordings_and_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    zarr_format: int,
+    failure_phase: str,
+) -> None:
+    """A late archive failure must restore originals and remove new resources.
+
+    Args:
+        tmp_path: Temporary directory fixture.
+        monkeypatch: Monkeypatch fixture.
+        zarr_format: Physical storage format.
+        failure_phase: Resource finalization at which to inject failure.
+    """
+    original_path = tmp_path / "original.zarr"
+    original = sigmf_module.SigMFZarrStore.create(
+        original_path, zarr_format=zarr_format
+    )
+    recording = original.recordings.open(
+        "a",
+        create=True,
+        sample_dtype=np.float32,
+        sample_shape=(3,),
+        sample_axes=("time",),
+        global_metadata={"core:datatype": "rf32_le"},
+    )
+    recording.set_samples(np.array([1, 2, 3], dtype=np.float32))
+    original.collections.open(
+        "paired",
+        create=True,
+        recording_ids=("a",),
+        metadata={"description": "original collection"},
+    )
+    original.update_integrity()
+    original_metadata = recording.global_metadata
+    incoming = sigmf_module.SigMFZarrStore.create(
+        tmp_path / "incoming.zarr", zarr_format=zarr_format
+    )
+    for name in ("a", "b"):
+        imported = incoming.recordings.open(
+            name,
+            create=True,
+            sample_dtype=np.float32,
+            sample_shape=(3,),
+            sample_axes=("time",),
+            global_metadata={"core:datatype": "rf32_le"},
+        )
+        imported.set_samples(np.array([7, 8, 9], dtype=np.float32))
+    incoming.collections.open(
+        "paired", create=True, recording_ids=("b", "a")
+    )
+    archive = sigmf_module.export_sigmf_archive(
+        incoming, tmp_path / "incoming.sigmf", collection_name="paired"
+    )
+    update_recording = sigmf_module.SigMFRecording.update_integrity
+
+    def fail_late_recording(
+        resource: sigmf_module.SigMFRecording,
+    ) -> dict[str, Any]:
+        """Reject finalizing the second recording after replacing the first.
+
+        Args:
+            resource: Imported recording.
+
+        Returns:
+            Integrity metadata for other recordings.
+
+        Raises:
+            OSError: For the second imported recording.
+        """
+        if resource.name == "b":
+            raise OSError("injected late archive failure")
+        return update_recording(resource)
+
+    def fail_collection(resource: sigmf_module.SigMFCollection) -> None:
+        """Reject collection finalization after all recordings were written.
+
+        Args:
+            resource: Imported collection.
+
+        Raises:
+            OSError: To roll back the entire archive import.
+        """
+        raise OSError("injected late archive failure")
+
+    if failure_phase == "recording":
+        monkeypatch.setattr(
+            sigmf_module.SigMFRecording,
+            "update_integrity",
+            fail_late_recording,
+        )
+    else:
+        monkeypatch.setattr(
+            sigmf_module.SigMFCollection, "update_integrity", fail_collection
+        )
+    with pytest.raises(OSError, match="injected late archive"):
+        sigmf_module.import_sigmf_archive(
+            original_path, archive, overwrite_recordings=True
+        )
+
+    reopened = sigmf_module.SigMFZarrStore.open(original_path)
+    assert reopened.list_recordings() == ("a",)
+    restored = reopened.recordings.open("a")
+    np.testing.assert_array_equal(restored.samples[:], [1, 2, 3])
+    assert restored.global_metadata == original_metadata
+    collection = reopened.collections.open("paired")
+    assert collection.recording_ids == ("a",)
+    assert collection.metadata == {"description": "original collection"}
+    assert reopened.verify_integrity()
+    assert list(tmp_path.glob(".sigmf-zarr-backup-*")) == []

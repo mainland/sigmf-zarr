@@ -1546,6 +1546,7 @@ source = { editable = "." }
 dependencies = [
     { name = "crc32c" },
     { name = "h5py" },
+    { name = "jsonschema" },
     { name = "numcodecs" },
     { name = "numpy" },
     { name = "sigmf" },
@@ -1575,6 +1576,7 @@ requires-dist = [
     { name = "docformatter", marker = "extra == 'dev'" },
     { name = "furo", marker = "extra == 'docs'", specifier = ">=2024.1.29" },
     { name = "h5py", specifier = ">=3.11" },
+    { name = "jsonschema", specifier = ">=4.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=2.0" },
     { name = "numcodecs", specifier = ">=0.12" },
