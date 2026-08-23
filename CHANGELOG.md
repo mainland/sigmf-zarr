@@ -62,14 +62,17 @@ complete.
 
 - Import and export standard SigMF recordings, archives, and collections.
   Preserve and verify standard SigMF dataset hashes.
-- Preserve exact dataset encodings, source recording versions, and absolute
-  sample coordinates based on `core:offset`.
+- Preserve exact dataset encodings, source recording and collection versions,
+  and absolute sample coordinates based on `core:offset`.
 - Export explicitly selected batch items with resolved capture scopes,
   independent timestamps, and per-item dataset hashes.
-- Reject unsupported input metadata before destination creation.
+- Reject unsupported input metadata and archive files before destination
+  creation. Reject sample axes that standard SigMF cannot represent.
 - Require explicit permission, and warn, before omitting native indexes,
   extension arrays, or channel metadata during standard export.
 - Check exported metadata against the SigMF schema before writing output.
+- Move replaced recordings and collections to a backup during archive import
+  instead of copying them.
 
 ### Dataset importers
 

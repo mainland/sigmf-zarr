@@ -137,6 +137,15 @@ Export a standard SigMF archive:
 sigmf-zarr export store.zarr output.sigmf --archive --recording rec1
 ```
 
+Export a collection and the recordings it references:
+
+```bash
+sigmf-zarr store store.zarr collection paired export paired.sigmf
+```
+
+An archive export with `--collection-name` and no `--recording` option also
+contains only the collection's recordings.
+
 Export targets without a `.sigmf-meta` or `.sigmf` suffix receive one, and dots
 in the target stem are retained.
 
@@ -597,9 +606,37 @@ export_sigmf(
 )
 ```
 
-Standard SigMF export supports only unbatched recordings. Batched recordings
-represent multiple independent items, so exporting them to standard SigMF
-requires an explicit split strategy that the implementation does not provide.
+Standard SigMF export accepts an unbatched recording or one explicitly selected
+batch item. Pass `item_index=0` to `export_sigmf` or `--item-index 0` to either
+single-recording export command to select the first item. The index must be a
+nonnegative integer within the batch. Archive export does not accept an item
+selection.
+
+Item export resolves the item's global overrides and combines shared and local
+annotations. It translates the applicable shared capture from item coordinates
+to the item's `core:offset`, then merges local captures in sample coordinates.
+Local captures win at duplicate starts. Shared acquisition fields supply
+explicit defaults for each local capture, except for `core:datetime`,
+`core:global_index`, and `core:sample_start`. Shared source anchors apply only
+to the item at their declared item offset. Export never infers anchors for later
+items or local captures.
+Captures and annotations are sorted by sample start. Export calculates a new
+item hash and checks any hash explicitly supplied in the item's global metadata.
+The source batch remains unchanged.
+
+Export checks the prepared metadata against the SigMF schema before writing any
+output and raises `ValueError` if it does not conform. For example, captures
+and annotations must be ordered by `core:sample_start`.
+
+Standard SigMF export supports only `time`, `iq`, and `channel` sample axes.
+Export rejects other axes, including when `force=True` or
+`allow_lossy=True`. Select a compatible signal layout before export.
+
+Export rejects indexes, extension groups or arrays, and nonempty
+per-channel metadata because they have no selected interchange representation.
+Pass `allow_lossy=True` or `--allow-lossy` to omit them with a warning. This option
+also applies to archive export. `force=True` and `--force` bypass stale sample
+span checks only. They do not authorize metadata loss or bypass hash checks.
 
 When importing standard SigMF, `core:num_channels` is mapped to an explicit
 SigMF-Zarr `channel` axis. A real two-channel SigMF stream imports as
@@ -614,7 +651,28 @@ Export also restores the declared byte order for floating-point samples.
 
 Standard SigMF import reads sample data in bounded blocks. Sample conversion
 does not require materializing the complete dataset. Export regenerates the
-dataset reference for its output files.
+dataset reference for its output files and preserves dotted recording names
+and collection membership in archives.
+
+Import retains the source `core:version`, capture timestamps, annotations, and
+namespaced fields within the three standard metadata sections. Collection
+versions and custom fields are also retained when the collection is selected
+for archive export. Conversion does not preserve JSON formatting, archive
+layout, or metadata-file bytes. Export may insert default `core:num_channels`
+and `core:offset` values, removes `core:dataset` for its conforming output pair,
+and regenerates dataset and collection stream hashes.
+
+Import rejects metadata-only inputs, datasets with nonzero `core:header_bytes`
+or `core:trailing_bytes`, and extension-defined top-level objects. Archive import
+also rejects auxiliary files, multiple collections, and extra fields in
+`core:streams` entries. These checks run before destination creation. Export
+rejects header/footer metadata because it writes sample-only datasets. These
+limits mean conversion supports a subset of SigMF rather than every valid
+SigMF representation.
+
+Sample starts use absolute indices. For a recording with `core:offset` equal to
+1000 and four samples, export validates metadata against the interval from 1000
+through 1004, with an exclusive end for nonempty spans.
 
 Import verifies that the reconstructed standard dataset bytes match the source
 `core:sha512` and stores that digest. If conversion cannot preserve the source
@@ -686,6 +744,12 @@ conversion, or integrity calculation fails. If restoration itself fails, the
 error identifies a retained backup for recovery. Import cleanup removes a
 partially created new recording. A failed import of a new recording may leave
 the root integrity hash absent, requiring recalculation.
+
+Archive import retains backups until every recording, collection, and hash
+update succeeds. Import moves each replaced recording or collection to a backup
+directory beside the store, on the same filesystem, rather than copying it.
+Archive import first extracts the complete archive into the system temporary
+directory, which must have space for the extracted files.
 
 An explicit `overwrite_store=True` recreates the destination store before the
 recording import and does not preserve its previous contents. Import rollback
