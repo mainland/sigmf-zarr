@@ -33,6 +33,10 @@ from sigmf_zarr.store import (
     SigMFZarrStore,
     ZarrFormat,
 )
+from sigmf_zarr.store._transaction import (
+    recording_import_transaction,
+    retained_backup_directory,
+)
 
 
 def coerce_sigmf_samples(
@@ -109,43 +113,51 @@ def sigmf_sample_axes(
     return ("time",)
 
 
-def _read_sigmf_samples(sigmf_file: SigMFFile) -> npt.NDArray[Any]:
-    """Read SigMF samples without narrowing floating complex precision.
-
-    sigmf-python intentionally returns all floating complex data as
-    `complex64`. Read floating complex files directly so `cf64_*` values retain
-    their 64-bit components. Other datatypes continue to use sigmf-python's
-    conversion and autoscaling behavior.
+def _iter_import_sample_chunks(
+    sigmf_file: SigMFFile,
+    *,
+    chunk_size: int,
+) -> Iterator[npt.NDArray[Any]]:
+    """Read bounded sample chunks without scaling or narrowing components.
 
     Args:
         sigmf_file: Open standard SigMF recording.
+        chunk_size: Maximum number of time samples per chunk.
 
-    Returns:
-        Source samples in their supported logical dtype.
+    Yields:
+        Logical sample tensors with time as the final axis.
+
+    Raises:
+        ValueError: If the source has no dataset or ends before its declared
+            sample count.
     """
     datatype = sigmf_file.get_global_field("core:datatype")
-    if not isinstance(datatype, str):
-        return np.asarray(sigmf_file.read_samples())
     info = dtype_info(datatype)
-    if not info["is_complex"] or info["is_fixedpoint"]:
-        return np.asarray(sigmf_file.read_samples())
     if sigmf_file.data_file is None:
-        return np.asarray(sigmf_file.read_samples())
-
+        raise ValueError("SigMF import requires a dataset file")
     num_channels = int(sigmf_file.num_channels)
-    count = int(sigmf_file.sample_count) * num_channels
+    sample_count = int(sigmf_file.sample_count)
+    integer_iq = info["is_complex"] and info["is_fixedpoint"]
     storage_dtype = np.dtype(
         cast(np.dtype[Any], info["memmap_map_type"])
     )
-    samples = np.fromfile(
-        sigmf_file.data_file,
-        dtype=storage_dtype,
-        count=count,
-        offset=int(getattr(sigmf_file, "data_offset", 0)),
-    )
-    if num_channels > 1:
-        return samples.reshape((-1, num_channels))
-    return samples
+    with Path(sigmf_file.data_file).open("rb") as handle:
+        handle.seek(int(getattr(sigmf_file, "data_offset", 0)))
+        for start in range(0, sample_count, chunk_size):
+            length = min(chunk_size, sample_count - start)
+            count = length * num_channels * (2 if integer_iq else 1)
+            raw = np.fromfile(handle, dtype=storage_dtype, count=count)
+            if raw.size != count:
+                raise ValueError("SigMF dataset ended before its sample count")
+            if integer_iq:
+                if num_channels > 1:
+                    yield raw.reshape(length, num_channels, 2).transpose(
+                        1, 2, 0
+                    )
+                else:
+                    yield raw.reshape(length, 2).T
+            else:
+                yield coerce_sigmf_samples(raw, num_channels=num_channels)
 
 
 def sigmf_dtype_to_zarr(
@@ -252,62 +264,84 @@ def _complex_from_iq(
     return result
 
 
-def _sigmf_storage_dtype(
-    recording: SigMFRecording,
-) -> np.dtype[Any] | None:
-    """Return the raw on-disk dtype declared for standard SigMF export.
-
-    Args:
-        recording: Recording being exported.
-
-    Returns:
-        Declared raw dataset dtype, or `None` when no safe direct mapping is
-        available.
-    """
-    return _sigmf_storage_dtype_from_metadata(recording.global_metadata)
-
-
-def _sigmf_storage_dtype_from_metadata(
-    global_metadata: JSONObject,
-) -> np.dtype[Any] | None:
-    """Return the standard on-disk dtype declared by global metadata.
-
-    Args:
-        global_metadata: Standard SigMF global metadata.
-
-    Returns:
-        Declared raw dataset dtype, or None when no direct mapping is safe.
-    """
-    datatype = global_metadata.get("core:datatype")
-    if not isinstance(datatype, str):
-        return None
-    info = dtype_info(datatype)
-    if info["is_complex"] and info["is_fixedpoint"]:
-        return None
-    return np.dtype(cast(np.dtype[Any], info["memmap_map_type"]))
-
-
-def _array_sigmf_sha512(
+def _encode_sigmf_samples(
     samples: npt.ArrayLike,
     *,
     sample_axes: tuple[str, ...],
     global_metadata: JSONObject,
-) -> str:
-    """Hash an in-memory array in its declared standard SigMF encoding.
+) -> npt.NDArray[Any]:
+    """Encode samples in the exact component order and dtype SigMF declares.
 
     Args:
-        samples: SigMF-Zarr logical sample tensor.
-        sample_axes: Semantic axes for the sample tensor.
+        samples: Logical sample tensor.
+        sample_axes: Semantic sample axes.
         global_metadata: Standard SigMF global metadata.
 
     Returns:
-        Lowercase SHA-512 digest of the encoded dataset bytes.
+        Contiguous array in standard dataset byte order.
+
+    Raises:
+        ValueError: If integer I/Q values cannot be represented by the
+            declared datatype.
     """
-    encoded = coerce_samples_for_sigmf(samples, sample_axes=sample_axes)
-    storage_dtype = _sigmf_storage_dtype_from_metadata(global_metadata)
-    if storage_dtype is not None:
-        encoded = np.asarray(encoded, dtype=storage_dtype)
-    return hashlib.sha512(np.ascontiguousarray(encoded).tobytes()).hexdigest()
+    datatype = global_metadata.get("core:datatype")
+    if not isinstance(datatype, str):
+        return np.ascontiguousarray(
+            coerce_samples_for_sigmf(samples, sample_axes=sample_axes)
+        )
+    info = dtype_info(datatype)
+    storage_dtype = np.dtype(cast(np.dtype[Any], info["memmap_map_type"]))
+    if info["is_complex"] and info["is_fixedpoint"]:
+        array = np.asarray(samples)
+        if "iq" in sample_axes:
+            iq_axis = sample_axes.index("iq")
+            if array.shape[iq_axis] != 2:
+                raise ValueError(
+                    "Complex SigMF encoding requires two I/Q components"
+                )
+            encoded = np.moveaxis(
+                array, (sample_axes.index("time"), iq_axis), (0, -1)
+            )
+        else:
+            values = coerce_samples_for_sigmf(array, sample_axes=sample_axes)
+            if not np.iscomplexobj(values):
+                raise ValueError(
+                    "Complex SigMF encoding requires I/Q components"
+                )
+            encoded = np.stack((values.real, values.imag), axis=-1)
+        _validate_integer_components(encoded, storage_dtype)
+    else:
+        encoded = coerce_samples_for_sigmf(samples, sample_axes=sample_axes)
+    return np.ascontiguousarray(encoded, dtype=storage_dtype)
+
+
+def _validate_integer_components(
+    components: npt.NDArray[Any],
+    dtype: np.dtype[Any],
+) -> None:
+    """Check integer component representability before encoding.
+
+    Args:
+        components: Real-valued I/Q components.
+        dtype: Declared integer storage dtype.
+
+    Raises:
+        ValueError: If values are fractional, non-finite, or out of range.
+    """
+    if components.size == 0:
+        return
+    limits = np.iinfo(dtype)
+    if (
+        components.dtype.kind not in "iuf"
+        or not np.all(np.isfinite(components))
+        or (
+            components.dtype.kind == "f"
+            and np.any(components != np.trunc(components))
+        )
+        or int(components.min()) < limits.min
+        or int(components.max()) > limits.max
+    ):
+        raise ValueError(f"I/Q components cannot be represented by {dtype}")
 
 
 def strip_zarr_metadata(global_metadata: JSONObject) -> JSONObject:
@@ -434,6 +468,8 @@ def _prepare_export_global_metadata(recording: SigMFRecording) -> JSONObject:
             not match the derived channel count.
     """
     metadata = strip_zarr_metadata(recording.global_metadata)
+    # Every export writes a conforming pair with matching filename stems.
+    metadata.pop("core:dataset", None)
     channel_count = recording.num_channels
     field = "core:num_channels"
     declared_value = metadata.get(field)
@@ -605,19 +641,17 @@ def _iter_sigmf_data_chunks(
         sample_count=sample_count,
         time_axis=time_axis,
     )
-    storage_dtype = _sigmf_storage_dtype(recording)
 
     for start in range(0, sample_count, chunk_size):
         stop = min(start + chunk_size, sample_count)
         key: list[slice] = [slice(None)] * len(samples.shape)
         key[time_axis] = slice(start, stop)
-        chunk = coerce_samples_for_sigmf(
+        chunk = _encode_sigmf_samples(
             samples[tuple(key)],
             sample_axes=sample_axes,
+            global_metadata=recording.global_metadata,
         )
-        if storage_dtype is not None:
-            chunk = np.asarray(chunk, dtype=storage_dtype)
-        yield np.ascontiguousarray(chunk)
+        yield chunk
 
 
 def calculate_sha512(recording: SigMFRecording) -> str:
@@ -712,12 +746,44 @@ def _replace_sigmf_pair(
         OSError: If replacement fails. Existing files are restored when
             possible before the error is propagated.
     """
-    backup_meta = tmp_meta.parent / ".previous.sigmf-meta"
-    backup_data = tmp_data.parent / ".previous.sigmf-data"
+    with retained_backup_directory(meta_path.parent) as backup_dir:
+        _publish_sigmf_pair(
+            tmp_meta=tmp_meta,
+            tmp_data=tmp_data,
+            meta_path=meta_path,
+            data_path=data_path,
+            backup_dir=backup_dir,
+        )
+
+
+def _publish_sigmf_pair(
+    *,
+    tmp_meta: Path,
+    tmp_data: Path,
+    meta_path: Path,
+    data_path: Path,
+    backup_dir: Path,
+) -> None:
+    """Publish a pair while tracking ownership of each destination file.
+
+    Args:
+        tmp_meta: Complete temporary metadata file.
+        tmp_data: Complete temporary data file.
+        meta_path: Final metadata path.
+        data_path: Final data path.
+        backup_dir: Recovery directory retained if rollback fails.
+
+    Raises:
+        OSError: If backup, publication, or restoration fails.
+    """
+    backup_meta = backup_dir / ".previous.sigmf-meta"
+    backup_data = backup_dir / ".previous.sigmf-data"
     had_meta = meta_path.exists()
     had_data = data_path.exists()
     moved_meta = False
     moved_data = False
+    installed_meta = False
+    installed_data = False
     try:
         # Publish data before metadata so a visible new metadata file never
         # points at an old data file during a successful replacement.
@@ -728,10 +794,14 @@ def _replace_sigmf_pair(
             data_path.replace(backup_data)
             moved_data = True
         tmp_data.replace(data_path)
+        installed_data = True
         tmp_meta.replace(meta_path)
+        installed_meta = True
     except OSError:
-        meta_path.unlink(missing_ok=True)
-        data_path.unlink(missing_ok=True)
+        if installed_meta:
+            meta_path.unlink(missing_ok=True)
+        if installed_data:
+            data_path.unlink(missing_ok=True)
         if moved_data:
             backup_data.replace(data_path)
         if moved_meta:
@@ -773,7 +843,9 @@ def import_sigmf(
         Imported recording wrapper.
 
     Raises:
-        ValueError: If the SigMF data has no sample axis.
+        ValueError: If source bytes cannot be represented losslessly, the
+            target exists without overwrite permission, or replacement uses
+            a backend other than a local directory store.
     """
     sigmf_file = fromfile(str(sigmf_path))
     metadata = cast(dict[str, object], sigmf_file.get_global_info())
@@ -783,26 +855,39 @@ def import_sigmf(
         sigmf_file.get_annotations(), name="annotations"
     )
     num_channels = _sigmf_num_channels(global_metadata)
-    sigmf_samples = _read_sigmf_samples(sigmf_file)
-    samples = coerce_sigmf_samples(
-        sigmf_samples,
-        num_channels=num_channels,
+    datatype = cast(str, global_metadata["core:datatype"])
+    sample_dtype, component_shape = sigmf_dtype_to_zarr(datatype)
+    sample_shape = (
+        *((num_channels,) if num_channels > 1 else ()),
+        *component_shape,
+        int(sigmf_file.sample_count),
     )
-    sample_axes = sigmf_sample_axes(
-        sigmf_samples,
-        num_channels=num_channels,
+    sample_axes = (
+        *(("channel",) if num_channels > 1 else ()),
+        *(("iq",) if component_shape else ()),
+        "time",
     )
-    if samples.ndim == 0:
-        raise ValueError("SigMF sample data must have at least one axis")
+    # Limit conversion buffers to approximately eight MiB of source samples.
+    bytes_per_time_sample = (
+        sample_dtype.itemsize * num_channels * (2 if component_shape else 1)
+    )
+    chunk_size = max(1, (8 * 1024 * 1024) // bytes_per_time_sample)
 
     # Verify representability before changing the target store. Conversion of
     # a source datatype must reproduce the exact standard SigMF byte stream.
     source_sha512 = global_metadata.get(SHA512_KEY)
-    imported_sha512 = _array_sigmf_sha512(
-        samples,
-        sample_axes=sample_axes,
-        global_metadata=global_metadata,
-    )
+    digest = hashlib.sha512()
+    for samples in _iter_import_sample_chunks(
+        sigmf_file, chunk_size=chunk_size
+    ):
+        digest.update(
+            _encode_sigmf_samples(
+                samples,
+                sample_axes=sample_axes,
+                global_metadata=global_metadata,
+            ).tobytes()
+        )
+    imported_sha512 = digest.hexdigest()
     if isinstance(source_sha512, str) and not hmac.compare_digest(
         source_sha512.lower(), imported_sha512
     ):
@@ -812,7 +897,9 @@ def import_sigmf(
             "losslessly"
         )
 
-    target_name = recording_name or Path(sigmf_path).stem.replace(".sigmf", "")
+    target_name = recording_name or Path(sigmf_path).name.removesuffix(
+        ".sigmf-meta"
+    )
     store = SigMFZarrStore.create(
         store_path,
         overwrite=overwrite_store,
@@ -820,8 +907,8 @@ def import_sigmf(
     )
     resolved_sample_chunks, resolved_sample_shards = (
         resolve_import_sample_storage(
-            samples.dtype,
-            tuple(int(dim) for dim in samples.shape),
+            sample_dtype,
+            sample_shape,
             1,
             batched=False,
             zarr_format=store.zarr_format,
@@ -830,13 +917,15 @@ def import_sigmf(
             automatic_sharding=automatic_sharding,
         )
     )
-    try:
+    with recording_import_transaction(
+        store, target_name, overwrite=overwrite_recording
+    ):
         recording = store.recordings.open(
             target_name,
             create=True,
             batched=False,
-            sample_dtype=samples.dtype,
-            sample_shape=tuple(int(dim) for dim in samples.shape),
+            sample_dtype=sample_dtype,
+            sample_shape=sample_shape,
             sample_axes=sample_axes,
             global_metadata=global_metadata,
             captures=captures,
@@ -846,15 +935,29 @@ def import_sigmf(
             sample_compressor=sample_compressor,
             overwrite=overwrite_recording,
         )
-        recording.set_samples(samples)
+        written_digest = hashlib.sha512()
+        with recording.mutate_samples() as destination:
+            start = 0
+            for samples in _iter_import_sample_chunks(
+                sigmf_file, chunk_size=chunk_size
+            ):
+                stop = start + samples.shape[-1]
+                destination[..., start:stop] = samples
+                written_digest.update(
+                    _encode_sigmf_samples(
+                        samples,
+                        sample_axes=sample_axes,
+                        global_metadata=global_metadata,
+                    ).tobytes()
+                )
+                start = stop
+        if not hmac.compare_digest(
+            imported_sha512, written_digest.hexdigest()
+        ):
+            raise ValueError("SigMF source data changed during import")
         recording.set_global_field(SHA512_KEY, imported_sha512)
         recording.update_integrity()
         store.update_metadata_integrity()
-    except Exception:
-        # Import is resource-atomic even when the containing store predates it.
-        if target_name in store.recordings:
-            store.recordings.remove(target_name)
-        raise
     return recording
 
 

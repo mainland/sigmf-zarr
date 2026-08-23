@@ -494,8 +494,12 @@ SigMF-Zarr `channel` axis. A real two-channel SigMF stream imports as
 
 Complex floating-point precision is preserved: `cf32_le` and `cf32_be` use
 32-bit I/Q components, while `cf64_le` and `cf64_be` use 64-bit components.
-Export restores the endianness declared by `core:datatype` rather than using
-the host machine's native byte order.
+Complex integer datatypes retain integer I/Q components. Export interleaves
+these components using the width and byte order declared by `core:datatype`.
+Export also restores the declared byte order for floating-point samples.
+
+Standard SigMF import reads sample data in bounded blocks. Sample conversion
+does not require materializing the complete dataset. Export regenerates the dataset reference for its output files.
 
 Import verifies that the reconstructed standard dataset bytes match the source
 `core:sha512` and stores that digest. If conversion cannot preserve the source
@@ -516,3 +520,29 @@ missing and the recording has more than one channel, export fills it from the
 axis length. If the field is present but does not match the axis length, export
 raises `ValueError`. Single-channel exports may still include
 `core:num_channels: 1` because that is normal standard SigMF metadata.
+
+## Mutation and failure behavior
+
+Serialize all writes to a store, including integrity updates. The Python API
+does not coordinate concurrent writers. Readers must not assume a consistent
+snapshot while another process modifies the store.
+
+Managed sample replacement and append operations validate shapes, convert
+sample values, and validate supplied metadata before changing storage. Rejected
+inputs preserve the recording. Writable mutation contexts invalidate affected
+hashes before exposing an array or group. These contexts do not roll back
+partial writes after a storage I/O failure. Index mutation contexts leave
+incomplete indexes marked invalid until repaired.
+
+Import rejects an existing recording unless replacement is explicitly enabled.
+Replacing a recording through an importer requires a local directory store.
+The importer keeps a temporary backup and restores the recording if creation,
+conversion, or integrity calculation fails. If restoration itself fails, the
+error identifies a retained backup for recovery. Import cleanup removes a
+partially created new recording. A failed import of a new recording may leave
+the root integrity hash absent, requiring recalculation.
+
+An explicit `overwrite_store=True` recreates the destination store before the
+recording import and does not preserve its previous contents. Import rollback
+and export replacement handle operation failures. They do not provide a
+transaction across process termination, power loss, or concurrent access.
