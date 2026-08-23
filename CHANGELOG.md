@@ -81,6 +81,8 @@ complete.
 
 - Import RadioML 2016, RadioML 2018, and Chad Spooner CSPB datasets in bounded
   batches.
+- Provide shared `auto`, `none`, `zstd`, `lz4`, and `lz4hc` sample compression
+  choices for every import command.
 - Restrict RadioML pickle loading to built-in containers and real numeric
   NumPy arrays, and reject arrays that hold more data than the file. Check each
   CSPB ZIP member's declared size against its `.tim` header before reading it.

@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from sigmf_zarr.cli.command import (
+from sigmf_zarr.cli.command import positive_int
+from sigmf_zarr.cli.import_command import (
     ImportCommand,
-    add_sample_storage_arguments,
-    positive_int,
+    add_sample_sharding_arguments,
     resolve_sample_compressor,
     resolve_sample_shards,
 )
@@ -41,7 +41,7 @@ class ImportCSPBCommand(ImportCommand):
         Args:
             parser: Argument parser to extend.
         """
-        add_sample_storage_arguments(parser)
+        add_sample_sharding_arguments(parser)
         parser.add_argument(
             "--truth-file",
             type=Path,
@@ -75,10 +75,11 @@ class ImportCSPBCommand(ImportCommand):
         sample_shards = None
         if args.sample_shard_batch is not None:
             sample_shards = resolve_sample_shards(
-                args,
+                args.sample_shard_batch,
                 cspb_sample_shape(
                     args.source,
                 ),
+                zarr_format=args.zarr_format,
             )
         store = import_cspb_dataset(
             args.store,
@@ -91,7 +92,10 @@ class ImportCSPBCommand(ImportCommand):
             batch_size=args.batch_size,
             sample_shards=sample_shards,
             automatic_sharding=not args.no_sample_sharding,
-            sample_compressor=resolve_sample_compressor(args),
+            sample_compressor=resolve_sample_compressor(
+                args.sample_compression,
+                level=args.sample_compression_level,
+            ),
             zarr_format=args.zarr_format,
         )
         print(store.info())

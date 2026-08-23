@@ -262,6 +262,30 @@ def test_zarr_format_2_translates_sample_compression(tmp_path: Path) -> None:
     assert compressor.clevel == 7
 
 
+def test_zarr_format_2_translates_lz4_sample_compression(
+    tmp_path: Path,
+) -> None:
+    """Format-3 LZ4 options should map to a format-2 Blosc codec.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr",
+        zarr_format=2,
+    )
+    recording = store.recordings.create(
+        "rec",
+        sample_shape=(2, 4),
+        sample_compressor=BloscCodec(cname="lz4", clevel=4),
+    )
+
+    compressor = recording.samples.metadata.compressor
+    assert isinstance(compressor, Blosc)
+    assert compressor.cname == "lz4"
+    assert compressor.clevel == 4
+
+
 def test_zarr_format_2_can_disable_sample_checksums(tmp_path: Path) -> None:
     """Format-2 sample arrays should allow checksum filtering to be disabled.
 

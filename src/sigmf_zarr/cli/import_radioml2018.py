@@ -7,10 +7,10 @@ from pathlib import Path
 
 import h5py
 
-from sigmf_zarr.cli.command import (
+from sigmf_zarr.cli.command import positive_int
+from sigmf_zarr.cli.import_command import (
     ImportCommand,
-    add_sample_storage_arguments,
-    positive_int,
+    add_sample_sharding_arguments,
     resolve_sample_compressor,
     resolve_sample_shards,
 )
@@ -46,7 +46,7 @@ class ImportRadioML2018Command(ImportCommand):
         Args:
             parser: Argument parser to extend.
         """
-        add_sample_storage_arguments(parser)
+        add_sample_sharding_arguments(parser)
         parser.add_argument(
             "--source-dataset",
             help="Source dataset name recorded in metadata.",
@@ -97,7 +97,11 @@ class ImportRadioML2018Command(ImportCommand):
                 label="sample",
             )
             sample_shape, _ = _sample_shape(samples)
-        sample_shards = resolve_sample_shards(args, sample_shape)
+        sample_shards = resolve_sample_shards(
+            args.sample_shard_batch,
+            sample_shape,
+            zarr_format=args.zarr_format,
+        )
         store = import_radioml2018_dataset(
             args.store,
             args.source,
@@ -112,7 +116,10 @@ class ImportRadioML2018Command(ImportCommand):
             batch_size=args.batch_size,
             sample_shards=sample_shards,
             automatic_sharding=not args.no_sample_sharding,
-            sample_compressor=resolve_sample_compressor(args),
+            sample_compressor=resolve_sample_compressor(
+                args.sample_compression,
+                level=args.sample_compression_level,
+            ),
             zarr_format=args.zarr_format,
         )
         print(store.info())

@@ -52,12 +52,16 @@ ZIP batches are read directly and are not extracted to temporary storage.
 Files are ordered by the numeric suffix in names such as `signal_123.tim` or
 `psk_mixtures_123.tim`.
 
-Import an extracted CSPB.ML.2018R2 dataset and its truth file:
+The following command is recommended for an extracted CSPB.ML.2018R2 dataset.
+It uses Blosc with Zstandard at a balanced compression level, retains automatic
+sharding, and imports the published truth file:
 
 ```bash
 sigmf-zarr import cspb CSPB.ML.2018R2 cspb.zarr \
   --truth-file signal_record_C_2023.txt \
-  --source-dataset CSPB.ML.2018R2
+  --source-dataset CSPB.ML.2018R2 \
+  --sample-compression zstd \
+  --sample-compression-level 3
 ```
 
 The source directory may instead contain the downloaded batch ZIP files:
@@ -109,6 +113,10 @@ MiB. Use `--sample-shard-batch` to override the derived item count. Format-2
 stores and format-3 imports with `--no-sample-sharding` use sample-major chunks
 targeting approximately 4 MiB instead.
 
+Sample compression defaults to Zstandard. Select `zstd`, `lz4`, or `lz4hc` to
+use the corresponding Blosc algorithm. Use `--sample-compression-level` to set
+the Blosc level from 0 through 9, or select `none` to disable compression.
+
 ## Truth metadata
 
 The importer detects two published truth layouts:
@@ -146,6 +154,11 @@ item cannot be represented by one modulation ID, so its component-signal list
 is stored in per-item metadata under `global["cspb:signals"]`. The
 `signal_count` index remains available for inexpensive selection.
 
+When selected truth records contain different fields, the importer also stores
+their complete component descriptions in per-item metadata. Dense indexes
+contain only fields available for every item. This preserves metadata when
+combining the supported truth-file formats.
+
 The published CSPB.ML.2023 truth data contains a small number of modulation
 type/variant pairs not defined by its accompanying table. The importer does
 not guess their meaning. It preserves both numeric codes and assigns a label
@@ -169,6 +182,7 @@ store = import_cspb_dataset(
 )
 ```
 
-All files placed in one recording must agree on real versus complex encoding,
-byte order, and sample shape. Use separate recording names when combining
-releases with different signal lengths or encodings.
+All files placed in one recording must agree on real versus complex encoding
+and sample shape. The importer detects and normalizes each file's byte order.
+Use separate recording names when combining releases with different signal
+lengths or encodings.
