@@ -786,8 +786,14 @@ SigMF-Zarr `channel` axis. A real two-channel SigMF stream imports as
 
 Complex floating-point precision is preserved: `cf32_le` and `cf32_be` use
 32-bit I/Q components, while `cf64_le` and `cf64_be` use 64-bit components.
-Export restores the endianness declared by `core:datatype` rather than using
-the host machine's native byte order.
+Complex integer datatypes retain integer I/Q components. Import stores
+components in little-endian byte order. Export interleaves these components
+using the width and byte order declared by `core:datatype`. Export also
+restores the declared byte order for floating-point samples.
+
+Standard SigMF import reads sample data in bounded blocks. Sample conversion
+does not require materializing the complete dataset. Export regenerates the
+dataset reference for its output files.
 
 Import verifies that the reconstructed standard dataset bytes match the source
 `core:sha512` and stores that digest. If the declared digest is stale or
@@ -872,6 +878,23 @@ Callers must serialize access during replacement. This rollback boundary does
 not provide concurrent-reader snapshots or recovery from process crashes.
 Replacing an entire store with `overwrite=True` remains destructive.
 
+Serialize all writes to a store, including integrity updates. The Python API
+does not coordinate concurrent writers. Readers must not assume a consistent
+snapshot while another process modifies the store.
+
+Managed sample replacement and append operations validate shapes, convert
+sample values, and validate supplied metadata before changing storage. A value
+is converted to the stored dtype only when the conversion preserves it exactly.
+Overflow, rounding, NaN or infinity stored as an integer, and a nonzero
+imaginary part stored as a real value are rejected. Rejected inputs preserve
+the recording. Writable mutation contexts invalidate affected
+hashes before exposing an array or group. These contexts do not roll back
+partial writes after a storage I/O failure. Index mutation contexts leave
+incomplete indexes marked invalid until repaired. A context that restores a
+shape or attributes on failure, such as `mutate_samples()`,
+`mutate_item_metadata()`, or `SigMFCollection.mutate()`, first waits for the
+writes that the failed body started.
+
 An append resizes the sample array and any item metadata and updates several
 attributes. If an exception interrupts these writes, the append truncates the
 arrays to their original lengths and restores the attributes, index markers,
@@ -882,3 +905,28 @@ started.
 already have replaced sample values. It therefore leaves the sample hashes and
 `core:sha512` absent. `mutate_samples()` restores the original sample array
 shape if the caller resizes it, then raises `ValueError`.
+
+Import rejects an existing recording unless replacement is explicitly enabled.
+Replacing a recording through an importer requires a local directory store.
+The importer keeps a temporary backup and restores the recording if creation,
+conversion, or integrity calculation fails. If restoration itself fails, the
+error identifies a retained backup for recovery. Import cleanup removes a
+partially created new recording. A failed import of a new recording may leave
+the root integrity hash absent, requiring recalculation. If nothing existed at
+a local target path before a failed import, the importer also removes the
+directory that it created there. It records the device and inode numbers of
+that directory when it creates it, and removes the directory only while the
+path still names the same directory. Import never removes a store or directory
+that existed before the import or that another process created.
+
+An explicit `overwrite_store=True` replaces an existing SigMF-Zarr store at the
+destination and does not preserve its previous contents. The destination must
+be absent, an empty directory, or a directory whose root group is a SigMF-Zarr
+store. Any other directory, a regular file, and a symbolic link are errors. A
+local destination that equals or contains an input file is also an error,
+because replacement would delete the input. Importers validate sample chunk and
+shard options before they replace a store, so an invalid option leaves the
+store unchanged. A chunk or shard extent must be a positive integer, and a
+chunk or shard shape must have one extent per sample-array dimension. Import
+rollback and export replacement handle operation failures. They do not provide
+a transaction across process termination, power loss, or concurrent access.

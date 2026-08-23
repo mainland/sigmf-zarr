@@ -220,8 +220,10 @@ A recording is treated as batched when
 then named `item`.
 
 SigMF-Zarr extension fields are stripped when exporting a recording back to
-standard SigMF metadata. Other extension declarations and non-`sigmf-zarr:*`
-fields are preserved.
+standard SigMF metadata. Other extension declarations and supported metadata
+values are retained, subject to the file-reference and hash adjustments in the
+[interchange contract](usage.md). Export rejects unsupported native metadata
+unless the caller explicitly permits its omission with a warning.
 
 ## Complex sample representation
 
@@ -253,6 +255,12 @@ and `validate_store()` reports it. Export writes these values as the same
 interleaved byte stream, so `<c8` samples with `core:datatype` `cf32_le` export
 as interleaved 32-bit I/Q components. Standard SigMF import always produces the
 real-valued `iq` axis representation.
+
+Export requires matching real or complex interpretation and exact numerical
+representability in the declared datatype. It rejects discarded quadrature,
+fractional integer components, overflow, and precision loss. Permission to omit
+metadata does not authorize sample conversion. Quantization and normalization
+must be performed explicitly before export.
 
 For floating-point complex data, `cf32_*` maps to a real-valued Zarr array with
 32-bit components and `cf64_*` maps to one with 64-bit components. Import and
