@@ -60,7 +60,10 @@ slice or batch loads and decompresses only the chunks intersecting that slice.
 Chunk shapes can favor sequential scans, time windows, individual channels,
 or batches of examples. Zarr format 3 can additionally place multiple chunks
 in a shard, reducing the number of storage objects while retaining indexed
-access within the shard.
+access within the shard. SigMF-Zarr importers use format 3 and approximately
+4 MiB shards by default. Batched imports place approximately 256 KiB logical
+chunks inside each shard. Format-2 imports use approximately 4 MiB chunks
+without sharding.
 
 Chunking introduces a design choice: a chunk shape that suits one workload may
 be inefficient for another. Very small recordings may also gain little from

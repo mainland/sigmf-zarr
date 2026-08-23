@@ -23,6 +23,7 @@ from sigmf_zarr.provenance import (
     file_manifest_identity,
     import_metadata,
 )
+from sigmf_zarr.sample_storage import resolve_import_sample_storage
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
 from sigmf_zarr.store._transaction import recording_import_transaction
 from sigmf_zarr.tim import TimSamples, decode_tim
@@ -1178,6 +1179,7 @@ def import_cspb_dataset(
     global_metadata: JSONObject | None = None,
     sample_chunks: tuple[int, ...] | None = None,
     sample_shards: ShardsLike | None = None,
+    automatic_sharding: bool = True,
     sample_compressor: CompressorLike = "auto",
     zarr_format: ZarrFormat | None = None,
 ) -> SigMFZarrStore:
@@ -1199,6 +1201,8 @@ def import_cspb_dataset(
         global_metadata: Optional SigMF global metadata to merge.
         sample_chunks: Optional sample-array chunk shape.
         sample_shards: Optional sample-array shard shape.
+        automatic_sharding: Whether to derive format-3 shards when explicit
+            shards are not supplied.
         sample_compressor: Optional sample-array compressor.
         zarr_format: Optional physical Zarr format requirement. Existing
             stores are auto-detected when omitted. New stores default to Zarr
@@ -1214,12 +1218,6 @@ def import_cspb_dataset(
     """
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive, got {batch_size}")
-    if zarr_format == 2 and sample_shards is not None:
-        raise ValueError(
-            "Sample sharding requires Zarr format 3. Omit sample_shards or "
-            "create a Zarr format 3 store"
-        )
-
     source = Path(source_path)
     entries = _discover_tim_entries(source)
     truth, truth_formats = _merge_truth_files(truth_paths)
@@ -1277,15 +1275,18 @@ def import_cspb_dataset(
                 f"Recording {recording_name!r} already exists. Pass "
                 "overwrite_recording=True to replace it"
             )
-        resolved_sample_chunks = sample_chunks
-        if resolved_sample_chunks is None:
-            resolved_sample_chunks = store.default_sample_chunks(
+        resolved_sample_chunks, resolved_sample_shards = (
+            resolve_import_sample_storage(
                 np.float32,
                 sample_spec.sample_shape,
-                1 if sample_shards is not None else len(entries),
+                len(entries),
                 batched=True,
-                target_chunk_bytes=4 * 1024 * 1024,
+                zarr_format=store.zarr_format,
+                sample_chunks=sample_chunks,
+                sample_shards=sample_shards,
+                automatic_sharding=automatic_sharding,
             )
+        )
         stack.enter_context(
             recording_import_transaction(
                 store, recording_name, overwrite=overwrite_recording
@@ -1300,7 +1301,7 @@ def import_cspb_dataset(
             sample_axes=sample_spec.sample_axes,
             global_metadata=metadata,
             sample_chunks=resolved_sample_chunks,
-            sample_shards=sample_shards,
+            sample_shards=resolved_sample_shards,
             sample_compressor=sample_compressor,
             overwrite=overwrite_recording,
         )

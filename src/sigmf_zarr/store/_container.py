@@ -695,21 +695,38 @@ class SigMFZarrStore:
         Raises:
             ValueError: If `target_chunk_bytes` is not positive.
         """
+        if target_chunk_bytes is not None and target_chunk_bytes <= 0:
+            raise ValueError(
+                "target_chunk_bytes must be positive, got "
+                f"{target_chunk_bytes}"
+            )
+
         if not batched:
-            return sample_shape
+            if target_chunk_bytes is None:
+                return sample_shape
+            dtype = np.dtype(sample_dtype)
+            # Keep leading I/Q or channel planes intact and split only the
+            # conventional final time axis.
+            leading_elements = int(
+                np.prod(sample_shape[:-1], dtype=np.int64)
+            )
+            bytes_per_final_axis_value = dtype.itemsize * leading_elements
+            final_axis_chunk = max(
+                1,
+                target_chunk_bytes // bytes_per_final_axis_value,
+            )
+            return (
+                *sample_shape[:-1],
+                min(sample_shape[-1], final_axis_chunk),
+            )
 
         if target_chunk_bytes is None:
             # A bounded item batch avoids a single chunk for large datasets
             # while keeping individual fixed-size samples contiguous.
             max_batch = 1024
         else:
-            if target_chunk_bytes <= 0:
-                raise ValueError(
-                    "target_chunk_bytes must be positive, got "
-                    f"{target_chunk_bytes}"
-                )
-
             dtype = np.dtype(sample_dtype)
+            # Batched chunks always contain complete per-item tensors.
             elements_per_sample = int(np.prod(sample_shape, dtype=np.int64))
             bytes_per_sample = dtype.itemsize * elements_per_sample
             max_batch = max(1, target_chunk_bytes // bytes_per_sample)

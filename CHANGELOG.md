@@ -14,6 +14,9 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
 - Define the initial logical store, recording, collection, index, channel, and
   item-metadata model.
 - Support physical Zarr formats 2 and 3 through zarr-python 3.
+- Use approximately 256 KiB logical chunks and 4 MiB physical shards for
+  batched format-3 imports. Use approximately 1 MiB chunks for unbatched
+  format-3 imports and 4 MiB chunks for format-2 imports.
 - Import and export standard SigMF recordings and archives.
 - Import RadioML 2016, RadioML 2018, and Chad Spooner CSPB datasets.
 - Preserve and verify standard SigMF dataset hashes.

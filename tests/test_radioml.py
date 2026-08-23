@@ -44,6 +44,29 @@ def test_flatten_radioml_dataset_returns_aligned_arrays() -> None:
     )
 
 
+def test_import_radioml2016_defaults_to_sharded_zarr_format_3(
+    tmp_path,
+) -> None:
+    """The 2016 importer should avoid one physical file per item.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    dataset = {
+        ("BPSK", 0): np.zeros((8192, 2, 128), dtype=np.float32),
+    }
+
+    store = radioml2016.import_radioml2016_dataset(
+        tmp_path / "dataset.zarr",
+        dataset,
+    )
+
+    recording = store.recordings["radioml2016"]
+    assert store.zarr_format == 3
+    assert recording.samples.chunks == (256, 2, 128)
+    assert recording.samples.shards == (4096, 2, 128)
+
+
 def test_import_radioml_dataset_delegates_to_write(monkeypatch) -> None:
     """Import helper should write RadioML data into a plain store.
 
@@ -258,6 +281,7 @@ def test_import_radioml_dataset_delegates_to_write(monkeypatch) -> None:
         def __init__(self) -> None:
             """Initialize a fake store."""
             self.recordings = FakeRecordings()
+            self.zarr_format = 3
 
         def update_metadata_integrity(self) -> dict[str, object]:
             """Record a store metadata integrity update.
@@ -391,6 +415,8 @@ def test_import_radioml2018_dataset_streams_hdf5_batches(tmp_path) -> None:
     recording = store.recordings["radioml2018"]
     assert store.zarr_format == 2
     assert recording.samples.shape == (5, 2, 4)
+    assert recording.samples.chunks == (5, 2, 4)
+    assert recording.samples.shards is None
     np.testing.assert_array_equal(
         recording.samples[:],
         np.moveaxis(source_samples, 2, 1),
