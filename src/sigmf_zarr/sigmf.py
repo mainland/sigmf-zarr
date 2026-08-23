@@ -8,6 +8,7 @@ import json
 import tarfile
 import tempfile
 from collections.abc import Iterator
+from contextlib import ExitStack
 from os import PathLike
 from pathlib import Path
 from typing import Any, cast
@@ -15,6 +16,7 @@ from typing import Any, cast
 import numpy as np
 import numpy.typing as npt
 from sigmf import SHA512_KEY
+from sigmf.error import SigMFFileError
 from sigmf.sigmffile import SigMFCollection as StandardSigMFCollection
 from sigmf.sigmffile import SigMFFile, dtype_info, fromfile
 from zarr.core.array import CompressorLike, ShardsLike
@@ -34,6 +36,7 @@ from sigmf_zarr.store import (
     ZarrFormat,
 )
 from sigmf_zarr.store._transaction import (
+    collection_import_transaction,
     recording_import_transaction,
     retained_backup_directory,
 )
@@ -1069,6 +1072,45 @@ def export_sigmf(
     return meta_path
 
 
+def _archive_collection_recording_ids(
+    collection: StandardSigMFCollection,
+    meta_files: list[Path],
+) -> tuple[str, ...]:
+    """Resolve collection identifiers and verify their exact metadata files.
+
+    Args:
+        collection: Parsed standard collection metadata.
+        meta_files: Metadata files extracted from the source archive.
+
+    Returns:
+        Recording identifiers in collection order.
+
+    Raises:
+        SigMFFileError: If a stream is missing or its metadata hash differs.
+    """
+    by_name = {
+        path.name.removesuffix(".sigmf-meta"): path for path in meta_files
+    }
+    recording_ids: list[str] = []
+    for stream in collection.get_collection_field("core:streams", []):
+        name = Path(stream["name"]).name
+        if name not in by_name:
+            name = name.removesuffix(".sigmf-meta")
+        if name not in by_name:
+            raise SigMFFileError(f"Collection stream {name!r} is missing")
+        with by_name[name].open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha512").hexdigest()
+        declared = stream.get("hash")
+        if not isinstance(declared, str) or not hmac.compare_digest(
+            declared.lower(), digest
+        ):
+            raise SigMFFileError(
+                f"Collection stream {name!r} metadata hash does not match"
+            )
+        recording_ids.append(name)
+    return tuple(recording_ids)
+
+
 def import_sigmf_archive(
     store_path: str | PathLike[str],
     archive_source: str | PathLike[str],
@@ -1104,6 +1146,10 @@ def import_sigmf_archive(
             archive.extractall(tmp_path, filter="data")
 
         meta_files = sorted(tmp_path.rglob("*.sigmf-meta"))
+        target_names = tuple(
+            path.name.removesuffix(".sigmf-meta") for path in meta_files
+        )
+        _validate_archive_names(target_names)
         collection_files = sorted(tmp_path.rglob("*.sigmf-collection"))
         collection_name: str | None = None
         collection_metadata: JSONObject | None = None
@@ -1115,27 +1161,38 @@ def import_sigmf_archive(
             collection_obj = StandardSigMFCollection(
                 metadata=metadata,
                 base_path=collection_file.parent,
+                skip_checksums=True,
             )
             collection_info = cast(
                 JSONObject, collection_obj.get_collection_info()
             )
-            recording_ids = tuple(
-                Path(stream_name).stem.replace(".sigmf", "")
-                for stream_name in collection_obj.get_stream_names()
+            recording_ids = _archive_collection_recording_ids(
+                collection_obj, meta_files
             )
             collection_metadata = dict(collection_info)
             collection_metadata.pop("core:streams", None)
-            collection_name = collection_file.stem.replace(".sigmf", "")
+            collection_name = collection_file.name.removesuffix(
+                ".sigmf-collection"
+            )
 
         store = SigMFZarrStore.create(
             store_path,
             overwrite=overwrite_store,
             zarr_format=zarr_format,
         )
-        imported_names: list[str] = []
-        try:
+        with ExitStack() as rollback:
+            for name in target_names:
+                rollback.enter_context(
+                    recording_import_transaction(
+                        store, name, overwrite=overwrite_recordings
+                    )
+                )
+            if collection_name is not None:
+                rollback.enter_context(
+                    collection_import_transaction(store, collection_name)
+                )
             for meta_file in meta_files:
-                recording = import_sigmf(
+                import_sigmf(
                     store_path,
                     meta_file,
                     overwrite_store=False,
@@ -1144,7 +1201,6 @@ def import_sigmf_archive(
                     sample_compressor=sample_compressor,
                     zarr_format=zarr_format,
                 )
-                imported_names.append(recording.name)
 
             if collection_name is not None:
                 collection = store.collections.open(
@@ -1156,14 +1212,24 @@ def import_sigmf_archive(
                 )
                 collection.update_integrity()
             store.update_metadata_integrity()
-        except Exception:
-            # Remove only recordings created by this archive operation.
-            for imported_name in reversed(imported_names):
-                if imported_name in store.recordings:
-                    store.recordings.remove(imported_name)
-            raise
 
     return store
+
+
+def _validate_archive_names(names: tuple[str, ...]) -> None:
+    """Require unique, flat archive filenames without path normalization.
+
+    Args:
+        names: Recording identifiers or a collection identifier.
+
+    Raises:
+        ValueError: If names collide or contain path components.
+    """
+    if len(set(names)) != len(names):
+        raise ValueError("Archive names must be unique")
+    for name in names:
+        if not name or Path(name).name != name or name in {".", ".."}:
+            raise ValueError("Archive names must be single path components")
 
 
 def export_sigmf_archive(
@@ -1210,9 +1276,11 @@ def export_sigmf_archive(
     )
     if not selected_recordings:
         raise ValueError("No recordings selected for export")
+    _validate_archive_names(selected_recordings)
 
     collection: SigMFCollection | None = None
     if collection_name is not None:
+        _validate_archive_names((collection_name,))
         collection = store.collections.open(collection_name)
         if collection.integrity and not integrity_is_supported(
             collection.integrity
@@ -1252,17 +1320,17 @@ def export_sigmf_archive(
         archive_root.mkdir()
         temporary_target = tmp_path / target.name
 
-        metafiles: list[str] = []
+        metafiles: dict[str, str] = {}
         for recording_name in selected_recordings:
             exported_meta = export_sigmf(
                 store,
                 recording_name,
-                archive_root / recording_name,
-                overwrite=True,
+                archive_root / f"{recording_name}.sigmf-meta",
+                overwrite=False,
                 pretty=pretty,
                 force=force,
             )
-            metafiles.append(exported_meta.name)
+            metafiles[recording_name] = exported_meta.name
 
         if collection is not None:
             metadata = {
@@ -1271,13 +1339,18 @@ def export_sigmf_archive(
                 )
             }
             collection_obj = StandardSigMFCollection(
-                metafiles=metafiles,
+                metafiles=[
+                    metafiles[name] for name in collection.recording_ids
+                ],
                 metadata=metadata,
                 base_path=archive_root,
-                skip_checksums=False,
+                # set_streams() computes hashes from the explicit filenames.
+                # Its redundant verifier misresolves IDs ending in a SigMF
+                # suffix, such as a recording named "rec.sigmf-meta".
+                skip_checksums=True,
             )
             collection_obj.tofile(
-                archive_root / collection.name,
+                archive_root / f"{collection.name}.sigmf-collection",
                 pretty=pretty,
                 overwrite=True,
             )

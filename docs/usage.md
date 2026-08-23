@@ -499,7 +499,9 @@ these components using the width and byte order declared by `core:datatype`.
 Export also restores the declared byte order for floating-point samples.
 
 Standard SigMF import reads sample data in bounded blocks. Sample conversion
-does not require materializing the complete dataset. Export regenerates the dataset reference for its output files.
+does not require materializing the complete dataset. Export regenerates the
+dataset reference for its output files and preserves dotted recording names
+and collection membership in archives.
 
 Import verifies that the reconstructed standard dataset bytes match the source
 `core:sha512` and stores that digest. If conversion cannot preserve the source
@@ -541,6 +543,10 @@ conversion, or integrity calculation fails. If restoration itself fails, the
 error identifies a retained backup for recovery. Import cleanup removes a
 partially created new recording. A failed import of a new recording may leave
 the root integrity hash absent, requiring recalculation.
+
+Archive import retains backups until every recording, collection, and hash
+update succeeds. Replacement backups require additional disk space
+proportional to the content being replaced.
 
 An explicit `overwrite_store=True` recreates the destination store before the
 recording import and does not preserve its previous contents. Import rollback
