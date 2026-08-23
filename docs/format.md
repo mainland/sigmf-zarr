@@ -104,6 +104,12 @@ same in both formats. Their physical array encodings differ:
 - Array sharding is available only in Zarr format 3. Writers must reject shard
   settings when creating a Zarr format 2 store.
 
+The reference importers create new stores in Zarr format 3 and use physical
+sample shards targeting approximately 4 MiB by default. Batched dataset
+imports use logical chunks targeting approximately 256 KiB. Unbatched imports
+use logical chunks targeting approximately 1 MiB. When writing format 2, they
+use logical chunks targeting approximately 4 MiB instead.
+
 A recording created through the Python API without explicit chunks uses logical
 chunks of approximately 1 MiB along its growth axis: `item` for a batched
 recording and `time` otherwise. Each chunk holds complete items, or complete

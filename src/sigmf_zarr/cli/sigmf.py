@@ -98,6 +98,22 @@ class ImportSigMFCommand(ImportCommand):
                 "suffix."
             ),
         )
+        parser.add_argument(
+            "--no-sample-sharding",
+            action="store_true",
+            help=(
+                "Disable automatic sample sharding. Larger logical chunks "
+                "are used instead."
+            ),
+        )
+        parser.add_argument(
+            "--overwrite-collection",
+            action="store_true",
+            help=(
+                "Replace an existing collection with the same name as the "
+                "archive collection."
+            ),
+        )
 
     def validate_arguments(
         self,
@@ -153,6 +169,7 @@ class ImportSigMFCommand(ImportCommand):
                 args.source,
                 overwrite_store=args.overwrite_store,
                 overwrite_recordings=args.overwrite_recording,
+                automatic_sharding=not args.no_sample_sharding,
                 zarr_format=args.zarr_format,
             )
             print(store.info())
@@ -165,6 +182,7 @@ class ImportSigMFCommand(ImportCommand):
                 recording_name=args.recording_name,
                 overwrite_store=args.overwrite_store,
                 overwrite_recording=args.overwrite_recording,
+                automatic_sharding=not args.no_sample_sharding,
                 zarr_format=args.zarr_format,
             )
             print(recording.info())

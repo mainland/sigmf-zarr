@@ -132,6 +132,8 @@ def test_import_cspb_directory_with_dense_truth_indexes(
 
     recording = store.recordings["cspb"]
     assert recording.samples.shape == (2, 2, 3)
+    assert recording.samples.chunks == (2, 2, 3)
+    assert recording.samples.shards is None
     assert recording.sample_axes == ("iq", "time")
     assert recording.global_metadata["core:datatype"] == "cf32_le"
     assert recording.global_metadata["cspb:source_dataset"] == "CSPB.ML.2018R2"
@@ -189,6 +191,8 @@ def test_import_cspb_zip_preserves_cochannel_metadata_in_zarr_2(
     recording = store.recordings["cspb"]
     assert store.zarr_format == 2
     assert recording.samples.shape == (1, 2, 2)
+    assert recording.samples.chunks == (1, 2, 2)
+    assert recording.samples.shards is None
     assert recording.has_item_metadata is True
     metadata = recording.get_item_metadata(0)
     signals = json_object_list(
@@ -798,3 +802,48 @@ def test_load_cspb_truth_requires_int64_integers(
 
     with pytest.raises(ValueError, match="int64 range"):
         load_cspb_truth(path)
+
+
+def test_import_cspb_bounds_modulations_before_copying(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject more modulation labels than `int16` identifiers can number.
+
+    Args:
+        tmp_path: Pytest temporary directory.
+        monkeypatch: Pytest patch fixture.
+    """
+    count = 32769
+    archive_path = tmp_path / "batch.zip"
+    encoded = struct.pack("<ii", 1, 2) + struct.pack("<ff", 1.0, 2.0)
+    with ZipFile(archive_path, "w") as archive:
+        for index in range(1, count + 1):
+            archive.writestr(f"signal_{index}.tim", encoded)
+    truth_path = tmp_path / "truth.txt"
+    truth_path.write_text(
+        "".join(
+            f"{index} M{index} 4.0 0.01 0.35 1 1 10 0\n"
+            for index in range(1, count + 1)
+        ),
+        encoding="utf-8",
+    )
+
+    def append(*_args: object, **_kwargs: object) -> None:
+        """Fail if any samples are copied.
+
+        Args:
+            *_args: Ignored arguments.
+            **_kwargs: Ignored keyword arguments.
+        """
+        raise AssertionError("samples were copied")
+
+    monkeypatch.setattr(SigMFRecording, "append_samples", append)
+    store_path = tmp_path / "store.zarr"
+
+    with pytest.raises(ValueError, match="at most 32768"):
+        import_cspb_dataset(
+            store_path, archive_path, truth_paths=(truth_path,)
+        )
+
+    assert not store_path.exists()

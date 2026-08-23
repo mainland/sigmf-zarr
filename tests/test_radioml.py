@@ -16,6 +16,7 @@ import pytest
 import sigmf_zarr._import_limits as import_limits
 import sigmf_zarr.radioml2016 as radioml2016
 import sigmf_zarr.radioml2018 as radioml2018
+from sigmf_zarr.cli.sigmf import SigMFCommand
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore
 from sigmf_zarr.store._common import ZarrFormat
 
@@ -47,6 +48,29 @@ def test_flatten_radioml_dataset_returns_aligned_arrays() -> None:
         snr_db,
         np.array([10, 10, 0], dtype=np.int16),
     )
+
+
+def test_import_radioml2016_defaults_to_sharded_zarr_format_3(
+    tmp_path: Path,
+) -> None:
+    """The 2016 importer should avoid one physical file per item.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    dataset = {
+        ("BPSK", 0): np.zeros((8192, 2, 128), dtype=np.float32),
+    }
+
+    store = radioml2016.import_radioml2016_dataset(
+        tmp_path / "dataset.zarr",
+        dataset,
+    )
+
+    recording = store.recordings["radioml2016"]
+    assert store.zarr_format == 3
+    assert recording.samples.chunks == (256, 2, 128)
+    assert recording.samples.shards == (4096, 2, 128)
 
 
 def test_import_radioml_dataset_writes_store(tmp_path: Path) -> None:
@@ -123,6 +147,8 @@ def test_import_radioml2018_dataset_streams_hdf5_batches(
     recording = store.recordings["radioml2018"]
     assert store.zarr_format == 2
     assert recording.samples.shape == (5, 2, 4)
+    assert recording.samples.chunks == (5, 2, 4)
+    assert recording.samples.shards is None
     np.testing.assert_array_equal(
         recording.samples[:],
         np.moveaxis(source_samples, 2, 1),
@@ -140,6 +166,31 @@ def test_import_radioml2018_dataset_streams_hdf5_batches(
         source_snr[:, 0],
     )
     assert recording.global_metadata["radioml:dataset_version"] == "2018"
+    assert recording.global_metadata["radioml:source_dataset"] is None
+
+
+def test_radioml2018_command_line_defaults_source_dataset_to_stem(
+    tmp_path: Path,
+) -> None:
+    """Only the command line derives a source name from the file name.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    source_path = tmp_path / "RML2018.hdf5"
+    _write_radioml2018_labels(source_path, item_count=2, num_classes=24)
+    with h5py.File(source_path, "a") as source:
+        source.create_dataset("X", data=np.ones((2, 4, 2), dtype=np.float32))
+    store_path = tmp_path / "store.zarr"
+
+    assert (
+        SigMFCommand().run(
+            ["import", "radioml2018", str(source_path), str(store_path)]
+        )
+        == 0
+    )
+
+    recording = SigMFZarrStore.open(store_path).recordings["radioml2018"]
     assert recording.global_metadata["radioml:source_dataset"] == "RML2018"
 
 

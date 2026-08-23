@@ -39,7 +39,10 @@ complete.
 - Store sample values only when conversion to the stored dtype preserves them
   exactly. Appends and replacements reject overflow, rounding, nonfinite values
   stored as integers, signedness wrapping, and discarded imaginary parts.
-- Use default sample chunks of about 1 MiB along the growth axis.
+- Use default sample chunks of about 1 MiB along the growth axis. Batched
+  Zarr format 3 imports use approximately 256 KiB chunks and 4 MiB shards,
+  unbatched Zarr format 3 imports use approximately 1 MiB chunks, and Zarr
+  format 2 imports use 4 MiB chunks.
 - Append distinct per-item capture lists with independent timestamps through
   `item_captures`, preserving shared item-offset captures and validating all
   metadata before storage changes.

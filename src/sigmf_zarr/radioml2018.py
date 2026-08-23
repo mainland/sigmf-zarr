@@ -15,6 +15,7 @@ import numpy as np
 import numpy.typing as npt
 from zarr.core.array import CompressorLike, ShardsLike
 
+from sigmf_zarr._dtype import logical_sample_dtype
 from sigmf_zarr._hdf5 import (
     HDF5RowReader,
     dataset_filters,
@@ -26,10 +27,12 @@ from sigmf_zarr._import_limits import (
     check_item_bytes,
 )
 from sigmf_zarr._import_target import (
+    open_import_store,
     remove_new_store_on_failure,
 )
 from sigmf_zarr.json import JSONObject
 from sigmf_zarr.provenance import file_identity, import_metadata
+from sigmf_zarr.sample_storage import resolve_import_sample_storage
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
 from sigmf_zarr.store._transaction import recording_import_transaction
 
@@ -467,8 +470,9 @@ def import_radioml2018_dataset(
     snr_dataset: str = "Z",
     batch_size: int = 4096,
     global_metadata: JSONObject | None = None,
-    iq_chunks: tuple[int, int, int] | None = None,
+    sample_chunks: tuple[int, int, int] | None = None,
     sample_shards: ShardsLike | None = None,
+    automatic_sharding: bool = True,
     sample_compressor: CompressorLike = "auto",
     zarr_format: ZarrFormat | None = None,
 ) -> SigMFZarrStore:
@@ -477,7 +481,8 @@ def import_radioml2018_dataset(
     Args:
         store_path: Target SigMF-Zarr store.
         source_path: Source HDF5 path.
-        source_dataset: Optional source dataset name for metadata.
+        source_dataset: Optional source dataset name for metadata. The
+            importer records `null` when it is omitted.
         dataset_version: Dataset generation recorded in source metadata.
             Defaults to "2018".
         recording_name: Recording name to create.
@@ -489,10 +494,13 @@ def import_radioml2018_dataset(
         samples_dataset: HDF5 path containing samples.
         labels_dataset: HDF5 path containing modulation labels.
         snr_dataset: HDF5 path containing SNR labels.
-        batch_size: HDF5 read batch size.
+        batch_size: Maximum number of items per HDF5 read. Each read also
+            holds at most 64 MiB of samples, but always at least one item.
         global_metadata: Optional SigMF global metadata to merge.
-        iq_chunks: Optional IQ sample chunks.
-        sample_shards: Optional IQ sample shards.
+        sample_chunks: Optional sample-array chunk shape.
+        sample_shards: Optional sample-array shard shape.
+        automatic_sharding: Whether to derive format-3 shards when explicit
+            shards are not supplied.
         sample_compressor: Optional IQ sample compressor.
         zarr_format: Optional physical Zarr format requirement. Existing
             stores are auto-detected when omitted. New stores default to Zarr
@@ -502,14 +510,14 @@ def import_radioml2018_dataset(
         Updated SigMF-Zarr store.
 
     Raises:
-        ValueError: If the source arrays or labels are invalid, or sample
-            sharding is requested for Zarr format 2.
+        ValueError: If the source arrays or labels are invalid, a dataset
+            refers to data outside the source file or uses an HDF5 filter
+            other than gzip, shuffle, and fletcher32, one item or HDF5 chunk
+            exceeds 64 MiB, a gzip chunk inflates past its chunk size, a
+            sample chunk or shard shape is invalid, sample sharding is
+            requested for Zarr format 2, or `overwrite_store` names a target
+            that it may not replace.
     """
-    if zarr_format == 2 and sample_shards is not None:
-        raise ValueError(
-            "Sample sharding requires Zarr format 3. Omit sample_shards or "
-            "create a Zarr format 3 store"
-        )
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive, got {batch_size}")
     classes = _validated_modulation_classes(modulation_classes)
@@ -524,7 +532,8 @@ def import_radioml2018_dataset(
             raise ValueError(
                 "RadioML 2018 components must be float32 or float64"
             )
-        datatype = f"cf{samples.dtype.itemsize * 8}_le"
+        sample_dtype = logical_sample_dtype(samples.dtype)
+        datatype = f"cf{sample_dtype.itemsize * 8}_le"
         sample_shape, iq_last, item_count = _source_layout(
             samples,
             labels,
@@ -556,9 +565,7 @@ def import_radioml2018_dataset(
                 f"RadioML 2018 output requires core:datatype {datatype}"
             )
         metadata["core:datatype"] = datatype
-        metadata["radioml:source_dataset"] = (
-            source_dataset or Path(source_path).stem
-        )
+        metadata["radioml:source_dataset"] = source_dataset
         metadata["radioml:dataset_version"] = dataset_version
         metadata = import_metadata(
             metadata,
@@ -578,10 +585,25 @@ def import_radioml2018_dataset(
                 "sample_axes": ["iq", "time"],
             },
         )
-        store = SigMFZarrStore(
-            store_path,
-            overwrite=overwrite_store,
-            zarr_format=zarr_format,
+        store, (resolved_sample_chunks, resolved_sample_shards) = (
+            open_import_store(
+                store_path,
+                overwrite_store=overwrite_store,
+                zarr_format=zarr_format,
+                sources=(source_path,),
+                resolve_storage=lambda target_format: (
+                    resolve_import_sample_storage(
+                        sample_dtype,
+                        sample_shape,
+                        item_count,
+                        batched=True,
+                        zarr_format=target_format,
+                        sample_chunks=sample_chunks,
+                        sample_shards=sample_shards,
+                        automatic_sharding=automatic_sharding,
+                    )
+                ),
+            )
         )
         if recording_name in store.recordings and not overwrite_recording:
             raise ValueError(
@@ -594,12 +616,12 @@ def import_radioml2018_dataset(
             recording = store.recordings.create(
                 recording_name,
                 batched=True,
-                sample_dtype=samples.dtype,
+                sample_dtype=sample_dtype,
                 sample_shape=sample_shape,
                 sample_axes=("iq", "time"),
                 global_metadata=metadata,
-                sample_chunks=iq_chunks,
-                sample_shards=sample_shards,
+                sample_chunks=resolved_sample_chunks,
+                sample_shards=resolved_sample_shards,
                 sample_compressor=sample_compressor,
                 overwrite=overwrite_recording,
             )

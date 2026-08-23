@@ -21,6 +21,7 @@ from zarr.core.array import CompressorLike, ShardsLike
 
 from sigmf_zarr._import_limits import batch_items, check_item_bytes
 from sigmf_zarr._import_target import (
+    open_import_store,
     remove_new_store_on_failure,
 )
 from sigmf_zarr.json import JSONObject, JSONValue
@@ -29,6 +30,7 @@ from sigmf_zarr.provenance import (
     file_manifest_identity,
     import_metadata,
 )
+from sigmf_zarr.sample_storage import resolve_import_sample_storage
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
 from sigmf_zarr.store._transaction import recording_import_transaction
 from sigmf_zarr.tim import TimSamples, _tim_file_size, decode_tim
@@ -1411,14 +1413,17 @@ def import_cspb_dataset(
     global_metadata: JSONObject | None = None,
     sample_chunks: tuple[int, ...] | None = None,
     sample_shards: ShardsLike | None = None,
+    automatic_sharding: bool = True,
     sample_compressor: CompressorLike = "auto",
     zarr_format: ZarrFormat | None = None,
 ) -> SigMFZarrStore:
     """Stream Spooner ``.tim`` datasets into a SigMF-Zarr recording.
 
     The source may be one ``.tim`` file, one ZIP batch, or a directory
-    containing extracted files, ZIP batches, or both. Truth files are optional.
-    CSPB.ML.2018/2022 and CSPB.ML.2023 layouts are detected automatically.
+    containing extracted files, ZIP batches, or both. A source directory must
+    not contain symbolic links. ZIP members must be stored or deflate
+    compressed. Truth files are optional. CSPB.ML.2018/2022 and CSPB.ML.2023
+    layouts are detected automatically.
 
     Args:
         store_path: Target SigMF-Zarr store.
@@ -1426,7 +1431,9 @@ def import_cspb_dataset(
         truth_paths: Optional truth/label text files.
         source_dataset: Optional published dataset name.
         recording_name: Recording name to create.
-        overwrite_store: Whether to recreate the target store.
+        overwrite_store: Whether to replace an existing SigMF-Zarr store at
+            `store_path`. The target must be absent, an empty directory, or
+            a SigMF-Zarr store, and must not contain a source file.
         overwrite_recording: Whether to replace an existing recording.
         batch_size: Maximum number of files appended per Zarr write. Each
             write also holds at most 64 MiB of samples, but always at least
@@ -1434,6 +1441,8 @@ def import_cspb_dataset(
         global_metadata: Optional SigMF global metadata to merge.
         sample_chunks: Optional sample-array chunk shape.
         sample_shards: Optional sample-array shard shape.
+        automatic_sharding: Whether to derive format-3 shards when explicit
+            shards are not supplied.
         sample_compressor: Optional sample-array compressor.
         zarr_format: Optional physical Zarr format requirement. Existing
             stores are auto-detected when omitted. New stores default to Zarr
@@ -1445,20 +1454,20 @@ def import_cspb_dataset(
     Raises:
         FileNotFoundError: If a source path does not exist.
         ValueError: If files, truth rows, shapes, encodings, or options are
-            incompatible, or one file holds more than 64 MiB of samples.
+            incompatible, one file holds more than 64 MiB of samples, a
+            source directory contains a symbolic link, a ZIP member is
+            encrypted or uses a method other than stored or deflate, truth
+            values do not fit their indexes, or `overwrite_store` names a
+            target that it may not replace.
+        OSError: If a source file or directory cannot be read.
     """
     if batch_size <= 0:
         raise ValueError(f"batch_size must be positive, got {batch_size}")
-    if zarr_format == 2 and sample_shards is not None:
-        raise ValueError(
-            "Sample sharding requires Zarr format 3. Omit sample_shards or "
-            "create a Zarr format 3 store"
-        )
-
     source = Path(source_path)
     entries = _discover_tim_entries(source)
     truth, truth_formats = _merge_truth_files(truth_paths)
     selected_truth = _select_truth_records(entries, truth)
+    _check_truth_indexes(selected_truth)
 
     with ExitStack() as stack:
         # Keep each ZIP archive open across all batch reads and use the same
@@ -1503,24 +1512,30 @@ def import_cspb_dataset(
             },
         )
 
-        store = SigMFZarrStore(
-            store_path,
-            overwrite=overwrite_store,
-            zarr_format=zarr_format,
+        store, (resolved_sample_chunks, resolved_sample_shards) = (
+            open_import_store(
+                store_path,
+                overwrite_store=overwrite_store,
+                zarr_format=zarr_format,
+                sources=(source, *truth_paths),
+                resolve_storage=lambda target_format: (
+                    resolve_import_sample_storage(
+                        np.float32,
+                        sample_spec.sample_shape,
+                        len(entries),
+                        batched=True,
+                        zarr_format=target_format,
+                        sample_chunks=sample_chunks,
+                        sample_shards=sample_shards,
+                        automatic_sharding=automatic_sharding,
+                    )
+                ),
+            )
         )
         if recording_name in store.recordings and not overwrite_recording:
             raise ValueError(
                 f"Recording {recording_name!r} already exists. Pass "
                 "overwrite_recording=True to replace it"
-            )
-        resolved_sample_chunks = sample_chunks
-        if resolved_sample_chunks is None:
-            resolved_sample_chunks = store.default_sample_chunks(
-                np.float32,
-                sample_spec.sample_shape,
-                1 if sample_shards is not None else len(entries),
-                batched=True,
-                target_chunk_bytes=4 * 1024 * 1024,
             )
         stack.enter_context(
             recording_import_transaction(
@@ -1535,7 +1550,7 @@ def import_cspb_dataset(
             sample_axes=sample_spec.sample_axes,
             global_metadata=metadata,
             sample_chunks=resolved_sample_chunks,
-            sample_shards=sample_shards,
+            sample_shards=resolved_sample_shards,
             sample_compressor=sample_compressor,
             overwrite=overwrite_recording,
         )

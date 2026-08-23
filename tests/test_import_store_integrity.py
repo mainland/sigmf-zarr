@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+import pytest
 from sigmf import SigMFFile
 
 from sigmf_zarr import (
     SigMFZarrStore,
+    import_radioml2016_dataset,
     import_sigmf,
 )
 from tests.testdata import TEST_FLOAT32_DATA, TEST_METADATA
@@ -65,3 +68,73 @@ def test_import_into_hashed_store_keeps_store_hash_current(
     store.update_integrity()
     import_sigmf(store_path, write_source(tmp_path))
     assert SigMFZarrStore.open(store_path).verify_integrity()
+
+
+def _import_sigmf_with_format_2_shards(store_path: Path) -> None:
+    """Import SigMF with sharding that fails after opening the store.
+
+    Args:
+        store_path: Target store path.
+    """
+    import_sigmf(
+        store_path,
+        write_source(store_path.parent),
+        sample_shards=(64,),
+        zarr_format=2,
+    )
+
+
+def _import_radioml_with_format_2_shards(store_path: Path) -> None:
+    """Import RadioML with sharding that fails after opening the store.
+
+    Args:
+        store_path: Target store path.
+    """
+    import_radioml2016_dataset(
+        store_path,
+        {("BPSK", 0): np.zeros((2, 2, 4), dtype=np.float32)},
+        sample_shards=(1, 2, 4),
+        zarr_format=2,
+    )
+
+
+FAILING_IMPORTS = [
+    _import_sigmf_with_format_2_shards,
+    _import_radioml_with_format_2_shards,
+]
+"""Imports that open the target store and then raise `ValueError`."""
+
+
+@pytest.mark.parametrize("failing_import", FAILING_IMPORTS)
+def test_failed_import_preserves_existing_store(
+    tmp_path: Path, failing_import: Callable[[Path], None]
+) -> None:
+    """A failed import must not remove a store that existed before it.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        failing_import: Import that fails after opening its target.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, zarr_format=2)
+    store.recordings.create("other", sample_shape=(2,))
+    with pytest.raises(ValueError, match="requires Zarr format 3"):
+        failing_import(store_path)
+    assert SigMFZarrStore.open(store_path).list_recordings() == ("other",)
+
+
+@pytest.mark.parametrize("failing_import", FAILING_IMPORTS)
+def test_failed_import_preserves_existing_directory(
+    tmp_path: Path, failing_import: Callable[[Path], None]
+) -> None:
+    """A failed import must not remove a directory that existed before it.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        failing_import: Import that fails after opening its target.
+    """
+    store_path = tmp_path / "store.zarr"
+    store_path.mkdir()
+    with pytest.raises(ValueError, match="requires Zarr format 3"):
+        failing_import(store_path)
+    assert store_path.is_dir()

@@ -463,9 +463,13 @@ def test_import_parsers_accept_zarr_format_2() -> None:
     )
 
     assert sigmf_args.zarr_format == 2
+    assert sigmf_args.no_sample_sharding is False
     assert radioml2016_args.zarr_format == 2
+    assert radioml2016_args.no_sample_sharding is False
     assert radioml2018_args.zarr_format == 2
+    assert radioml2018_args.no_sample_sharding is False
     assert cspb_args.zarr_format == 2
+    assert cspb_args.no_sample_sharding is False
 
 
 def test_cspb_command_auto_detects_existing_zarr_format_2(
@@ -728,11 +732,12 @@ def test_radioml2016_command_dispatches_pickle(
         overwrite_recording: bool = False,
         batch_size: int = 4096,
         sample_shards: tuple[int, ...] | None = None,
+        automatic_sharding: bool = True,
         sample_compressor: object = "auto",
         global_metadata: object = None,
         captures: object = None,
         annotations: object = None,
-        iq_chunks: tuple[int, int, int] | None = None,
+        sample_chunks: tuple[int, int, int] | None = None,
         zarr_format: int = 3,
     ) -> FakeStore:
         """Capture RadioML import arguments.
@@ -746,11 +751,12 @@ def test_radioml2016_command_dispatches_pickle(
             overwrite_recording: Whether to replace a recording.
             batch_size: Maximum sample items copied per write.
             sample_shards: Sample shard shape.
+            automatic_sharding: Whether automatic sharding is enabled.
             sample_compressor: Sample compressor.
             global_metadata: Optional global metadata.
             captures: Optional capture metadata.
             annotations: Optional annotation metadata.
-            iq_chunks: Optional IQ chunk shape.
+            sample_chunks: Optional sample chunk shape.
             zarr_format: Physical Zarr format.
 
         Returns:
@@ -764,11 +770,12 @@ def test_radioml2016_command_dispatches_pickle(
         captured["overwrite_recording"] = overwrite_recording
         captured["batch_size"] = batch_size
         captured["sample_shards"] = sample_shards
+        captured["automatic_sharding"] = automatic_sharding
         captured["sample_compressor"] = sample_compressor
         captured["global_metadata"] = global_metadata
         captured["captures"] = captures
         captured["annotations"] = annotations
-        captured["iq_chunks"] = iq_chunks
+        captured["sample_chunks"] = sample_chunks
         captured["zarr_format"] = zarr_format
         return FakeStore()
 
@@ -798,6 +805,7 @@ def test_radioml2016_command_dispatches_pickle(
         batch_size=2,
         source_dataset=None,
         sample_shard_batch=8,
+        no_sample_sharding=False,
         sample_compression="zstd",
         sample_compression_level=7,
         zarr_format=3,
@@ -817,6 +825,7 @@ def test_radioml2016_command_dispatches_pickle(
     assert captured["overwrite_store"] is True
     assert captured["overwrite_recording"] is False
     assert captured["sample_shards"] == (8, 2, 128)
+    assert captured["automatic_sharding"] is True
     assert isinstance(captured["sample_compressor"], BloscCodec)
     compressor_name = captured["sample_compressor"].cname
     assert getattr(compressor_name, "value", compressor_name) == "zstd"
