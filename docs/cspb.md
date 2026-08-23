@@ -101,10 +101,13 @@ The command shares the standard import options:
 ```
 
 It also accepts `--batch-size`, `--sample-compression`,
-`--sample-compression-level`, and `--sample-shard-batch`. Existing Zarr format
-2 stores are detected automatically. Sharding remains available only in Zarr
-format 3. Without explicit sharding, the importer chooses a sample-major chunk
-shape targeting approximately 4 MiB per chunk.
+`--sample-compression-level`, `--sample-shard-batch`, and
+`--no-sample-sharding`. Existing Zarr format 2 stores are detected
+automatically. New format-3 stores group CSPB items into logical chunks
+targeting approximately 256 KiB and physical shards targeting approximately 4
+MiB. Use `--sample-shard-batch` to override the derived item count. Format-2
+stores and format-3 imports with `--no-sample-sharding` use sample-major chunks
+targeting approximately 4 MiB instead.
 
 ## Truth metadata
 

@@ -892,6 +892,7 @@ class SigMFZarrStore:
         *,
         batched: bool = True,
         target_chunk_bytes: int | None = None,
+        time_axis: int = -1,
     ) -> tuple[int, ...]:
         """Choose a sample-major chunk shape for recording samples.
 
@@ -901,28 +902,51 @@ class SigMFZarrStore:
             num_samples: Number of logical samples.
             batched: Whether the sample array includes a batch axis.
             target_chunk_bytes: Optional target chunk size in bytes.
+            time_axis: Position of the `time` axis in `sample_shape`. An
+                unbatched array with a byte target is split along this axis
+                only. Defaults to the final axis.
 
         Returns:
             Chunk shape for the sample array.
 
         Raises:
-            ValueError: If `target_chunk_bytes` is not positive.
+            ValueError: If `target_chunk_bytes` is not positive or
+                `time_axis` is outside `sample_shape`.
         """
+        if target_chunk_bytes is not None and target_chunk_bytes <= 0:
+            raise ValueError(
+                "target_chunk_bytes must be positive, got "
+                f"{target_chunk_bytes}"
+            )
+
         if not batched:
-            return sample_shape
+            if target_chunk_bytes is None:
+                return sample_shape
+            if not -len(sample_shape) <= time_axis < len(sample_shape):
+                raise ValueError(
+                    f"time_axis {time_axis} is outside sample shape "
+                    f"{sample_shape}"
+                )
+            axis = time_axis % len(sample_shape)
+            dtype = np.dtype(sample_dtype)
+            # Keep complete I/Q and channel planes and split only time.
+            plane_elements = int(
+                np.prod(sample_shape, dtype=np.int64)
+                // max(sample_shape[axis], 1)
+            )
+            bytes_per_time_sample = dtype.itemsize * max(plane_elements, 1)
+            time_chunk = max(1, target_chunk_bytes // bytes_per_time_sample)
+            chunks = list(sample_shape)
+            chunks[axis] = min(sample_shape[axis], time_chunk)
+            return tuple(chunks)
 
         if target_chunk_bytes is None:
             # A bounded item batch avoids a single chunk for large datasets
             # while keeping individual fixed-size samples contiguous.
             max_batch = 1024
         else:
-            if target_chunk_bytes <= 0:
-                raise ValueError(
-                    "target_chunk_bytes must be positive, got "
-                    f"{target_chunk_bytes}"
-                )
-
             dtype = np.dtype(sample_dtype)
+            # Batched chunks always contain complete per-item tensors.
             elements_per_sample = int(np.prod(sample_shape, dtype=np.int64))
             bytes_per_sample = dtype.itemsize * elements_per_sample
             max_batch = max(1, target_chunk_bytes // bytes_per_sample)

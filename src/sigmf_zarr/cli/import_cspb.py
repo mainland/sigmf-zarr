@@ -90,6 +90,7 @@ class ImportCSPBCommand(ImportCommand):
             overwrite_recording=args.overwrite_recording,
             batch_size=args.batch_size,
             sample_shards=sample_shards,
+            automatic_sharding=not args.no_sample_sharding,
             sample_compressor=resolve_sample_compressor(args),
             zarr_format=args.zarr_format,
         )
