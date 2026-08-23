@@ -56,7 +56,9 @@ The reference importers create new stores in Zarr format 3 and use physical
 sample shards targeting approximately 4 MiB by default. Batched dataset
 imports use logical chunks targeting approximately 256 KiB. Unbatched imports
 use logical chunks targeting approximately 1 MiB. When writing format 2, they
-use logical chunks targeting approximately 4 MiB instead.
+use logical chunks targeting approximately 4 MiB instead. Sample compression
+defaults to Zstandard. The command-line importers also support Zstandard, LZ4,
+and high-compression LZ4 through Blosc.
 
 ## Recording layout
 

@@ -8,10 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import ClassVar, cast
-
-from zarr.codecs import BloscCodec
-from zarr.core.array import CompressorLike, ShardsLike
+from typing import ClassVar
 
 
 def package_version() -> str:
@@ -46,86 +43,6 @@ def positive_int(value: str) -> int:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be positive")
     return parsed
-
-
-def add_sample_storage_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add storage options shared by dataset import commands.
-
-    Args:
-        parser: Argument parser to extend.
-    """
-    parser.add_argument(
-        "--sample-compression",
-        choices=("none", "zstd"),
-        help="Optional compression codec for sample arrays.",
-    )
-    parser.add_argument(
-        "--sample-compression-level",
-        type=int,
-        default=3,
-        help="Compression level for zstd.",
-    )
-    sharding = parser.add_mutually_exclusive_group()
-    sharding.add_argument(
-        "--sample-shard-batch",
-        type=positive_int,
-        help=(
-            "Items per physical sample shard, overriding automatic sizing "
-            "(Zarr format 3 only)."
-        ),
-    )
-    sharding.add_argument(
-        "--no-sample-sharding",
-        action="store_true",
-        help=(
-            "Disable automatic sample sharding. Larger logical chunks are "
-            "used instead."
-        ),
-    )
-
-
-def resolve_sample_compressor(
-    args: argparse.Namespace,
-) -> CompressorLike | None:
-    """Resolve shared RadioML sample compression arguments.
-
-    Args:
-        args: Parsed import arguments.
-
-    Returns:
-        Zarr compressor configuration.
-    """
-    if args.sample_compression is None:
-        return "auto"
-    if args.sample_compression == "none":
-        return None
-    return BloscCodec(cname="zstd", clevel=args.sample_compression_level)
-
-
-def resolve_sample_shards(
-    args: argparse.Namespace,
-    sample_shape: tuple[int, ...],
-) -> ShardsLike | None:
-    """Resolve shared RadioML sample sharding arguments.
-
-    Args:
-        args: Parsed import arguments.
-        sample_shape: Shape of one imported sample.
-
-    Returns:
-        Full shard shape, or ``None`` when sharding is not requested.
-
-    Raises:
-        ValueError: If sharding is requested for Zarr format 2.
-    """
-    shard_batch = cast(int | None, args.sample_shard_batch)
-    if shard_batch is None:
-        return None
-    if args.zarr_format == 2:
-        raise ValueError(
-            "--sample-shard-batch requires Zarr format 3"
-        )
-    return (shard_batch, *sample_shape)
 
 
 class Command(ABC):
@@ -312,89 +229,8 @@ class Command(ABC):
         logging.getLogger().addHandler(handler)
 
 
-class ImportCommand(Command):
-    """Base class for commands that import into a SigMF-Zarr store."""
-
-    source_help: str
-    """Help text for the positional source argument."""
-
-    default_recording_name: str | None
-    """Default target recording name, or ``None`` for source-derived names."""
-
-    def __init__(
-        self,
-        description: str,
-        *,
-        source_help: str,
-        default_recording_name: str | None = None,
-    ) -> None:
-        """Initialize a shared import command.
-
-        Args:
-            description: Command-line description.
-            source_help: Help text for the positional source argument.
-            default_recording_name: Optional default recording name.
-        """
-        super().__init__(description)
-        self.source_help = source_help
-        self.default_recording_name = default_recording_name
-
-    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
-        """Add arguments common to every importer.
-
-        Args:
-            parser: Argument parser to extend.
-        """
-        parser.add_argument("source", type=Path, help=self.source_help)
-        parser.add_argument(
-            "store",
-            help="Target SigMF-Zarr store path or URL.",
-        )
-        parser.add_argument(
-            "--zarr-format",
-            type=int,
-            choices=(2, 3),
-            default=None,
-            help=(
-                "Physical format for a new target store. Existing stores "
-                "are auto-detected. New stores default to Zarr format 3."
-            ),
-        )
-        parser.add_argument(
-            "--recording-name",
-            default=self.default_recording_name,
-            help="Target recording name.",
-        )
-        parser.add_argument(
-            "--overwrite-store",
-            action="store_true",
-            help="Recreate the target store before importing.",
-        )
-        parser.add_argument(
-            "--overwrite-recording",
-            action="store_true",
-            help="Replace an existing recording with the same name.",
-        )
-        self.add_import_arguments(parser)
-
-    def add_import_arguments(
-        self,
-        parser: argparse.ArgumentParser,
-    ) -> None:
-        """Add importer-specific arguments.
-
-        Args:
-            parser: Argument parser to extend.
-        """
-        return None
-
-
 __all__ = [
     "Command",
-    "ImportCommand",
-    "add_sample_storage_arguments",
-    "positive_int",
     "package_version",
-    "resolve_sample_compressor",
-    "resolve_sample_shards",
+    "positive_int",
 ]

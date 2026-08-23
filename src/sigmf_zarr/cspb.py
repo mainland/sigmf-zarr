@@ -20,6 +20,7 @@ from zarr.core.array import CompressorLike, ShardsLike
 from sigmf_zarr.json import JSONObject, JSONValue
 from sigmf_zarr.sample_storage import resolve_import_sample_storage
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
+from sigmf_zarr.store._transaction import recording_import_transaction
 from sigmf_zarr.tim import TimSamples, decode_tim
 
 logger = logging.getLogger(__name__)
@@ -1086,11 +1087,21 @@ def _append_cspb_batches(
         sample_spec: Expected sample specification.
         selected_truth: Optional item-aligned truth records.
     """
-    # Single-signal truth is represented efficiently by dense indexes. Store
-    # full bundles only when mixtures require nested component descriptions.
+    # Dense indexes require a value for every item. Preserve complete bundles
+    # when mixtures or heterogeneous fields prevent lossless dense storage.
     use_item_metadata = any(
         len(record.signals) > 1 for record in selected_truth
     )
+    if selected_truth and not use_item_metadata:
+        field_sets = {
+            frozenset(record.signals[0].to_json())
+            for record in selected_truth
+        }
+        use_item_metadata = len(field_sets) > 1 or any(
+            record.signals[0].source_signal_index
+            not in (None, record.signal_index)
+            for record in selected_truth
+        )
     logger.info("Importing %d CSPB .tim files", len(entries))
     for start in range(0, len(entries), batch_size):
         stop = min(start + batch_size, len(entries))
@@ -1248,6 +1259,11 @@ def import_cspb_dataset(
                 automatic_sharding=automatic_sharding,
             )
         )
+        stack.enter_context(
+            recording_import_transaction(
+                store, recording_name, overwrite=overwrite_recording
+            )
+        )
         recording = store.recordings.open(
             recording_name,
             create=True,
@@ -1261,20 +1277,6 @@ def import_cspb_dataset(
             sample_compressor=sample_compressor,
             overwrite=overwrite_recording,
         )
-        import_state = {"complete": False}
-
-        def cleanup_failed_import() -> None:
-            """Remove a partial CSPB recording when import fails."""
-            if (
-                not import_state["complete"]
-                and recording_name in store.recordings
-            ):
-                store.recordings.remove(recording_name)
-
-        # Register cleanup before the first sample write. Marking completion
-        # suppresses it only after all indexes and integrity hashes are stored.
-        stack.callback(cleanup_failed_import)
-
         _append_cspb_batches(
             recording,
             entries,
@@ -1288,7 +1290,6 @@ def import_cspb_dataset(
             _add_truth_indexes(recording, selected_truth)
         recording.update_integrity()
         store.update_metadata_integrity()
-        import_state["complete"] = True
         return store
 
 

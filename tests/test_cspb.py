@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import struct
+from pathlib import Path
 from zipfile import ZipFile
 
 import numpy as np
+import pytest
 
 from sigmf_zarr.cspb import import_cspb_dataset, load_cspb_truth
 from sigmf_zarr.store import SigMFZarrStore
+from sigmf_zarr.store._common import ZarrFormat
 
 
 def _complex_tim_bytes(
@@ -260,3 +263,99 @@ def test_import_cspb_rejects_missing_truth_rows(tmp_path) -> None:
         assert "missing 1 imported signal indexes: 2" in str(exc)
     else:
         raise AssertionError("Expected incomplete CSPB truth data to fail")
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_import_cspb_preserves_mixed_single_signal_truth(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """Retain fields that cannot form dense indexes across truth formats.
+
+    Args:
+        tmp_path: Pytest temporary directory.
+        zarr_format: Physical Zarr format to exercise.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    values = np.arange(4, dtype=np.complex64)
+    for signal_index in (1, 2):
+        (source / f"signal_{signal_index}.tim").write_bytes(
+            _complex_tim_bytes(values)
+        )
+    first_truth = tmp_path / "challenge.txt"
+    first_truth.write_text(
+        "1 bpsk 11 -.001 .35 1 1 7.5 0.0\n", encoding="ascii"
+    )
+    second_truth = tmp_path / "mixture.txt"
+    second_truth.write_text(
+        "Index_2 2 2 .25 -.1 3 1 10.0\n", encoding="ascii"
+    )
+    store = import_cspb_dataset(
+        tmp_path / "store.zarr",
+        source,
+        truth_paths=(first_truth, second_truth),
+        batch_size=1,
+        zarr_format=zarr_format,
+    )
+    recording = store.recordings["cspb"]
+    assert recording.has_item_metadata
+    for position, truth_path in enumerate((first_truth, second_truth)):
+        expected = load_cspb_truth(truth_path).records[position + 1]
+        assert recording.get_item_metadata(position) == (
+            expected.to_item_metadata()
+        )
+    assert recording.index("signal_count")[:].tolist() == [1, 1]
+    assert store.verify_integrity()
+
+
+def test_import_cspb_cleans_up_failed_recording_creation(
+    tmp_path: Path,
+) -> None:
+    """A rejected shard configuration must allow a valid retry.
+
+    Args:
+        tmp_path: Pytest temporary directory.
+    """
+    source = tmp_path / "signal_1.tim"
+    source.write_bytes(_complex_tim_bytes(np.arange(4, dtype=np.complex64)))
+    store_path = tmp_path / "store.zarr"
+    with pytest.raises(ValueError):
+        import_cspb_dataset(
+            store_path, source, sample_shards=(1, 1, 1)
+        )
+    assert SigMFZarrStore.open(store_path).list_recordings() == ()
+    store = import_cspb_dataset(store_path, source)
+    assert store.recordings["cspb"].samples.shape == (1, 2, 4)
+    assert store.verify_integrity()
+
+
+def test_import_cspb_failed_overwrite_restores_recording(
+    tmp_path: Path,
+) -> None:
+    """Restore an existing recording after a later input file fails.
+
+    Args:
+        tmp_path: Pytest temporary directory.
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "signal_1.tim").write_bytes(
+        _complex_tim_bytes(np.arange(4, dtype=np.complex64))
+    )
+    store_path = tmp_path / "store.zarr"
+    store = import_cspb_dataset(store_path, source)
+    original_samples = store.recordings["cspb"].samples[:]
+    original_hash = store.metadata_sha512
+    (source / "signal_2.tim").write_bytes(
+        _complex_tim_bytes(np.arange(3, dtype=np.complex64))
+    )
+    with pytest.raises(ValueError, match="shape"):
+        import_cspb_dataset(
+            store_path, source, batch_size=1, overwrite_recording=True
+        )
+    reopened = SigMFZarrStore.open(store_path)
+    np.testing.assert_array_equal(
+        reopened.recordings["cspb"].samples[:], original_samples
+    )
+    assert reopened.metadata_sha512 == original_hash
+    assert reopened.verify_integrity()

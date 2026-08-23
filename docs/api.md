@@ -85,6 +85,10 @@
    :members:
    :undoc-members:
 
+.. automodule:: sigmf_zarr.cli.import_command
+   :members:
+   :undoc-members:
+
 .. automodule:: sigmf_zarr.cli.group
    :members:
    :undoc-members:

@@ -18,12 +18,16 @@ The importers also record the source dataset name in
 
 ## RadioML 2016
 
-Use `sigmf-zarr import radioml2016` for RadioML 2016 pickle mappings:
+The following command is recommended for a new RadioML 2016 store. It uses
+Blosc with Zstandard at a balanced compression level and retains automatic
+sharding:
 
 ```bash
 sigmf-zarr import radioml2016 RML2016.10a.pkl store.zarr \
   --source-dataset RML2016.10a \
-  --recording-name RML2016.10a
+  --recording-name RML2016.10a \
+  --sample-compression zstd \
+  --sample-compression-level 3
 ```
 
 The importer supports legacy Python 2 pickles and uses `latin1` decoding by
@@ -58,12 +62,15 @@ store = import_radioml2016_dataset(
 
 ## RadioML 2018.01A
 
-Use `sigmf-zarr import radioml2018` for the HDF5 dataset:
+The following command is recommended for a new RadioML 2018.01A store. It uses
+the same compression and automatic-sharding settings:
 
 ```bash
 sigmf-zarr import radioml2018 GOLD_XYZ_OSC.0001_1024.hdf5 store.zarr \
   --source-dataset RML2018.01A \
-  --recording-name RML2018.01A
+  --recording-name RML2018.01A \
+  --sample-compression zstd \
+  --sample-compression-level 3
 ```
 
 RadioML 2018.01A stores samples, one-hot modulation labels, and SNR values in
@@ -122,6 +129,10 @@ Both commands accept `--sample-compression`, `--sample-compression-level`,
 `--sample-shard-batch`, and `--no-sample-sharding`. Like the standard SigMF
 importer, they support `--recording-name`, `--overwrite-store`,
 `--overwrite-recording`, and `--zarr-format`.
+
+Sample compression defaults to Zstandard. Select `zstd`, `lz4`, or `lz4hc` to
+use the corresponding Blosc algorithm. Use `--sample-compression-level` to set
+the Blosc level from 0 through 9, or select `none` to disable compression.
 
 New stores use Zarr format 3 by default. Automatic layout selection groups
 RadioML items into logical chunks targeting approximately 256 KiB and physical

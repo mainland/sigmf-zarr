@@ -64,10 +64,11 @@ sigmf-zarr import sigmf input.sigmf store.zarr
 ```
 
 All import commands share `SOURCE`, `STORE`, `--recording-name`,
-`--overwrite-store`, `--overwrite-recording`, and `--zarr-format`. When the
-target store already exists, its Zarr format is detected automatically. New
-stores use Zarr format 3 by default. Pass `--zarr-format 2` when creating a new
-store for a downstream tool that requires the Zarr format 2 layout:
+`--overwrite-store`, `--overwrite-recording`, `--zarr-format`,
+`--sample-compression`, and `--sample-compression-level`. When the target store
+already exists, its Zarr format is detected automatically. New stores use Zarr
+format 3 by default. Pass `--zarr-format 2` when creating a new store for a
+downstream tool that requires the Zarr format 2 layout:
 
 ```bash
 sigmf-zarr import sigmf input.sigmf-meta store.zarr --zarr-format 2
@@ -81,6 +82,14 @@ Pass `--no-sample-sharding` to disable this behavior. Format-2 imports use
 logical chunks targeting approximately 4 MiB because format 2 does not support
 sharding. The RadioML and CSPB commands also accept `--sample-shard-batch` to
 override the automatic item count for each format-3 shard.
+
+The default `--sample-compression auto` setting uses Zstandard. Select `zstd`,
+`lz4`, or `lz4hc` to use that algorithm through Blosc, which applies a
+data-type-aware shuffle filter. LZ4 prioritizes throughput, while Zstandard
+usually provides a better compression ratio. `lz4hc` uses more compression
+time to improve the LZ4 ratio. Use `--sample-compression-level` to set the
+Blosc level from 0 through 9. Use `--sample-compression none` to store sample
+chunks without compression.
 
 Import a RadioML 2016 pickle mapping:
 
