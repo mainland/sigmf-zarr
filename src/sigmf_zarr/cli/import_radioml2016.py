@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 
-from sigmf_zarr.cli.command import (
+from sigmf_zarr.cli.command import positive_int
+from sigmf_zarr.cli.import_command import (
     ImportCommand,
-    add_sample_storage_arguments,
-    positive_int,
+    add_sample_sharding_arguments,
     resolve_sample_compressor,
     resolve_sample_shards,
+    text_encoding,
 )
 from sigmf_zarr.cli.output import print_text
 from sigmf_zarr.radioml2016 import (
@@ -49,7 +50,7 @@ class ImportRadioML2016Command(ImportCommand):
         Args:
             parser: Argument parser to extend.
         """
-        add_sample_storage_arguments(parser)
+        add_sample_sharding_arguments(parser)
         parser.add_argument(
             "--batch-size",
             type=positive_int,
@@ -58,6 +59,7 @@ class ImportRadioML2016Command(ImportCommand):
         )
         parser.add_argument(
             "--encoding",
+            type=text_encoding,
             default="latin1",
             help="String encoding for legacy Python 2 pickles.",
         )
@@ -81,7 +83,11 @@ class ImportRadioML2016Command(ImportCommand):
         sample_shape = tuple(
             int(dim) for dim in next(iter(dataset.values())).shape[1:]
         )
-        sample_shards = resolve_sample_shards(args, sample_shape)
+        sample_shards = resolve_sample_shards(
+            args.sample_shard_batch,
+            sample_shape,
+            zarr_format=args.zarr_format,
+        )
         store = import_radioml2016_dataset(
             args.store,
             dataset,
@@ -92,7 +98,10 @@ class ImportRadioML2016Command(ImportCommand):
             batch_size=args.batch_size,
             sample_shards=sample_shards,
             automatic_sharding=not args.no_sample_sharding,
-            sample_compressor=resolve_sample_compressor(args),
+            sample_compressor=resolve_sample_compressor(
+                args.sample_compression,
+                level=args.sample_compression_level,
+            ),
             zarr_format=args.zarr_format,
         )
         print_text(store.info())

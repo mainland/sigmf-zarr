@@ -16,6 +16,7 @@ from sigmf_zarr.cli.export import (
     export_archive,
     export_recording,
 )
+from sigmf_zarr.cli.import_command import resolve_sample_compressor
 from sigmf_zarr.cli.import_cspb import ImportCSPBCommand
 from sigmf_zarr.cli.import_radioml2016 import ImportRadioML2016Command
 from sigmf_zarr.cli.import_radioml2018 import ImportRadioML2018Command
@@ -176,6 +177,10 @@ class ImportSigMFCommand(ImportCommand):
                 overwrite_recording=args.overwrite_recording,
                 overwrite_collection=args.overwrite_collection,
                 automatic_sharding=not args.no_sample_sharding,
+                sample_compressor=resolve_sample_compressor(
+                    args.sample_compression,
+                    level=args.sample_compression_level,
+                ),
                 zarr_format=args.zarr_format,
             )
             print_text(store.info())
@@ -189,6 +194,10 @@ class ImportSigMFCommand(ImportCommand):
                 overwrite_store=args.overwrite_store,
                 overwrite_recording=args.overwrite_recording,
                 automatic_sharding=not args.no_sample_sharding,
+                sample_compressor=resolve_sample_compressor(
+                    args.sample_compression,
+                    level=args.sample_compression_level,
+                ),
                 zarr_format=args.zarr_format,
             )
             print_text(recording.info())

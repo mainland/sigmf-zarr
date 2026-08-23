@@ -239,6 +239,8 @@ complete.
 
 - Import RadioML 2016, RadioML 2018, and Chad Spooner CSPB datasets in bounded
   batches.
+- Provide shared `auto`, `none`, `zstd`, `lz4`, and `lz4hc` sample compression
+  choices for every import command.
 - Load RadioML pickles with a restricted opcode interpreter that never calls a
   function named by the file, accepts only plain integer and floating-point
   arrays, checks declared array sizes against the file size before
