@@ -12,16 +12,48 @@ version, input format, impact, and a minimal reproducer when possible.
 
 ## Untrusted inputs
 
-RadioML 2016 files are Python pickle files, and `pickle.load` can execute
-arbitrary code. The `sigmf-zarr import radioml2016` command and
-`load_radioml2016_pickle()` do not use `pickle.load`. Their loader resolves
-only the NumPy globals needed to rebuild arrays and rejects a pickle that
-references any other global before resolving it. The importer accepts only
-real numeric arrays. The loader also rejects a pickle whose arrays hold more
-data than the file, so a small file cannot expand into a large import. Pickle
-files are therefore subject to the same guidance as the other untrusted inputs
-below. The remaining risk is NumPy's validation of the array state recorded in
-the file.
+RadioML 2016 and RML22 files are Python pickle files, and `pickle.load` can
+execute arbitrary code. The `sigmf-zarr import radioml2016` and
+`sigmf-zarr import rml22` commands and `load_radioml2016_pickle()` do not use
+`pickle.load` or NumPy's unpickling functions. Their loader interprets only the
+pickle opcodes that NumPy array mappings use in protocols 0 through 5,
+including Python 2 pickles. It provides the following guarantees:
+
+- The loader never calls a function that the file names. A pickle may name
+  only `numpy.ndarray`, `numpy.dtype`, the NumPy array reconstruction
+  functions, and `_codecs.encode`, which the loader replaces with inert
+  placeholders. The loader rejects any other global before resolving it.
+- Each array has a little-endian or big-endian integer or floating-point dtype
+  of 1, 2, 4, or 8 bytes. The loader builds the dtype from a validated type
+  code and byte order, and rejects dtype state with subarrays, fields, object
+  references, flags, or a nondefault item size. It does not pass dtype or
+  array state from the file to NumPy.
+- The result is a dictionary of at most 65,536 entries whose values are
+  arrays. Each key is a `(modulation, snr)` pair of a string of at most 256
+  characters and an integer in the `int16` range other than a Boolean.
+  Because a pickle can refer to one stored label from many keys, the labels
+  of all keys must hold no more characters in total than the file has bytes.
+- Before it allocates an array, the loader checks that the recorded data
+  matches the declared shape and dtype, and that the arrays built so far hold
+  no more bytes than the file. The bytes that `_codecs.encode` produces have
+  the same bound. A dictionary that refers to one array more than once must
+  also stay within this bound.
+- The loader limits a pickle to 1,048,576 opcodes, 16 open marks, and tuples
+  of at most 32 items nested at most 2 levels deep. Text integers must fit in
+  8 bytes and text memo indexes in 4 bytes, the ranges of the binary opcodes,
+  so a pickle cannot choose many keys or memo indexes with one hash value.
+  Apart from arrays and other values read from the file, the loader
+  allocates at most about 120 bytes for each opcode, or about 120 MiB at the
+  opcode limit. Nesting cannot exhaust the interpreter stack.
+
+The importers also reject a dictionary entry with no items and a dictionary
+of more than 4,096 entries, and combine consecutive entries into writes of at
+most `batch_size` items. Provenance metadata records about 400 bytes for each
+entry plus its label, and the store records each distinct label in the class
+list and the `mod_class_id` index. With 4,096 entries and 256-character
+labels, the metadata is therefore at most about 40 MB. A pickle that breaks
+any of these rules raises `ValueError`. Pickle files are therefore subject to
+the same guidance as the other untrusted inputs below.
 
 SigMF archives, HDF5 files, ZIP files, `.tim` files, JSON metadata, and Zarr
 stores should be treated as untrusted data. Run imports with operating

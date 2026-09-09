@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import pickle
 import warnings
 from pathlib import Path
@@ -13,6 +14,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+import sigmf_zarr
 import sigmf_zarr._import_limits as import_limits
 import sigmf_zarr.radioml2016 as radioml2016
 import sigmf_zarr.radioml2018 as radioml2018
@@ -809,6 +811,363 @@ def test_pickle_loader_accepts_python2_pickles(
         # The test wrote these bytes, so the unrestricted loader is safe here.
         expected = pickle.loads(data, encoding="latin1")
     _assert_same_arrays(loaded, expected)
+
+
+def test_pickle_loader_accepts_string_paths(tmp_path: Path) -> None:
+    """The loader must accept `str` paths like the other loaders.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    path = tmp_path / "dataset.pkl"
+    path.write_bytes(pickle.dumps(_sample_dataset(), protocol=4))
+
+    loaded = sigmf_zarr.load_radioml2016_pickle(str(path), encoding="latin1")
+
+    _assert_same_arrays(loaded, _native(_sample_dataset()))
+
+
+class _Reduce:
+    """Object that pickles as an arbitrary reduce value."""
+
+    def __init__(self, *value: object) -> None:
+        """Record the reduce value.
+
+        Args:
+            *value: Callable, arguments, and optional state.
+        """
+        self.value = value
+
+    def __reduce__(self) -> tuple[object, ...]:
+        """Return the recorded reduce value.
+
+        Returns:
+            Callable, arguments, and optional state.
+        """
+        return self.value
+
+
+_RECONSTRUCT = np.zeros(1).__reduce__()[0]
+_F4_STATE = (3, "<", None, None, None, -1, -1, 0)
+
+
+def _dtype(
+    code: str = "f4",
+    state: tuple[object, ...] | None = _F4_STATE,
+    *,
+    copy: object = True,
+) -> _Reduce:
+    """Return a pickled dtype with arbitrary arguments and state.
+
+    Args:
+        code: Type code.
+        state: `__setstate__` argument, or `None` for no state.
+        copy: Copy flag.
+
+    Returns:
+        Reduce value.
+    """
+    if state is None:
+        return _Reduce(np.dtype, (code, False, copy))
+    return _Reduce(np.dtype, (code, False, copy), state)
+
+
+def _array(
+    dtype: object = None,
+    shape: tuple[int, ...] = (1, 2, 4),
+    data: object = None,
+) -> _Reduce:
+    """Return a pickled array with arbitrary state.
+
+    Args:
+        dtype: Pickled dtype, by default `float32`.
+        shape: Declared shape.
+        data: Array bytes, by default zeros of the declared size.
+
+    Returns:
+        Reduce value.
+    """
+    if data is None:
+        data = bytes(math.prod(shape) * 4)
+    return _Reduce(
+        _RECONSTRUCT,
+        (np.ndarray, (0,), b"b"),
+        (1, shape, _dtype() if dtype is None else dtype, False, data),
+    )
+
+
+_SHARED_DATA = bytes(4096)
+
+_SUBARRAY_PICKLE = (
+    b"\x80\x02"
+    b"cnumpy\ndtype\nX\x02\x00\x00\x00f4\x89\x88\x87R"
+    b"(K\x03X\x01\x00\x00\x00<"
+    b"cnumpy\ndtype\nX\x01\x00\x00\x00O\x89\x88\x87RK\x01\x85\x86"
+    b"NNJ\xff\xff\xff\xffJ\xff\xff\xff\xffK\x00tb"
+    b"q\x00}q\x01X\x04\x00\x00\x00BPSKK\x00\x86"
+    b"cnumpy.core.multiarray\n_reconstruct\ncnumpy\nndarray\n"
+    b"K\x00\x85C\x01b\x87R"
+    b"(K\x01K\x01K\x02K\x04\x87h\x00\x89B\x20\x00\x00\x00"
+    + b"\x41" * 32
+    + b"tbs."
+)
+"""The review's 208-byte pickle, which crashed the importer."""
+
+_P2_DTYPE = b"\x80\x02cnumpy\ndtype\nX\x02\x00\x00\x00f4\x89\x88\x87R"
+_P2_DTYPE_STATE = (
+    b"(K\x03X\x01\x00\x00\x00<NNNJ\xff\xff\xff\xffJ\xff\xff\xff\xffK\x00tb"
+)
+_P2_ARRAY = (
+    b"\x80\x02cnumpy.core.multiarray\n_reconstruct\ncnumpy\nndarray\n"
+    b"K\x00\x85C\x01b\x87R"
+)
+_P2_ARRAY_STATE = (
+    b"(K\x01K\x01K\x02K\x04\x87"
+    + _P2_DTYPE[2:]
+    + _P2_DTYPE_STATE
+    + b"\x89C\x20"
+    + bytes(32)
+    + b"tb"
+)
+
+
+def _codecs_amplification() -> bytes:
+    """Return the review's nested `_codecs.encode(x, "hex")` pickle.
+
+    Returns:
+        A 346-byte pickle that would build a 64 MiB value.
+    """
+    expression = b"C\x01A"
+    for _ in range(26):
+        expression = b"h\x00" + expression + b"X\x03\x00\x00\x00hex\x86R"
+    return (
+        b"\x80\x02c_codecs\nencode\nq\x00}q\x01X\x01\x00\x00\x00k"
+        + expression
+        + b"s."
+    )
+
+
+def _repeated_encoding() -> bytes:
+    """Return a pickle that encodes one memoized string many times.
+
+    Returns:
+        Pickle that would build 2,000 copies of a 64 KiB string.
+    """
+    text = b"X" + (1 << 16).to_bytes(4, "little") + b"a" * (1 << 16)
+    call = b"h\x00h\x01X\x06\x00\x00\x00latin1\x86R"
+    return (
+        b"\x80\x02c_codecs\nencode\nq\x00"
+        + text
+        + b"q\x01("
+        + call * 2000
+        + b"t."
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        # The review's 208-byte pickle hides an object subarray in float32.
+        (
+            {
+                ("BPSK", 0): _array(
+                    _dtype(
+                        state=(
+                            3,
+                            "<",
+                            (np.dtype("O"), (1,)),
+                            None,
+                            None,
+                            -1,
+                            -1,
+                            0,
+                        )
+                    )
+                )
+            },
+            "dtype arguments",
+        ),
+        (
+            {
+                ("BPSK", 0): _array(
+                    _dtype(state=(3, "<", ("f4", (1,)), None, None, -1, -1, 0))
+                )
+            },
+            "nested more than 2",
+        ),
+        # Reference-count flags and an enlarged item size.
+        (
+            {("BPSK", 0): _array(_dtype(state=(*_F4_STATE[:-1], 1)))},
+            "state for dtype f4",
+        ),
+        (
+            {("BPSK", 0): _array(_dtype(state=(*_F4_STATE[:-1], 0x3F)))},
+            "state for dtype f4",
+        ),
+        (
+            {
+                ("BPSK", 0): _array(
+                    _dtype(state=(3, "<", None, None, None, 4096, 4096, 0))
+                )
+            },
+            "state for dtype f4",
+        ),
+        (
+            {("BPSK", 0): _array(_dtype(state=(4, *_F4_STATE[1:], None)))},
+            "state for dtype f4",
+        ),
+        (
+            {("BPSK", 0): _array(_dtype("u1", state=_F4_STATE))},
+            "state for dtype u1",
+        ),
+        (
+            {("BPSK", 0): _array(_dtype(state=(3, "=", *_F4_STATE[2:])))},
+            "state for dtype f4",
+        ),
+        (
+            {("BPSK", 0): _array(_dtype(state=None))},
+            "no recorded state",
+        ),
+        # Without the copy flag, NumPy would change its global dtype.
+        ({("BPSK", 0): _array(_dtype(copy=False))}, "dtype arguments"),
+        ({("BPSK", 0): _array(_dtype("V8"))}, "dtype arguments"),
+        ({("BPSK", 0): _array(_dtype("O"))}, "dtype arguments"),
+        ({("BPSK", 0): _array(_dtype("c8"))}, "dtype arguments"),
+        ({("BPSK", 0): _array(_dtype("b1"))}, "dtype arguments"),
+        ({("BPSK", 0): _array(_dtype("f16"))}, "dtype arguments"),
+        ({("BPSK", 0): _array(_dtype("M8[s]"))}, "dtype arguments"),
+        ({("BPSK", 0): _array(np.dtype("O"))}, "dtype arguments"),
+        # Declared sizes are checked before allocation.
+        (
+            {("BPSK", 0): _array(shape=(80_000_000, 2, 1), data=bytes(32))},
+            "need 640000000",
+        ),
+        ({("BPSK", 0): _array(data=bytes(31))}, "need 32"),
+        ({("BPSK", 0): _array(data="\u0100" * 32)}, "latin"),
+        ({("BPSK", 0): _array(shape=(1, 2, -4), data=b"x")}, "shape"),
+        ({("BPSK", 0): _array(data=(0,))}, "array data is a tuple"),
+        # Each array is built from a separate reference to shared data.
+        (
+            {
+                ("BPSK", snr): _array(shape=(128, 2, 4), data=_SHARED_DATA)
+                for snr in range(8)
+            },
+            "more data than the file",
+        ),
+        (
+            {("BPSK", 0): _Reduce(_RECONSTRUCT, (np.ndarray, (0,), b"b"))},
+            "no recorded state",
+        ),
+        (
+            {("BPSK", 0): _Reduce(_RECONSTRUCT, (np.ndarray, (1,), b"b"))},
+            "_reconstruct arguments",
+        ),
+        ({("BPSK", 0): None}, "not an array"),
+        ({(("BPSK",), 0): _array()}, "dictionary key"),
+        ({("BPSK", 0): np.zeros((1, 2, 4), dtype=object)}, "dtype"),
+        (np.zeros((1, 2, 4), dtype=np.float32), "holds an array"),
+        ([np.zeros((1, 2, 4), dtype=np.float32)], "opcode EMPTY_LIST"),
+        ({("BPSK", 0.5): _array()}, "opcode BINFLOAT"),
+    ],
+)
+def test_pickle_loader_rejects_unsafe_numpy_state(
+    tmp_path: Path, payload: object, message: str
+) -> None:
+    """Dtype and array state must be plain, numeric, and bounded.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        payload: Object whose pickle holds the unsafe state.
+        message: Expected error text.
+    """
+    path = tmp_path / "unsafe.pkl"
+    path.write_bytes(pickle.dumps(payload, protocol=2))
+    with pytest.raises(ValueError, match="Invalid RadioML pickle") as failure:
+        radioml2016.load_radioml2016_pickle(path, encoding="latin1")
+    assert message in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"", "truncated"),
+        (b"\x80\x02}", "truncated"),
+        # A key made of 10**6 nested tuples overflowed the C stack.
+        (b"\x80\x02}N" + b"\x85" * 10**6 + b"Ns.", "nested more than 2"),
+        (b"\x80\x02(" + b"N" * 33 + b"t.", "more than 32 items"),
+        (b"\x80\x02" + b"(" * 17, "more than 16 marks"),
+        (b"\x80\x02" + b"N" * (1 << 20) + b".", "more than 1048576 opcodes"),
+        (b"\x80\x04\x8e" + (1 << 62).to_bytes(8, "little"), "truncated"),
+        (b"\x80\x04\x96" + (1 << 62).to_bytes(8, "little"), "truncated"),
+        (b"\x80\x02\x8b\x00\x00\x10\x00.", "integer is too large"),
+        (b"\x80\x02T\xff\xff\xff\xff.", "negative length"),
+        (b"S'\\q'\n.", "invalid escape"),
+        (b"S'unquoted\n.", "not quoted"),
+        (b"\x80\x02g7\n.", "memo index 7"),
+        (b"\x80\x02N\x85t.", "needs a MARK"),
+        (b"\x80\x02s.", "empty stack"),
+        (b"\x80\x06}.", "protocol 6"),
+        (b"\x80\x02}K\x01a.", "opcode APPEND"),
+        (
+            b"\x80\x02c_codecs\nencode\nK\x01X\x05\x00\x00\x00utf-8\x86R.",
+            "_codecs.encode arguments",
+        ),
+        (_codecs_amplification(), "_codecs.encode arguments"),
+        (_repeated_encoding(), "encoded strings hold more data"),
+        # A declared object array of 320 MB.
+        (
+            b"\x80\x02}X\x01\x00\x00\x00k"
+            b"cnumpy.core.multiarray\n_reconstruct\ncnumpy\nndarray\n"
+            b"J" + (40_000_000).to_bytes(4, "little") + b"\x85C\x01O\x87Rs.",
+            "_reconstruct arguments",
+        ),
+        (
+            _P2_DTYPE + _P2_DTYPE_STATE + _P2_DTYPE_STATE + b".",
+            "cannot set the state of a dtype",
+        ),
+        (
+            _P2_ARRAY + _P2_ARRAY_STATE + b"N\x85b.",
+            "cannot set the state of an array",
+        ),
+        (_P2_DTYPE + b"N\x85R.", "cannot call a dtype"),
+        (b"\x80\x02cnumpy\nndarray\n)R.", "cannot call global numpy.ndarray"),
+        (b"\x80\x02cnumpy\nndarray\nNR.", "arguments are a NoneType"),
+        (b"\x80\x02}Nb.", "BUILD state is a NoneType"),
+        (b"\x80\x02}N)s.", "not an array"),
+        (b"\x80\x02N(}t.", "cannot hold a dictionary"),
+        (b"\x80\x02N\x8c\x05numpyN\x93.", "two strings"),
+        (b"\x80\x02\xff.", "opcode 0xff"),
+        (_SUBARRAY_PICKLE, "dtype arguments"),
+    ],
+)
+def test_pickle_loader_rejects_malformed_or_unbounded_streams(
+    tmp_path: Path, payload: bytes, message: str
+) -> None:
+    """Malformed and unbounded opcode streams must raise `ValueError`.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        payload: Pickle bytes.
+        message: Expected error text.
+    """
+    path = tmp_path / "malformed.pkl"
+    path.write_bytes(payload)
+    with pytest.raises(ValueError, match="Invalid RadioML pickle") as failure:
+        radioml2016.load_radioml2016_pickle(path, encoding="latin1")
+    assert message in str(failure.value)
+
+
+def test_pickle_loader_rejects_unknown_encoding(tmp_path: Path) -> None:
+    """An unknown string encoding must raise `ValueError`.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    path = tmp_path / "dataset.pkl"
+    path.write_bytes(pickle.dumps({("BPSK", 0): np.zeros((1, 2, 4))}))
+    with pytest.raises(ValueError, match="no-such-codec") as failure:
+        radioml2016.load_radioml2016_pickle(path, encoding="no-such-codec")
+    assert isinstance(failure.value.__cause__, LookupError)
 
 
 def test_pickle_loader_rejects_repeated_array_data(tmp_path: Path) -> None:
