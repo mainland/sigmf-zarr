@@ -78,6 +78,14 @@
    :undoc-members:
 ```
 
+## Panoradio HF dataset
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.panoradio
+   :members:
+   :undoc-members:
+```
+
 ## CSPB datasets and TIM files
 
 ```{eval-rst}
@@ -102,6 +110,10 @@
    :undoc-members:
 
 .. automodule:: sigmf_zarr.cli.import_command
+   :members:
+   :undoc-members:
+
+.. automodule:: sigmf_zarr.cli.import_panoradio
    :members:
    :undoc-members:
 
