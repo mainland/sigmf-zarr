@@ -97,8 +97,15 @@ Import a RadioML 2016 pickle mapping:
 sigmf-zarr import radioml2016 RML2016.10a.pkl store.zarr
 ```
 
+Import an RML22 pickle mapping:
+
+```bash
+sigmf-zarr import rml22 RML22.01A.pkl store.zarr
+```
+
 Python pickle loading can execute code. Use `sigmf-zarr import radioml2016`
-only with dataset files obtained from a trusted source.
+and `sigmf-zarr import rml22` only with dataset files obtained from a trusted
+source.
 
 Import a RadioML 2018 HDF5 dataset:
 
