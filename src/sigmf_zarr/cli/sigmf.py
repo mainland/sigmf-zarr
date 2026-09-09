@@ -18,6 +18,7 @@ from sigmf_zarr.cli.import_command import resolve_sample_compressor
 from sigmf_zarr.cli.import_cspb import ImportCSPBCommand
 from sigmf_zarr.cli.import_radioml2016 import ImportRadioML2016Command
 from sigmf_zarr.cli.import_radioml2018 import ImportRadioML2018Command
+from sigmf_zarr.cli.import_rml22 import ImportRML22Command
 from sigmf_zarr.cli.store import StoreCommand
 from sigmf_zarr.sigmf import import_sigmf, import_sigmf_archive
 
@@ -266,6 +267,7 @@ class ImportGroup(CommandGroup):
                 ImportRadioML2016Command(),
                 ImportRadioML2018Command(),
                 ImportCSPBCommand(),
+                ImportRML22Command(),
             ),
             destination="import_name",
         )

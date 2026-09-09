@@ -335,6 +335,19 @@ def test_pickle_loader_accepts_each_protocol(
         np.testing.assert_array_equal(loaded[key], value)
 
 
+def test_pickle_loader_translates_empty_input(tmp_path: Path) -> None:
+    """Empty input must follow the documented malformed-pickle contract.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    path = tmp_path / "empty.pkl"
+    path.write_bytes(b"")
+    with pytest.raises(ValueError, match="Invalid RadioML pickle") as failure:
+        radioml2016.load_radioml2016_pickle(path, encoding="latin1")
+    assert isinstance(failure.value.__cause__, EOFError)
+
+
 def test_pickle_loader_rejects_repeated_array_data(tmp_path: Path) -> None:
     """A small pickle must not expand one array into many imported buckets.
 

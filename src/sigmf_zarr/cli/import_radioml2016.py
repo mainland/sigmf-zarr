@@ -74,9 +74,13 @@ class ImportRadioML2016Command(ImportCommand):
         Returns:
             Process exit status.
         """
-        dataset = as_radioml2016_dict(
-            load_radioml2016_pickle(args.source, encoding=args.encoding)
-        )
+        payload = load_radioml2016_pickle(args.source, encoding=args.encoding)
+        try:
+            dataset = as_radioml2016_dict(payload)
+        except TypeError as exc:
+            raise ValueError(
+                f"Invalid RadioML pickle {args.source}: {exc}"
+            ) from exc
         sample_shape = tuple(
             int(dim) for dim in next(iter(dataset.values())).shape[1:]
         )

@@ -100,7 +100,7 @@ def load_radioml2016_pickle(path: Path, *, encoding: str) -> object:
         )
         try:
             result = _NumPyUnpickler(handle, encoding=encoding).load()
-        except pickle.UnpicklingError as exc:
+        except (EOFError, pickle.UnpicklingError) as exc:
             raise ValueError(f"Invalid RadioML pickle {path}: {exc}") from exc
     if isinstance(result, Mapping):
         array_bytes = sum(

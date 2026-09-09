@@ -10,9 +10,12 @@ and the resolved dependency set is recorded in `uv.lock`.
 - Test suite: `tests`
 - Sphinx documentation: `docs`
 
-Reusable RadioML conversion functions live in `sigmf_zarr.radioml2016` and
-`sigmf_zarr.radioml2018`. Command-line modules parse arguments and call these
-functions. Importers share the recording rollback boundary in
+Reusable RadioML conversion functions live in `sigmf_zarr.radioml2016`
+and `sigmf_zarr.radioml2018`. The `sigmf-zarr import rml22` command calls
+`import_radioml2016_dataset()` with `dataset_version="2022"` to reuse its
+pickle format support.
+Command-line modules parse arguments and call the public import functions.
+Importers share the recording rollback boundary in
 `sigmf_zarr.store._transaction`. Schema validation and read-only views remain
 independent of the command-line interface.
 
