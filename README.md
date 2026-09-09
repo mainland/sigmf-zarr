@@ -53,6 +53,16 @@ of existing stores and accept `--zarr-format 2` for tools that require the
 Zarr format 2 physical layout. Reading either format uses the same zarr-python
 3.2-or-newer runtime.
 
+Separate commands import RadioML 2016, RadioML 2018.01A, RML22, and CSPB
+datasets. For example, import an RML22 pickle mapping with:
+
+```bash
+sigmf-zarr import rml22 RML22.01A.pkl store.zarr
+```
+
+See the [RadioML documentation](docs/radioml.md) for supported input layouts,
+storage options, and Python examples.
+
 ## Alpha status
 
 Version 1.0.0a1 is an alpha of the initial format draft. The storage format and
@@ -60,8 +70,9 @@ Python API may change incompatibly until the initial draft is complete. See the
 [changelog](CHANGELOG.md) and the normative
 [`sigmf-zarr` extension](docs/sigmf-zarr.sigmf-ext.md).
 
-RadioML 2016 uses Python pickle input. Only import pickle files obtained from a
-trusted source because loading a malicious pickle can execute code.
+RadioML 2016 and RML22 use Python pickle input. Only import pickle files
+obtained from a trusted source because loading a malicious pickle can execute
+code.
 
 ## Project information
 

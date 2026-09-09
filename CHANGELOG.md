@@ -27,7 +27,9 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
 - Reject unsupported input metadata and archive files before destination
   creation. Require explicit permission and warn before omitting native indexes,
   extension arrays, or channel metadata during standard export.
-- Import RadioML 2016, RadioML 2018, and Chad Spooner CSPB datasets.
+- Import RadioML 2016, RadioML 2018, RML22, and Chad Spooner CSPB datasets.
+- Share bounded sample writes between the RadioML 2016 and RML22 pickle
+  importers while retaining dataset-specific subcommands and metadata.
 - Preserve and verify standard SigMF dataset hashes.
 - Maintain logical sample, metadata, recording, collection, and store hashes.
 - Restore existing recordings and collections when replacement creation or

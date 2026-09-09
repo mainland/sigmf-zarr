@@ -1,20 +1,23 @@
 # RadioML
 
 ```{warning}
-RadioML 2016 datasets use Python pickle files. Pickle loading can execute code.
-Run `sigmf-zarr import radioml2016` only on files obtained from a trusted source.
+RadioML 2016 and RML22 datasets use Python pickle files. Pickle loading can
+execute code. Run `sigmf-zarr import radioml2016` and `sigmf-zarr import rml22`
+only on files obtained from a trusted source.
 ```
 
-SigMF-Zarr provides subcommands under `sigmf-zarr import` for RadioML 2016
-pickle datasets and the RadioML 2018.01A HDF5 dataset. Both importers create a batched recording
-with sample axes `(iq, time)` and item-aligned metadata indexes:
+SigMF-Zarr provides subcommands under `sigmf-zarr import` for the RadioML 2016
+and RML22 pickle datasets and the RadioML 2018.01A HDF5 dataset. All three
+importers create a batched recording with sample axes `(iq, time)` and
+item-aligned metadata indexes:
 
 - The `indexes/mod_class_id` array contains integer modulation class IDs. Its
   `labels` attribute maps each ID to a modulation name.
 - The `indexes/snr_db` array contains SNR values in dB.
 
 The importers also record the source dataset name in
-`global["radioml:source_dataset"]` when one is provided.
+`global["radioml:source_dataset"]` when one is provided. The command-line
+interfaces default this name to the source file name without its final suffix.
 
 ## RadioML 2016
 
@@ -139,9 +142,70 @@ The file may contain a JSON string array, a Python-style `classes = [...]`
 assignment, or one class per non-empty line. Python-style files are parsed
 without executing their contents.
 
+## RML22
+
+Import an RML22 pickle mapping with the `sigmf-zarr import rml22` command:
+
+```bash
+sigmf-zarr import rml22 RML22.01A.pkl store.zarr \
+  --source-dataset RML22.01A \
+  --recording-name RML22.01A \
+  --sample-compression zstd \
+  --sample-compression-level 3
+```
+
+The source is a dictionary keyed by `(modulation, snr_db)` pairs. Modulation
+names are strings, and SNR values are integers. Each value is a NumPy array
+with shape `(item, 2, time)`, where the second axis contains I/Q components.
+All arrays must have the same item shape. Class subsets and unequal numbers
+of items per key are supported. The common time length does not have to be
+128. The importer derives the modulation vocabulary from the keys and
+preserves the label strings in sorted order.
+
+The inspected `RML22.01A.pkl` dataset contains 462000 float32 items with shape
+`(2, 128)`, grouped under 231 keys with 2000 items each. Its 11 modulation
+labels include `AM-SSB`, and its SNR values range from -20 through 20 dB in
+2 dB steps. These counts and labels describe that file and are not validation
+requirements.
+
+The `sigmf-zarr import rml22` command records `global["radioml:dataset_version"]`
+as `"2022"` and defaults the recording name to `rml22`. The command defaults
+`radioml:source_dataset` to the source file name without its final suffix,
+such as `RML22.01A`. Use `--source-dataset` to override it. The Python API
+records `null` for this metadata field when `source_dataset` is not supplied.
+
+RML22 reuses the pickle decoding, input validation, and bounded sample writer
+in `sigmf_zarr.radioml2016`. The complete decoded mapping remains in memory.
+The importer does not concatenate a second complete sample tensor. Set
+`--batch-size` or the Python `batch_size` argument to limit each sample write.
+The default is `4096` items. The aligned label arrays also remain in memory
+until they are written. String decoding defaults to `latin1` and can be
+changed with `--encoding`.
+
+The Python API uses `import_radioml2016_dataset()` with
+`dataset_version="2022"` and an explicit recording name:
+
+```python
+import pickle
+
+from sigmf_zarr import import_radioml2016_dataset
+
+with open("RML22.01A.pkl", "rb") as handle:
+    dataset = pickle.load(handle, encoding="latin1")
+
+store = import_radioml2016_dataset(
+    "store.zarr",
+    dataset,
+    dataset_version="2022",
+    source_dataset="RML22.01A",
+    recording_name="RML22.01A",
+    overwrite_store=True,
+)
+```
+
 ## Storage options
 
-Both commands accept `--sample-compression`, `--sample-compression-level`,
+All three commands accept `--sample-compression`, `--sample-compression-level`,
 `--sample-shard-batch`, and `--no-sample-sharding`. Like the standard SigMF
 importer, they support `--recording-name`, `--overwrite-store`,
 `--overwrite-recording`, and `--zarr-format`.
@@ -152,14 +216,15 @@ the Blosc level from 0 through 9, or select `none` to disable compression.
 
 New stores use Zarr format 3 by default. Automatic layout selection groups
 RadioML items into logical chunks targeting approximately 256 KiB and physical
-shards targeting approximately 4 MiB. A float32 RadioML 2016 array with item
-shape `(2, 128)` uses 256 items per chunk and 4096 items per shard. A float32
-RadioML 2018 array with item shape `(2, 1024)` uses 32 items per chunk and 512
-items per shard. Use `--sample-shard-batch` to override the derived shard item
-count or `--no-sample-sharding` to use larger unsharded chunks.
+shards targeting approximately 4 MiB. A float32 RadioML 2016 or RML22 array
+with item shape `(2, 128)` uses 256 items per chunk and 4096 items per shard.
+A float32 RadioML 2018 array with item shape `(2, 1024)` uses 32 items per
+chunk and 512 items per shard. Use `--sample-shard-batch` to override the
+derived shard item count or `--no-sample-sharding` to use larger unsharded
+chunks.
 
 Existing stores have their format detected automatically. Pass
 `--zarr-format 2` to create a Zarr format 2 store or to require format 2 for an
 existing store. Format 2 uses chunks targeting approximately 4 MiB and cannot
-be combined with `--sample-shard-batch`. Run either command with `--help` for
+be combined with `--sample-shard-batch`. Run any command with `--help` for
 the complete option list.
