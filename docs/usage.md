@@ -76,12 +76,14 @@ sigmf-zarr import sigmf input.sigmf-meta store.zarr --zarr-format 2
 
 Supplying `--zarr-format` for an existing store verifies that the store has the
 requested format. Format-3 imports automatically place logical chunks in
-physical shards targeting approximately 4 MiB. RadioML and CSPB chunks target
-approximately 256 KiB, while standard SigMF chunks target approximately 1 MiB.
+physical shards targeting approximately 4 MiB. RadioML, CSPB, and Panoradio
+chunks target approximately 256 KiB, while standard SigMF chunks target
+approximately 1 MiB.
 Pass `--no-sample-sharding` to disable this behavior. Format-2 imports use
 logical chunks targeting approximately 4 MiB because format 2 does not support
-sharding. The RadioML and CSPB commands also accept `--sample-shard-batch` to
-override the automatic item count for each format-3 shard.
+sharding. The RadioML, CSPB, and Panoradio commands also accept
+`--sample-shard-batch` to override the automatic item count for each format-3
+shard.
 
 The default `--sample-compression auto` setting uses Zstandard. Select `zstd`,
 `lz4`, or `lz4hc` to use that algorithm through Blosc, which applies a
@@ -127,6 +129,16 @@ sigmf-zarr import cspb CSPB.ML.2018R2 cspb.zarr \
 
 See [Chad Spooner CSPB Datasets](cspb.md) for the `.tim` encoding, supported
 truth layouts, ZIP handling, indexes, and Python API.
+
+Import a Panoradio HF NumPy file and its CSV tags:
+
+```bash
+sigmf-zarr import panoradio dataset_panoradio_hf.npy panoradio.zarr \
+  --tags-file dataset_panoradio_hf_tags.csv
+```
+
+See [Panoradio HF dataset](panoradio.md) for the sample layout, tag indexes,
+and Python API.
 
 Export one unbatched recording back to standard SigMF:
 

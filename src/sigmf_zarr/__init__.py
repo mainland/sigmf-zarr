@@ -11,6 +11,7 @@ from sigmf_zarr.cspb import (
     import_cspb_dataset,
     load_cspb_truth,
 )
+from sigmf_zarr.panoradio import import_panoradio_dataset
 from sigmf_zarr.radioml2016 import (
     RadioML2016Dict,
     RadioML2016Key,
@@ -70,6 +71,7 @@ __all__ = [
     "export_sigmf",
     "export_sigmf_archive",
     "flatten_radioml2016_dataset",
+    "import_panoradio_dataset",
     "import_sigmf",
     "import_sigmf_archive",
     "import_radioml2016_dataset",

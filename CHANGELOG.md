@@ -18,6 +18,8 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
   choices for every import command.
 - Import and export standard SigMF recordings and archives.
 - Import RadioML 2016, RadioML 2018, RML22, and Chad Spooner CSPB datasets.
+- Import Panoradio HF complex NumPy arrays and aligned CSV tags with bounded
+  sample conversion and typed per-item indexes.
 - Share bounded sample writes between the RadioML 2016 and RML22 pickle
   importers while retaining dataset-specific subcommands and metadata.
 - Preserve and verify standard SigMF dataset hashes.
