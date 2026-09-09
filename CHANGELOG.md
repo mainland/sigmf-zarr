@@ -79,8 +79,8 @@ complete.
 
 ### Dataset importers
 
-- Import RadioML 2016, RadioML 2018, RML22, and Chad Spooner CSPB datasets in
-  bounded batches.
+- Import RadioML 2016, RadioML 2018, RML22, Chad Spooner CSPB, and Panoradio HF
+  datasets in bounded batches.
 - Provide shared `auto`, `none`, `zstd`, `lz4`, and `lz4hc` sample compression
   choices for every import command.
 - Restrict RadioML pickle loading to built-in containers and real numeric

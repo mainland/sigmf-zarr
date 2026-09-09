@@ -8,6 +8,7 @@ typed Zarr arrays for sample data and related recording metadata.
 
 - [Usage](docs/usage.md)
 - [RadioML](docs/radioml.md)
+- [Panoradio HF dataset](docs/panoradio.md)
 - [Format model](docs/format.md)
 - [Development](docs/development.md)
 - [API reference](docs/api.md)
@@ -53,8 +54,9 @@ of existing stores and accept `--zarr-format 2` for tools that require the
 Zarr format 2 physical layout. Reading either format uses the same zarr-python
 3.2-or-newer runtime.
 
-Separate commands import RadioML 2016, RadioML 2018.01A, RML22, and CSPB
-datasets. For example, import an RML22 pickle mapping with:
+Subcommands under `sigmf-zarr import` import RadioML 2016, RadioML 2018.01A,
+RML22, CSPB, and Panoradio HF datasets. Run `sigmf-zarr import --help` to list
+the supported formats. For example, import an RML22 pickle mapping with:
 
 ```bash
 sigmf-zarr import rml22 RML22.01A.pkl store.zarr
@@ -62,6 +64,16 @@ sigmf-zarr import rml22 RML22.01A.pkl store.zarr
 
 See the [RadioML documentation](docs/radioml.md) for supported input layouts,
 storage options, and Python examples.
+
+Import a Panoradio HF NumPy file with its CSV tags:
+
+```bash
+sigmf-zarr import panoradio dataset_panoradio_hf.npy panoradio.zarr \
+  --tags-file dataset_panoradio_hf_tags.csv
+```
+
+See the [Panoradio documentation](docs/panoradio.md) for the sample layout,
+tag indexes, and Python API.
 
 ## Alpha status
 
