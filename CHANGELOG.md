@@ -237,8 +237,18 @@ complete.
 
 ### Dataset importers
 
-- Import RadioML 2016, RadioML 2018, RML22, and Chad Spooner CSPB datasets in
-  bounded batches.
+- Import RadioML 2016, RadioML 2018, RML22, Chad Spooner CSPB, and Panoradio HF
+  datasets in bounded batches.
+- Limit each RadioML 2018, CSPB, and Panoradio batch to about 64 MiB of
+  samples as well as `batch_size` items. Reject an item, or a RadioML 2018
+  HDF5 chunk, larger than 64 MiB before reading it.
+- Read RadioML 2018 data only from the named HDF5 file. Reject datasets with
+  external raw storage, virtual datasets, and paths that use external links.
+- Record `radioml:source_dataset` from `import_radioml2018_dataset()` only when
+  `source_dataset` is given, as the other RadioML importers do. The command
+  line still defaults it to the source file name without its suffix.
+- Require ASCII decimal numbers in Panoradio tags and in CSPB truth files and
+  `.tim` file names, rejecting underscores and other Unicode digits.
 - Provide shared `auto`, `none`, `zstd`, `lz4`, and `lz4hc` sample compression
   choices for every import command.
 - Load RadioML pickles with a restricted opcode interpreter that never calls a

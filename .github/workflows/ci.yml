@@ -112,6 +112,28 @@ jobs:
           .venv/bin/sigmf-zarr import radioml2018 --help
           .venv/bin/sigmf-zarr import rml22 --help
           .venv/bin/sigmf-zarr import cspb --help
+          .venv/bin/sigmf-zarr import panoradio --help
+      - name: Smoke-test store inspection and export
+        run: |
+          .venv/bin/python - <<'EOF'
+          import numpy as np
+          from sigmf_zarr import SigMFZarrStore
+
+          with SigMFZarrStore.create("smoke.zarr") as store:
+              recording = store.recordings.create(
+                  "rec",
+                  sample_shape=(4,),
+                  global_metadata={"core:datatype": "rf32_le"},
+              )
+              recording.set_samples(np.arange(4, dtype=np.float32))
+          EOF
+          .venv/bin/sigmf-zarr store smoke.zarr integrity update
+          .venv/bin/sigmf-zarr store smoke.zarr validate
+          .venv/bin/sigmf-zarr store smoke.zarr recording rec info --format json
+          .venv/bin/sigmf-zarr export smoke.zarr smoke.sigmf-meta \
+            --recording-name rec
+          .venv/bin/sigmf-zarr import sigmf smoke.sigmf-meta roundtrip.zarr
+          .venv/bin/sigmf-zarr store roundtrip.zarr integrity verify
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: distributions

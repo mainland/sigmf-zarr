@@ -6,11 +6,24 @@ typed Zarr arrays for sample data and related recording metadata.
 
 ## Documentation
 
-- [Usage](docs/usage.md)
-- [RadioML](docs/radioml.md)
-- [Format model](docs/format.md)
-- [Development](docs/development.md)
-- [API reference](docs/api.md)
+The documentation is published at <https://sigmf-zarr.readthedocs.io/>. Its
+pages are also available in the repository:
+
+- [Usage](https://github.com/mainland/sigmf-zarr/blob/main/docs/usage.md)
+- [Relationship to standard SigMF](https://github.com/mainland/sigmf-zarr/blob/main/docs/comparison.md)
+- [RadioML](https://github.com/mainland/sigmf-zarr/blob/main/docs/radioml.md)
+- [Chad Spooner CSPB datasets](https://github.com/mainland/sigmf-zarr/blob/main/docs/cspb.md)
+- [Panoradio HF dataset](https://github.com/mainland/sigmf-zarr/blob/main/docs/panoradio.md)
+- [PyTorch datasets](https://github.com/mainland/sigmf-zarr/blob/main/docs/pytorch.md)
+- [Index queries](https://github.com/mainland/sigmf-zarr/blob/main/docs/query.md)
+- [Dataset viewer](https://github.com/mainland/sigmf-zarr/blob/main/docs/viewer.md)
+- [RFML dataset profile](https://github.com/mainland/sigmf-zarr/blob/main/docs/rfml.md)
+- [Format model](https://github.com/mainland/sigmf-zarr/blob/main/docs/format.md)
+- [Provenance and input bindings](https://github.com/mainland/sigmf-zarr/blob/main/docs/provenance.md)
+- [The `sigmf-zarr` SigMF extension](https://github.com/mainland/sigmf-zarr/blob/main/docs/sigmf-zarr.sigmf-ext.md)
+- [SigMF-Zarr index projection extension](https://github.com/mainland/sigmf-zarr/blob/main/docs/sigmf-zarr-indexes.sigmf-ext.md)
+- [Development](https://github.com/mainland/sigmf-zarr/blob/main/docs/development.md)
+- [API reference](https://github.com/mainland/sigmf-zarr/blob/main/docs/api.md)
 
 ## Quick start
 
@@ -53,8 +66,9 @@ of existing stores and accept `--zarr-format 2` for tools that require the
 Zarr format 2 physical layout. Reading either format uses the same zarr-python
 3.2-or-newer runtime.
 
-Separate commands import RadioML 2016, RadioML 2018.01A, RML22, and CSPB
-datasets. For example, import an RML22 pickle mapping with:
+Subcommands under `sigmf-zarr import` import RadioML 2016, RadioML 2018.01A,
+RML22, CSPB, and Panoradio HF datasets. Run `sigmf-zarr import --help` to list
+the supported formats. For example, import an RML22 pickle mapping with:
 
 ```bash
 sigmf-zarr import rml22 RML22.01A.pkl store.zarr
@@ -62,6 +76,16 @@ sigmf-zarr import rml22 RML22.01A.pkl store.zarr
 
 See the [RadioML documentation](https://github.com/mainland/sigmf-zarr/blob/main/docs/radioml.md) for supported input layouts,
 storage options, and Python examples.
+
+Import a Panoradio HF NumPy file with its CSV tags:
+
+```bash
+sigmf-zarr import panoradio dataset_panoradio_hf.npy panoradio.zarr \
+  --tags-file dataset_panoradio_hf_tags.csv
+```
+
+See the [Panoradio documentation](https://github.com/mainland/sigmf-zarr/blob/main/docs/panoradio.md) for the sample layout,
+tag indexes, and Python API.
 
 ## Alpha status
 
