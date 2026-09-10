@@ -33,8 +33,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+pytorch = ["torch>=2.6"]
 dev = [
   "docformatter",
+  "fsspec[http]>=2024.6",
   "mypy>=1.10",
   "pre-commit>=4.0",
   "pytest>=8.0",
