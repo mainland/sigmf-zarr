@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import math
 import warnings
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import numpy as np
@@ -34,6 +35,10 @@ from zarr.core.array import (
 from zarr.core.dtype import VariableLengthUTF8
 from zarr.core.group import Group
 
+from sigmf_zarr.indexes import (
+    _read_index_selection,
+    validate_categorical_values,
+)
 from sigmf_zarr.integrity import (
     INTEGRITY_ALGORITHM,
     INTEGRITY_ATTR,
@@ -188,6 +193,7 @@ class SigMFRecording:
         store: SigMFZarrStore,
         recording_name: str,
         *,
+        validation: Literal["full", "structural"] = "full",
         create: bool = False,
         overwrite: bool = False,
         batched: bool = False,
@@ -212,6 +218,8 @@ class SigMFRecording:
         Args:
             store: Parent SigMF-Zarr store containing the recording.
             recording_name: Recording identifier under `recordings/`.
+            validation: Whether to validate all item JSON entries (`full`) or
+                only their storage descriptors (`structural`) on open.
             create: Whether to create the recording instead of opening it.
             overwrite: Whether creation may replace an existing recording.
             batched: Whether the `samples` array includes a leading
@@ -244,9 +252,12 @@ class SigMFRecording:
         Raises:
             KeyError: If `create` is false and the recording does not exist.
             ValueError: If `overwrite` is requested without `create`, the
-                recording exists and `overwrite` is false, or creation lacks a
-                valid `sample_shape`.
+                recording exists and `overwrite` is false, creation lacks a
+                valid `sample_shape`, the validation mode is unsupported, or
+                stored metadata is malformed.
         """
+        if validation not in {"full", "structural"}:
+            raise ValueError("validation must be full or structural")
         if overwrite and not create:
             raise ValueError("overwrite requires create=True")
         _validate_resource_name(recording_name, kind="Recording")
@@ -276,7 +287,7 @@ class SigMFRecording:
             )
             self._validate_metadata_attrs()
             self._validate_sample_array_shape()
-            self._validate_item_metadata_array()
+            self._validate_item_metadata_array(entries=validation == "full")
             self._validate_channel_metadata_groups()
             self._validate_sample_checksum()
 
@@ -1033,8 +1044,11 @@ class SigMFRecording:
                 f"{sample_shape!r}"
             )
 
-    def _validate_item_metadata_array(self) -> None:
+    def _validate_item_metadata_array(self, *, entries: bool = True) -> None:
         """Validate optional per-item metadata storage.
+
+        Args:
+            entries: Whether to validate every stored JSON entry as well.
 
         Raises:
             ValueError: If the recording layout, array shape, checksum, or
@@ -1057,6 +1071,13 @@ class SigMFRecording:
                 f"{expected_shape!r}"
             )
         array_metadata = cast(Any, item_metadata.metadata)
+        stored_dtype = (
+            array_metadata.dtype
+            if self._store.zarr_format == 2
+            else array_metadata.data_type
+        )
+        if not isinstance(stored_dtype, VariableLengthUTF8):
+            raise ValueError("item_metadata must use variable-length UTF-8")
         if self._store.zarr_format == 2:
             filters = array_metadata.filters or ()
             has_crc32c = any(
@@ -1068,6 +1089,9 @@ class SigMFRecording:
             raise ValueError(
                 f"Recording {self.name!r} item_metadata chunks must use CRC32C"
             )
+
+        if not entries:
+            return
 
         # Validate by physical chunk to bound memory and avoid one read per
         # item on remote stores.
@@ -1645,7 +1669,8 @@ class SigMFRecording:
 
         Raises:
             ValueError: If the array is not one-dimensional, its axis is
-                invalid, or its length does not match the indexed axis.
+                invalid, its length does not match the indexed axis, or a
+                required descriptor is missing or malformed.
         """
         error = self._index_structure_error(index_name, index)
         if error is not None:
@@ -1674,6 +1699,12 @@ class SigMFRecording:
                 f"Index {index_name!r} must be one-dimensional, got "
                 f"shape {index.shape}"
             )
+        for key in ("field", "kind"):
+            value = index.attrs.get(key)
+            if not isinstance(value, str) or not value:
+                return (
+                    f"Index {index_name!r} requires a nonempty string {key!r}"
+                )
         axis = index.attrs.get("axis")
         if not isinstance(axis, str) or axis not in self.runtime_axes:
             return f"Index {index_name!r} has invalid axis {axis!r}"
@@ -3109,6 +3140,7 @@ class SigMFRecording:
         kind: str = "metadata",
         unit: str | None = None,
         labels: list[JSONValue] | tuple[JSONValue, ...] | None = None,
+        attributes: Mapping[str, JSONValue] | None = None,
         overwrite: bool = False,
         chunks: tuple[int] | None = None,
     ) -> ReadOnlyArray:
@@ -3125,6 +3157,8 @@ class SigMFRecording:
             kind: Index kind. Defaults to `metadata`.
             unit: Optional value unit.
             labels: Optional labels or lookup values for integer indexes.
+            attributes: Additional descriptive JSON attributes. Must not
+                override base index attributes or managed mutation markers.
             overwrite: Whether an existing index may be replaced.
             chunks: Optional chunk shape.
 
@@ -3133,8 +3167,28 @@ class SigMFRecording:
 
         Raises:
             ValueError: If values are not one-dimensional, the axis is not
-                present, or the index length does not match the axis length.
+                present, the index length does not match the axis length,
+                a required descriptor is malformed, or additional attributes
+                are invalid or reserved.
         """
+        for key, value in (("field", field), ("kind", kind)):
+            # Untyped callers can pass any value.
+            if not isinstance(value, str) or not value:  # type: ignore[redundant-expr]
+                raise ValueError(f"Index {key} must be a nonempty string")
+        extra = json_object(dict(attributes or {}), name="index attributes")
+        reserved = {
+            "axis",
+            "field",
+            "kind",
+            "unit",
+            "labels",
+            self._INDEX_VALID_FIELD,
+            self._INDEX_INVALID_REASON_FIELD,
+        }
+        if conflicts := reserved.intersection(extra):
+            raise ValueError(
+                f"Cannot override index attributes: {sorted(conflicts)}"
+            )
         value_array = np.asarray(values)
         if value_array.ndim != 1:
             raise ValueError(
@@ -3149,6 +3203,7 @@ class SigMFRecording:
             )
 
         attrs: JSONObject = {
+            **extra,
             "axis": axis,
             "field": field,
             "kind": kind,
@@ -3195,3 +3250,63 @@ class SigMFRecording:
         if error is not None:
             raise ValueError(error)
         return ReadOnlyArray(index)
+
+    def find_indexes(
+        self, field: str, *, axis: str | None = None
+    ) -> tuple[str, ...]:
+        """Find every index describing a field without reading its values.
+
+        Args:
+            field: Exact metadata field key to match.
+            axis: Optional runtime axis to match.
+
+        Returns:
+            Sorted names relative to `indexes/`, including nested names.
+            Results may include invalid indexes. No default is selected.
+        """
+        return tuple(
+            sorted(
+                name
+                for name, member in self._indexes_group.members(max_depth=None)
+                if isinstance(member, Array)
+                and member.attrs.get("field") == field
+                and (axis is None or member.attrs.get("axis") == axis)
+            )
+        )
+
+    def decode_index(
+        self,
+        index_name: str,
+        *,
+        selection: int | slice | Sequence[int],
+    ) -> npt.NDArray[np.object_]:
+        """Decode selected category IDs through an index's labels table.
+
+        Ordinary index access continues to return raw values. JSON metadata is
+        neither read nor modified by this explicit decoding operation.
+
+        Args:
+            index_name: Index name relative to `indexes/`.
+            selection: Integer position, slice, or integer positions to read.
+
+        Returns:
+            One-dimensional object array of JSON lookup values. Order and
+            duplicates are preserved, and mutable values are independent.
+            An integer selection returns an array of length one.
+
+        Raises:
+            KeyError: If the index does not exist.
+            ValueError: If index data or labels are invalid, or a slice step
+                is zero.
+            TypeError: If selection positions are not integers or are Boolean.
+            IndexError: If a selected position is outside the index.
+        """
+        array = self.index(index_name)
+        values = _read_index_selection(array, selection)
+        labels = validate_categorical_values(
+            values, labels=array.attrs.get("labels")
+        )
+        result = np.empty(len(values), dtype=object)
+        for position, category in enumerate(values):
+            result[position] = deepcopy(labels[int(category)])
+        return result

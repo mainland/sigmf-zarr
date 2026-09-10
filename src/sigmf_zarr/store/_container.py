@@ -136,12 +136,15 @@ class SigMFRecordings:
         self,
         recording_name: str,
         *,
+        validation: Literal["full", "structural"] = "full",
         recording_cls: type[SigMFRecording] = SigMFRecording,
     ) -> SigMFRecording:
         """Open one existing recording.
 
         Args:
             recording_name: Recording name.
+            validation: Full item JSON validation (default) or structural
+                validation with entries checked when accessed.
             recording_cls: Recording wrapper class to instantiate.
 
         Returns:
@@ -149,9 +152,11 @@ class SigMFRecordings:
 
         Raises:
             KeyError: If the recording does not exist.
-            ValueError: If stored metadata is invalid.
+            ValueError: If the validation mode or stored metadata is invalid.
         """
-        return recording_cls(self._store, recording_name)
+        return recording_cls(
+            self._store, recording_name, validation=validation
+        )
 
     def create(
         self,

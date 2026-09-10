@@ -28,6 +28,14 @@
    :members:
 ```
 
+## Index utilities
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.indexes
+   :members:
+   :undoc-members:
+```
+
 ## Integrity
 
 ```{eval-rst}
