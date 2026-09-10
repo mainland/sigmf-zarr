@@ -47,6 +47,8 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
   validating, or completing a mutation of a recording index.
 - Support structural recording opens that defer per-item JSON validation
   until access while retaining full validation by default.
+- Store multiple named split schemes with compact assignments, read-only
+  views, provenance, and explicit scalar group-isolation validation.
 
 The format and Python API may change incompatibly during the alpha series.
 Data written by one alpha may require migration before a later alpha can read
