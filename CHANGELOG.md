@@ -99,6 +99,12 @@ complete.
   views, provenance, and explicit group-isolation validation, including
   isolation of reused constituent sources.
 
+### Machine learning
+
+- Add an optional dense PyTorch dataset with explicit targets and split
+  selection, dtype-preserving CPU tensors, transforms, batched reads, and
+  process-local read-only handles.
+
 ### Command line
 
 - Provide the `sigmf-zarr` command for store inspection, validation, integrity
