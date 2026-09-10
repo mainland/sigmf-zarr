@@ -24,6 +24,10 @@
 .. automodule:: sigmf_zarr.indexes
    :members:
    :undoc-members:
+
+.. automodule:: sigmf_zarr.splits
+   :members:
+   :undoc-members:
 ```
 
 ## Integrity

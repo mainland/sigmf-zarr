@@ -53,6 +53,14 @@ from sigmf_zarr.json import (
     json_value,
 )
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
+from sigmf_zarr.splits import (
+    SplitIndex,
+    SplitMethod,
+    SplitType,
+    _encode_assignments,
+    _split_labels,
+    _validate_assignments,
+)
 from sigmf_zarr.store._common import ChecksumName, ZarrFormat
 
 if TYPE_CHECKING:
@@ -2857,3 +2865,112 @@ class SigMFRecording:
         for position, category in enumerate(values):
             result[position] = deepcopy(labels[int(category)])
         return result
+
+    def add_split(
+        self,
+        index_name: str,
+        assignments: npt.ArrayLike,
+        *,
+        labels: Sequence[str],
+        split_type: SplitType = "custom",
+        method: SplitMethod = "custom",
+        group_index: str | None = None,
+        seed: int | None = None,
+        description: str | None = None,
+        generator: str | None = None,
+        overwrite: bool = False,
+        chunks: tuple[int] | None = None,
+    ) -> SplitIndex:
+        """Store explicit split assignments after validating group isolation.
+
+        This operation does not generate assignments. Method and seed describe
+        their provenance. Later source edits do not refresh or invalidate them.
+
+        Args:
+            index_name: Unique recording-level split index name.
+            assignments: One partition ID or label string per item.
+            labels: Ordered, unique, nonempty partition names. Every partition
+                must contain at least one item, with at least two partitions.
+            split_type: Interpretation of the partitions.
+            method: Method used to produce the supplied assignments.
+            group_index: Optional item-aligned integer or string group IDs.
+                Each identity must occur in only one partition.
+            seed: Optional nonnegative generator seed.
+            description: Optional human-readable split purpose.
+            generator: Optional generator name and version.
+            overwrite: Whether to replace an existing named index.
+            chunks: Optional assignment chunk shape.
+
+        Returns:
+            Read-only view of the newly created split.
+
+        Raises:
+            KeyError: If the grouping index is absent.
+            ValueError: If descriptors, assignments, or group isolation are
+                invalid, or the index exists without overwrite permission.
+        """
+        if isinstance(labels, str | bytes):
+            raise ValueError("Split labels must be a sequence of names")
+        if group_index == index_name:
+            raise ValueError("A split cannot use itself as its grouping index")
+        attributes: JSONObject = {"split_type": split_type, "method": method}
+        for key, value in (
+            ("group_index", group_index),
+            ("seed", seed),
+            ("description", description),
+            ("generator", generator),
+        ):
+            if value is not None:
+                attributes[key] = value
+        descriptors = json_object(
+            {
+                **attributes,
+                "axis": "item",
+                "field": "sigmf-zarr:split",
+                "kind": "split",
+                "labels": list(labels),
+            },
+            name="split descriptors",
+        )
+        vocabulary = _split_labels(descriptors)
+        values = _encode_assignments(assignments, vocabulary)
+        _validate_assignments(self, values, descriptors)
+        self.add_index(
+            index_name,
+            values,
+            axis="item",
+            field="sigmf-zarr:split",
+            kind="split",
+            labels=list(vocabulary),
+            attributes=attributes,
+            overwrite=overwrite,
+            chunks=chunks,
+        )
+        return self.split(index_name)
+
+    def split(self, index_name: str) -> SplitIndex:
+        """Open one explicitly named split without checking source groups.
+
+        Args:
+            index_name: Recording-relative index name.
+
+        Returns:
+            Read-only split view with assignments, labels, and provenance.
+
+        Raises:
+            KeyError: If the index is absent.
+            ValueError: If index structure or split descriptors are invalid.
+        """
+        return SplitIndex(self, index_name)
+
+    def validate_split(self, index_name: str) -> None:
+        """Check a split against its declared source groups without mutation.
+
+        Args:
+            index_name: Recording-relative split index name.
+
+        Raises:
+            KeyError: If the split or grouping index is absent.
+            ValueError: If assignments, descriptors, or group isolation fail.
+        """
+        self.split(index_name).validate()

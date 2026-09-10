@@ -366,6 +366,55 @@ For consumers that need raw IDs with checked lookup metadata,
 the supplied vector and returns a detached JSON lookup table. It does not read
 storage or impose domain rules such as unique string labels.
 
+## Named data splits
+
+A split stores explicit partition assignments for one batched recording. Each
+scheme has its own index name. For the 16-item `snippets` recording above:
+
+```python
+recording.add_index(
+    "session_id",
+    np.repeat(np.arange(4), 4),
+    axis="item",
+    field="example:session_id",
+    overwrite=True,
+)
+split = recording.add_split(
+    "split_session",
+    ["train"] * 8 + ["validation"] * 4 + ["test"] * 4,
+    labels=("train", "validation", "test"),
+    split_type="holdout",
+    method="custom",
+    group_index="session_id",
+    overwrite=True,
+)
+print(split.assignments[:], split.labels, split.provenance)
+recording.validate_split("split_session")
+```
+
+`add_split()` accepts integer IDs or exact label strings and writes compact
+unsigned integer assignments. Labels must be unique nonempty strings, and at
+least two partitions are required. Every declared partition must contain an
+item. A declared `group_index` must be item-aligned and contain integer or
+string identities. Each identity must occur in only one partition. Validation
+runs before an existing split is replaced.
+
+`method`, `seed`, and `generator` describe supplied assignments. The writer
+does not generate a random split. `method="group_random"` requires a grouping
+index. Component-level grouping and nullable assignments are deferred.
+
+`recording.split(name)` returns a `SplitIndex` with read-only `assignments`,
+ordered `labels`, and detached `provenance`. It checks descriptors and integer
+storage without scanning assignments or sources. Use `validate_split(name)`
+or the view's `validate()` method to scan assignments and check group isolation.
+Validation reads batches and retains one partition per distinct group in memory.
+
+Source edits leave split assignments unchanged. Revalidate before relying on
+group isolation after editing the grouping index. Generic index reads, writes,
+integrity checks, and `validate_store()` do not establish that domain guarantee.
+No freshness marker or dependency registry is stored. Select each scheme by
+name even when several indexes describe `sigmf-zarr:split`.
+
 ## Per-item metadata
 
 Recording opens validate every per-item JSON entry by default. For bounded

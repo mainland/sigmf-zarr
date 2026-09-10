@@ -367,6 +367,29 @@ axis-aligned index, the index becomes invalid and the writer must update or
 replace it before use. Integrity recalculation must reject a store containing
 an invalid index rather than hashing it as current.
 
+### Named split convention
+
+An item-aligned index with `field="sigmf-zarr:split"`, `kind="split"`,
+integer assignments, and unique nonempty string `labels` describes a named
+partition scheme. Multiple schemes may share that field value. Index names
+identify schemes, and no scheme is the default.
+
+Optional provenance attributes are `split_type`, `method`, `seed`,
+`group_index`, `description`, and `generator`. The scalar split API supports
+`holdout`, `kfold`, and `custom` types and `published`, `random`, `group_random`,
+`chronological`, and `custom` methods. A seed is a nonnegative integer.
+`group_random` requires an item-aligned grouping index. These attributes record
+how assignments were produced and which source to check. They do not establish
+live dependencies.
+
+Explicit split validation requires valid category IDs, at least two occupied
+partitions, and no empty declared partition. If a grouping index is declared,
+every integer or string group identity must occur in one partition only.
+Generic index validation still checks structure, independently of split
+semantics. Source changes do not invalidate stored splits. Component-level
+source references and nullable splits are outside this convention's first
+implementation. No schema version change is required.
+
 ## Logical integrity
 
 Sample chunks use CRC32C by default. In Zarr format 3, CRC32C is the final
