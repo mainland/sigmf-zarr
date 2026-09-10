@@ -72,10 +72,10 @@ Install the pre-commit hooks once per clone:
 ```
 
 The hooks run Ruff lint and format checks, strict mypy over `src`, `tests`,
-`examples`, and `docs/conf.py`, sp-repo-review, codespell, rumdl, zizmor, and
-basic file checks. The Ruff, mypy, and sp-repo-review hooks run from `.venv`,
-so they use the versions that the lock pins. The hooks check files and never
-rewrite them. Format Python sources with Ruff:
+`examples`, `benchmarks`, and `docs/conf.py`, sp-repo-review, codespell, rumdl,
+zizmor, and basic file checks. The Ruff, mypy, and sp-repo-review hooks run
+from `.venv`, so they use the versions that the lock pins. The hooks check
+files and never rewrite them. Format Python sources with Ruff:
 
 ```bash
 .venv/bin/python -m ruff format
@@ -171,3 +171,24 @@ publishing them. The project does not publish to TestPyPI.
 
 Publishing and tagging are deliberate maintainer actions. Ordinary test and
 build commands never publish a package.
+
+## Dense loading benchmark
+
+Run the reproducible local and loopback HTTP comparison:
+
+```bash
+.venv/bin/python -m benchmarks.pytorch_loading
+```
+
+The development environment includes PyTorch. The benchmark compares scalar
+reads with `__getitems__()` for 256-item sequential and random requests, using
+8,192 float32 items with shape `(2, 128)`. Zarr format 2 uses 256-item chunks.
+Zarr format 3 uses the same chunks within 4,096-item shards. It reports
+constructor time, Python allocation peak during construction, and median read
+times over three warm-cache trials. Allocation tracking excludes native
+allocations. HTTP runs use a local server and do not model WAN latency or S3.
+
+One Python 3.12 run with PyTorch 2.14 measured batched reads at 16.5-35.8 times
+scalar throughput for local storage and 24.9-80.1 times for loopback HTTP.
+These measurements support using orthogonal batch selection. They are not
+performance guarantees or timing assertions in the test suite.
