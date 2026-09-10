@@ -8,6 +8,7 @@ and the resolved dependency set is recorded in `uv.lock`.
 
 - Package source: `src/sigmf_zarr`
 - Test suite: `tests`
+- Executable training examples: `examples`
 - Sphinx documentation: `docs`
 
 Reusable RadioML conversion functions live in `sigmf_zarr.radioml2016`
