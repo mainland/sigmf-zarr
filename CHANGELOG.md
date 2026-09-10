@@ -26,6 +26,11 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
 - Maintain logical sample, metadata, recording, collection, and store hashes.
 - Derive per-item metadata presence from the array, protect its chunks with
   CRC32C, and provide efficient validated entry and slice updates.
+- Discover indexes by descriptive field and explicitly decode selected
+  category IDs without synchronizing independent JSON metadata.
+- Accept additional descriptive index attributes with protected base fields.
+- Support structural recording opens that defer per-item JSON validation
+  until access while retaining full validation by default.
 
 The format and Python API may change incompatibly during the alpha series.
 Data written by one alpha may require migration before a later alpha can read

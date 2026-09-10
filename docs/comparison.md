@@ -157,10 +157,12 @@ SigMF-Zarr uses several complementary integrity layers:
 - Standard SigMF hashes are verified during import and regenerated during
   export.
 
-Managed mutations invalidate hashes and derived indexes that may no longer
-describe the changed data. Applications must still choose appropriate locking
+Managed mutations invalidate affected hashes. Axis-length changes invalidate
+aligned indexes, and incomplete index writes remain marked invalid. JSON edits
+and same-shape sample edits leave independent index values unchanged. Callers
+manage their semantic freshness. Applications must choose appropriate locking
 or transaction behavior when multiple writers use the same storage backend.
-the schema does not make arbitrary concurrent mutations atomic.
+The schema does not make arbitrary concurrent mutations atomic.
 
 ## Import, export, and interoperability
 
