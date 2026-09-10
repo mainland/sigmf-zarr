@@ -308,6 +308,11 @@ complete.
   `forkserver` start method in every child process.
 - Record dataset manifests with target descriptors, item order, transform
   descriptions, software versions, and input hashes.
+- Add a RadioML VT-CNN2 training example with seeded modulation/SNR-stratified
+  splits, CPU target transforms, spawn workers, and validation accuracy by SNR.
+- Keep an unsplit `RecordingDataset` selection lazy, so construction does not
+  allocate memory per item. Reject remote reads in a process created by
+  `os.fork()` from the dataset's owner.
 
 ### Command line
 
