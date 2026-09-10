@@ -14,6 +14,7 @@ import numpy as np
 import numpy.typing as npt
 from zarr.core.array import CompressorLike, ShardsLike
 
+from sigmf_zarr._rfml import _with_rfml_profile
 from sigmf_zarr.json import JSONObject
 from sigmf_zarr.provenance import file_identity, import_metadata
 from sigmf_zarr.sample_storage import resolve_import_sample_storage
@@ -386,7 +387,7 @@ def import_radioml2018_dataset(
             batch_size=batch_size,
         )
 
-        metadata = dict(global_metadata or {})
+        metadata = _with_rfml_profile(global_metadata)
         if metadata.get("core:datatype", datatype) != datatype:
             raise ValueError(
                 f"RadioML 2018 output requires core:datatype {datatype}"
@@ -463,7 +464,7 @@ def import_radioml2018_dataset(
                 "mod_class_id",
                 mod_class_id,
                 axis="item",
-                field="radioml:mod_class",
+                field="rfml-dataset:modulation",
                 labels=list(classes),
                 overwrite=overwrite_recording,
             )
