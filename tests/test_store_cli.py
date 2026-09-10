@@ -100,6 +100,7 @@ def test_missing_recording_is_reported_by_name(
     for kind, command in (
         ("recording", "info"),
         ("recording", "export"),
+        ("recording", "validate-rfml"),
         ("collection", "info"),
         ("collection", "export"),
     ):
