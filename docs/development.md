@@ -8,6 +8,7 @@ and the resolved dependency set is recorded in `uv.lock`.
 
 - Package source: `src/sigmf_zarr`
 - Test suite: `tests`
+- Executable training examples: `examples`
 - Sphinx documentation: `docs`
 - Design and planning notes: `notes`
 
@@ -57,7 +58,7 @@ invoke tools directly so another sync does not replace that installation:
 ```bash
 uv pip install --python .venv/bin/python 'torch>=2.6' --index-url https://download.pytorch.org/whl/cpu
 .venv/bin/pytest
-.venv/bin/mypy src
+.venv/bin/mypy src examples
 ```
 
 Core-only test environments skip the adapter tests. The PyTorch CI job runs
@@ -69,9 +70,9 @@ Run project checks through the locked environment:
 
 ```bash
 uv run pytest
-uv run --extra pytorch mypy src
-uv run ruff check src tests docs benchmarks
-uv run docformatter --check --recursive src tests benchmarks
+uv run --extra pytorch mypy src examples
+uv run ruff check src tests docs benchmarks examples
+uv run docformatter --check --recursive src tests benchmarks examples
 uv build
 uv run twine check dist/*
 uv run tox

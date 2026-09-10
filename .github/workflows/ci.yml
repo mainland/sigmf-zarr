@@ -46,7 +46,7 @@ jobs:
       - name: Run tests including adapter
         run: .venv/bin/pytest
       - name: Type check
-        run: .venv/bin/mypy src
+        run: .venv/bin/mypy src examples
 
   quality:
     runs-on: ubuntu-latest
@@ -60,9 +60,9 @@ jobs:
       - name: Sync locked environment
         run: uv sync --locked --extra dev --extra docs
       - name: Lint
-        run: uv run ruff check src tests docs benchmarks
+        run: uv run ruff check src tests docs benchmarks examples
       - name: Check docstring formatting
-        run: uv run docformatter --check --recursive src tests benchmarks
+        run: uv run docformatter --check --recursive src tests benchmarks examples
       - name: Build documentation
         run: uv run sphinx-build -b html -W docs docs/_build/html
 
