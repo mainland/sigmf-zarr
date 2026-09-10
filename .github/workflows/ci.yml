@@ -127,6 +127,7 @@ jobs:
           uv venv .venv
           uv pip install --python .venv/bin/python dist/*.whl
           .venv/bin/sigmf-zarr import sigmf --help
+          .venv/bin/python -c 'import sys; import sigmf_zarr; assert "torch" not in sys.modules'
           .venv/bin/sigmf-zarr --version
           .venv/bin/sigmf-zarr import radioml2016 --help
           .venv/bin/sigmf-zarr import radioml2018 --help

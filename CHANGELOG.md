@@ -300,6 +300,13 @@ complete.
 - Reject object index values that are not strings instead of storing their
   `str()` text.
 
+### Machine learning
+
+- Add an optional dense PyTorch dataset with explicit targets and split
+  selection, dtype-preserving CPU tensors, transforms, batched reads, and
+  process-local read-only handles. Remote stores require the `spawn` or
+  `forkserver` start method in every child process.
+
 ### Command line
 
 - Provide the `sigmf-zarr` command for store inspection, validation, integrity

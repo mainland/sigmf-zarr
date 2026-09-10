@@ -16,6 +16,7 @@ comparison
 radioml
 cspb
 panoradio
+pytorch
 format
 provenance
 sigmf-zarr.sigmf-ext
