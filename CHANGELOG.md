@@ -306,6 +306,8 @@ complete.
   selection, dtype-preserving CPU tensors, transforms, batched reads, and
   process-local read-only handles. Remote stores require the `spawn` or
   `forkserver` start method in every child process.
+- Record dataset manifests with target descriptors, item order, transform
+  descriptions, software versions, and input hashes.
 
 ### Command line
 

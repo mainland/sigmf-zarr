@@ -125,3 +125,17 @@ PyTorch loader APIs.
 
 This adapter supports dense item targets. Signal tables, nullable targets,
 and signal-specific collation are deferred.
+
+## Dataset manifests
+
+`sigmf_zarr.experiments.dataset_manifest()` records explicit target paths,
+lookup tables, split assignments, selected partition labels, source item
+ordering, and software versions. Callers must provide JSON descriptions of
+transforms and experiment parameters. The function does not infer the behavior
+of Python callables.
+
+Manifest creation scans logical samples and metadata, validates declared split
+isolation, and checks an existing split input binding when present. Keep the
+recording unchanged during the scan and experiment. The resulting hashes detect
+input changes. They do not certify source truth or guarantee identical training
+results across devices. Store the returned JSON with experiment results.
