@@ -38,6 +38,9 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
   selection, dtype-preserving CPU tensors, transforms, batched reads, and
   process-local read-only handles.
 
+- Add a RadioML VT-CNN2 training example with seeded modulation/SNR-stratified
+  splits, CPU target transforms, spawn workers, and validation accuracy by SNR.
+
 The format and Python API may change incompatibly during the alpha series.
 Data written by one alpha may require migration before a later alpha can read
 it. Stable compatibility begins only when the initial format draft is declared
