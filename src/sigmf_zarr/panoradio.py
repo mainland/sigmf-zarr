@@ -12,6 +12,7 @@ import numpy as np
 import numpy.typing as npt
 from zarr.core.array import CompressorLike, ShardsLike
 
+from sigmf_zarr._rfml import _with_rfml_profile
 from sigmf_zarr.json import JSONObject
 from sigmf_zarr.sample_storage import resolve_import_sample_storage
 from sigmf_zarr.store import SigMFZarrStore, ZarrFormat
@@ -204,7 +205,7 @@ def import_panoradio_dataset(
         Path(tags_path), item_count
     )
     sample_dtype = samples.real.dtype.newbyteorder("=")
-    metadata = dict(global_metadata or {})
+    metadata = _with_rfml_profile(global_metadata)
     metadata["panoradio:source_dataset"] = (
         source_dataset or Path(source_path).stem
     )
@@ -253,7 +254,7 @@ def import_panoradio_dataset(
             "mode_id",
             mode_id,
             axis="item",
-            field="panoradio:mode",
+            field="rfml-dataset:class",
             labels=tuple(classes),
         )
         recording.add_index(

@@ -12,8 +12,20 @@ importers create a batched recording with sample axes `(iq, time)` and
 item-aligned metadata indexes:
 
 - The `indexes/mod_class_id` array contains integer modulation class IDs. Its
-  `labels` attribute maps each ID to a modulation name.
-- The `indexes/snr_db` array contains SNR values in dB.
+  `labels` attribute maps each ID to a modulation name. The index uses
+  `field="rfml-dataset:modulation"`.
+- The `indexes/snr_db` array contains source SNR values in dB and retains
+  `field="radioml:snr"`.
+
+New imports declare the [RFML dataset profile](rfml.md), version `0.1.0`,
+in shared `core:extensions`. Other namespaces remain declared. The importer
+replaces any supplied `rfml-dataset` declaration with the version it writes,
+without modifying the caller's metadata object. Class labels must be nonempty.
+
+Earlier imports used `field="radioml:mod_class"`. Existing stores remain
+readable, and their field attributes are not rewritten. Field-based discovery
+must use the name present in the selected store. Named reads of `mod_class_id`
+and its numerical values, dtype, and class ordering are unchanged.
 
 The importers also record the source dataset name in
 `global["radioml:source_dataset"]` when one is provided. The command-line

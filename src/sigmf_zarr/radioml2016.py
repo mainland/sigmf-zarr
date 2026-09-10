@@ -14,6 +14,7 @@ import numpy as np
 import numpy.typing as npt
 from zarr.core.array import CompressorLike, ShardsLike
 
+from sigmf_zarr._rfml import _with_rfml_profile
 from sigmf_zarr.json import JSONObject
 from sigmf_zarr.sample_storage import resolve_import_sample_storage
 from sigmf_zarr.store import SigMFZarrStore, ZarrFormat
@@ -239,12 +240,14 @@ def import_radioml2016_dataset(
         raise ValueError(f"batch_size must be positive, got {batch_size}")
     dataset = as_radioml2016_dict(dataset)
     sample_shape, item_count, mod_classes = _radioml2016_layout(dataset)
+    if any(not label for label in mod_classes):
+        raise ValueError("Modulation class labels must be nonempty strings")
     mod_class_to_id = {
         mod_class: index for index, mod_class in enumerate(mod_classes)
     }
     mod_class_id = np.empty(item_count, dtype=np.int16)
     snr_db = np.empty(item_count, dtype=np.int16)
-    metadata = dict(global_metadata or {})
+    metadata = _with_rfml_profile(global_metadata)
     metadata["radioml:source_dataset"] = source_dataset
     metadata["radioml:dataset_version"] = dataset_version
 
@@ -306,7 +309,7 @@ def import_radioml2016_dataset(
             "mod_class_id",
             mod_class_id,
             axis="item",
-            field="radioml:mod_class",
+            field="rfml-dataset:modulation",
             labels=list(mod_classes),
             overwrite=overwrite_recording,
         )
