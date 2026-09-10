@@ -89,12 +89,14 @@ complete.
   NumPy arrays, and reject arrays that hold more data than the file. Check each
   CSPB ZIP member's declared size against its `.tim` header before reading it.
 
-### Indexes
+### Indexes and splits
 
 - Discover indexes by descriptive field, and decode selected category IDs
   explicitly without synchronizing independent JSON metadata.
 - Accept additional descriptive index attributes with protected base fields,
   and require nonempty `field` and `kind` descriptors.
+- Store multiple named split schemes with compact assignments, read-only
+  views, provenance, and explicit group-isolation validation.
 
 ### Command line
 
