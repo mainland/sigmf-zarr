@@ -166,3 +166,10 @@
 `sigmf_zarr.pytorch.RecordingDataset` provides dense map-style loading, and
 `RecordingItem` defines its typed item mapping. See [PyTorch datasets](pytorch.md)
 for constructor options, transforms, worker handling, and validation.
+
+## Experiment manifests
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.experiments
+   :members: dataset_manifest
+```

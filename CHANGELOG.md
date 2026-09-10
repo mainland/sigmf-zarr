@@ -104,6 +104,8 @@ complete.
 - Add an optional dense PyTorch dataset with explicit targets and split
   selection, dtype-preserving CPU tensors, transforms, batched reads, and
   process-local read-only handles.
+- Record dataset manifests with target descriptors, item order, transform
+  descriptions, software versions, and input hashes.
 
 ### Command line
 
