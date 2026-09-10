@@ -12,6 +12,7 @@ from sigmf_zarr.indexes import validate_categorical_values
 from sigmf_zarr.json import JSONObject, json_object
 from sigmf_zarr.provenance import _validate_binding
 from sigmf_zarr.readonly import ReadOnlyArray
+from sigmf_zarr.sources import iter_source_batches, source_descriptor
 
 if TYPE_CHECKING:
     from sigmf_zarr.store import SigMFRecording
@@ -53,6 +54,8 @@ def _split_labels(attributes: Mapping[str, Any]) -> tuple[str, ...]:
         raise ValueError("Split labels must be nonempty strings")
     if len(set(labels)) != len(labels):
         raise ValueError("Split labels must be unique")
+    if "group_sources" in attributes:
+        source_descriptor(attributes["group_sources"])
     _validate_provenance(attributes)
     if "inputs" in attributes:
         try:
@@ -90,10 +93,10 @@ def _validate_provenance(attributes: Mapping[str, Any]) -> None:
             raise ValueError(f"Split {key} must be a string")
     if "group_index" in attributes and not attributes["group_index"]:
         raise ValueError("Split group_index must not be empty")
-    if attributes.get("method") == "group_random" and not attributes.get(
-        "group_index"
+    if attributes.get("method") == "group_random" and not (
+        attributes.get("group_index") or attributes.get("group_sources")
     ):
-        raise ValueError("group_random requires group_index")
+        raise ValueError("group_random requires group_index or group_sources")
     if "seed" in attributes:
         seed = attributes["seed"]
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
@@ -193,6 +196,35 @@ def _validate_assignments(
     missing = [label for i, label in enumerate(labels) if i not in seen]
     if missing:
         raise ValueError(f"Split has empty partitions: {missing}")
+    if "group_sources" in attributes:
+        _validate_sources(recording, assignments, attributes["group_sources"])
+
+
+def _validate_sources(
+    recording: SigMFRecording,
+    assignments: ReadOnlyArray | npt.NDArray[Any],
+    descriptor: JSONObject,
+) -> None:
+    """Check constituent source reuse across all assigned partitions.
+
+    Args:
+        recording: Recording containing constituent JSON and source indexes.
+        assignments: Already validated partition assignments.
+        descriptor: Explicit source field and identity key.
+
+    Raises:
+        ValueError: If a source is unknown or occurs in several partitions.
+    """
+    seen: dict[int | str, int] = {}
+    for start, batch in iter_source_batches(recording, descriptor):
+        values = assignments[start : start + len(batch)]
+        for identities, partition in zip(batch, values, strict=True):
+            for identity in identities:
+                previous = seen.setdefault(identity, int(partition))
+                if previous != partition:
+                    raise ValueError(
+                        f"Source {identity!r} occurs in multiple partitions"
+                    )
 
 
 def _check_groups(
@@ -236,7 +268,7 @@ class SplitIndex:
 
     Descriptors are read on access. Keep the recording unchanged while
     consuming a view. Call `validate()` to check assignments against
-    declared groups again.
+    source groups again.
     """
 
     _recording: SigMFRecording

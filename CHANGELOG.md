@@ -294,7 +294,11 @@ complete.
 - Accept additional descriptive index attributes with protected base fields,
   and require nonempty `field` and `kind` descriptors.
 - Store multiple named split schemes with compact assignments, read-only
-  views, provenance, and explicit group-isolation validation.
+  views, provenance, and explicit group-isolation validation, including
+  isolation of reused constituent sources. Reject grouping indexes with a
+  `validity` mask and empty-string group identities when a split is created.
+- Reject object index values that are not strings instead of storing their
+  `str()` text.
 
 ### Command line
 

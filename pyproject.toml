@@ -127,6 +127,7 @@ line-length = 79
 [tool.mypy]
 files = [
   "docs/conf.py",
+  "examples",
   "src",
   "tests",
 ]

@@ -3936,6 +3936,7 @@ class SigMFRecording:
         split_type: SplitType = "custom",
         method: SplitMethod = "custom",
         group_index: str | None = None,
+        group_sources: JSONObject | None = None,
         input_binding: JSONObject | None = None,
         seed: int | None = None,
         description: str | None = None,
@@ -3957,6 +3958,8 @@ class SigMFRecording:
             method: Method used to produce the supplied assignments.
             group_index: Optional item-aligned integer or string group IDs.
                 Each identity must occur in only one partition.
+            group_sources: Optional constituent field and identity descriptor.
+                Reused sources must occur in only one partition.
             input_binding: Optional explicit input hashes from capture_inputs.
                 Verify this binding separately after source changes.
             seed: Optional nonnegative generator seed.
@@ -3981,9 +3984,14 @@ class SigMFRecording:
             raise ValueError("Split labels must be a sequence of names")
         if group_index == index_name:
             raise ValueError("A split cannot use itself as its grouping index")
+        if group_sources is not None and (
+            group_sources.get("fallback_index") == index_name
+        ):
+            raise ValueError("A split cannot use itself as a source index")
         attributes: JSONObject = {"split_type": split_type, "method": method}
         for key, value in (
             ("group_index", group_index),
+            ("group_sources", group_sources),
             ("inputs", input_binding),
             ("seed", seed),
             ("description", description),
@@ -4018,7 +4026,7 @@ class SigMFRecording:
         return self.split(index_name)
 
     def split(self, index_name: str) -> SplitIndex:
-        """Open one explicitly named split without checking group isolation.
+        """Open one explicitly named split without checking source groups.
 
         Args:
             index_name: Recording-relative index name.
@@ -4035,7 +4043,7 @@ class SigMFRecording:
         return SplitIndex(self, index_name)
 
     def validate_split(self, index_name: str) -> None:
-        """Check a split against its declared groups without mutation.
+        """Check a split against its declared source groups without mutation.
 
         Args:
             index_name: Recording-relative split index name.
