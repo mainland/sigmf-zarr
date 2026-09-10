@@ -58,7 +58,11 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
   splits, CPU target transforms, spawn workers, and validation accuracy by SNR.
 
 - Define the draft `rfml-dataset` dense metadata profile and document
-  source-field adoption decisions without changing existing importer output.
+  source-field semantics and adoption requirements.
+
+- Adopt RFML modulation fields for RadioML imports and generic class fields
+  for Panoradio imports, with profile declarations and source-specific SNR.
+  Preserve index names, raw values, label ordering, and existing stores.
 
 The format and Python API may change incompatibly during the alpha series.
 Data written by one alpha may require migration before a later alpha can read

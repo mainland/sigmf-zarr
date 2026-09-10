@@ -370,7 +370,7 @@ def test_import_radioml_dataset_delegates_to_write(monkeypatch) -> None:
         np.array([0], dtype=np.int16),
     )
     assert indexes["mod_class_id"]["axis"] == "item"
-    assert indexes["mod_class_id"]["field"] == "radioml:mod_class"
+    assert indexes["mod_class_id"]["field"] == "rfml-dataset:modulation"
     assert indexes["mod_class_id"]["kind"] == "metadata"
     assert indexes["mod_class_id"]["labels"] == ["BPSK"]
     np.testing.assert_array_equal(

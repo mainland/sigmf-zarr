@@ -62,7 +62,7 @@ def _assert_aligned_recording(
     assert snr_index.dtype == np.dtype(np.int16)
     assert class_index.attrs["labels"] == ["8PSK", "BPSK", "QPSK"]
     assert class_index.attrs["axis"] == "item"
-    assert class_index.attrs["field"] == "radioml:mod_class"
+    assert class_index.attrs["field"] == "rfml-dataset:modulation"
     assert snr_index.attrs["axis"] == "item"
     assert snr_index.attrs["field"] == "radioml:snr"
     assert snr_index.attrs["unit"] == "dB"

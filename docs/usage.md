@@ -390,6 +390,12 @@ labels = recording.decode_index("mod_class_id", selection=[2, 0, 2])
 print(raw_ids, labels)
 ```
 
+New RadioML imports declare the RFML profile and use
+`field="rfml-dataset:modulation"`. Earlier imports and the source-specific
+example above use `radioml:mod_class`. Panoradio imports use
+`rfml-dataset:class` instead of the earlier `panoradio:mode`. Discovery matches
+these names exactly. Explicit index names remain unchanged.
+
 `find_indexes()` returns sorted names, including nested names, without reading
 array values. It includes invalid indexes so they remain discoverable. Opening
 the selected index checks its structure. No first match is chosen as a default.

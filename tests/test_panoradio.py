@@ -71,7 +71,7 @@ def _assert_recording(
     np.testing.assert_array_equal(snr_index[:], [12, 0, -8, -32768, 32767])
     assert mode_index.dtype == np.dtype(np.int32)
     assert mode_index.attrs["axis"] == "item"
-    assert mode_index.attrs["field"] == "panoradio:mode"
+    assert mode_index.attrs["field"] == "rfml-dataset:class"
     assert mode_index.attrs["labels"] == ["AM", "USB", "psk31"]
     assert snr_index.dtype == np.dtype(np.int16)
     assert snr_index.attrs["axis"] == "item"

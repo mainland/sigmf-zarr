@@ -165,16 +165,26 @@ projection into JSON is not part of this profile implementation.
 
 ## Importer adoption decisions
 
-The following decisions concern semantic eligibility for future explicit
-adoption. Importers continue to write their existing source fields. No index
-renaming, sample conversion, or automatic profile declaration occurs.
+RadioML 2016, RML22, and RadioML 2018 imports write modulation indexes with
+`field="rfml-dataset:modulation"`. Panoradio imports write transmission-mode
+indexes with `field="rfml-dataset:class"`. These importers declare profile
+version `0.1.0`, preserving other namespaces and replacing any supplied profile
+declaration with the version they write. Index names, raw IDs, dtypes, and
+lookup ordering remain unchanged. No duplicate indexes or JSON copies are
+created.
 
-| Source representation | Profile candidate | Decision |
+Existing stores retain their fields. Field-based discovery must distinguish
+new profile fields from historical `radioml:mod_class` and `panoradio:mode`
+fields. Named index reads work with both. Source SNR and CSPB fields retain
+their existing namespaces. The remaining decisions below describe eligibility
+for later adoption.
+
+| Source representation | Profile field or candidate | Decision |
 | --- | --- | --- |
-| RadioML 2016 and RML22 `mod_class_id` | `modulation` | Preserve imported IDs and the exact selected lookup table. Do not infer RML22 measurement semantics from pickle layout compatibility. |
-| RadioML 2018 `mod_class_id` | `modulation` | Preserve the configured class order corresponding to one-hot columns. Column position alone does not determine a label name. |
+| RadioML 2016 and RML22 `mod_class_id` | `modulation` | Adopted. Preserve imported IDs and the exact selected lookup table. Do not infer RML22 measurement semantics from pickle layout compatibility. |
+| RadioML 2018 `mod_class_id` | `modulation` | Adopted. Preserve the configured class order corresponding to one-hot columns. Column position alone does not determine a label name. |
 | RadioML `snr_db` | `snr` | Retain `radioml:snr`. A complete measurement convention has not been established for each supported release in this review. |
-| Panoradio `mode_id` | `class` | Preserve mode names. Do not replace them with inferred modulation-family labels. |
+| Panoradio `mode_id` | `class` | Adopted. Preserve mode names. Do not replace them with inferred modulation-family labels. |
 | Panoradio `snr_db` | `snr` | Retain `panoradio:snr` until the measurement stage and power/band conventions are established. |
 | CSPB single-signal `mod_class_id` | `modulation` | Preserve the imported lookup and raw truth codes. Unknown-code labels must not be treated as identified modulation schemes. |
 | CSPB `signal_count` | `signal_count` | Count truth components, not inferred emitters or all physically present signals. |
