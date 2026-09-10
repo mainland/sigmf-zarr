@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from typing import Any
 
 from sigmf_zarr.cli.context import StoreContext
@@ -15,6 +16,7 @@ from sigmf_zarr.cli.export import (
 from sigmf_zarr.cli.group import CommandGroup
 from sigmf_zarr.cli.output import OutputCommand
 from sigmf_zarr.readonly import ReadOnlyArray
+from sigmf_zarr.rfml import validate_rfml
 from sigmf_zarr.store import SigMFCollection, SigMFRecording, SigMFZarrStore
 from sigmf_zarr.validation import validate_store
 
@@ -382,6 +384,39 @@ class RecordingExportCommand(StoreOutputCommand):
         return status
 
 
+class RecordingRFMLValidationCommand(StoreOutputCommand):
+    """Validate the dense RFML profile apart from integrity and splits."""
+
+    name = "validate-rfml"
+    help = "Validate declared RFML metadata fields"
+
+    def __init__(self, context: StoreContext) -> None:
+        """Initialize profile validation.
+
+        Args:
+            context: Shared read-only store context.
+        """
+        super().__init__(context, "Validate the dense RFML metadata profile.")
+
+    def handle(self, args: argparse.Namespace) -> int:
+        """Check descriptors and values without reading samples.
+
+        Args:
+            args: Parsed recording selection and output format.
+
+        Returns:
+            Zero on conformance, or one when requirements are violated.
+        """
+        recording = self.context.open(args.store).recordings.open(
+            args.name,
+            validation="structural",
+        )
+        report = validate_rfml(recording)
+        value = report.as_dict()
+        self.write_output(args, text=json.dumps(value, indent=2), value=value)
+        return int(not report.valid)
+
+
 class RecordingCommand(CommandGroup):
     """Group commands that operate on one recording."""
 
@@ -396,7 +431,11 @@ class RecordingCommand(CommandGroup):
         """
         super().__init__(
             "Inspect or export one recording.",
-            (RecordingInfoCommand(context), RecordingExportCommand(context)),
+            (
+                RecordingInfoCommand(context),
+                RecordingExportCommand(context),
+                RecordingRFMLValidationCommand(context),
+            ),
             destination="recording_action",
         )
 

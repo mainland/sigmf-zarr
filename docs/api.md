@@ -43,6 +43,14 @@
    :members: source_groups
 ```
 
+## RFML validation
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.rfml
+   :members:
+   :undoc-members:
+```
+
 ## Integrity
 
 ```{eval-rst}

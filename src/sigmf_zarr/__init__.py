@@ -26,6 +26,7 @@ from sigmf_zarr.radioml2018 import (
     import_radioml2018_dataset,
 )
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
+from sigmf_zarr.rfml import RFMLValidationReport, validate_rfml
 from sigmf_zarr.sigmf import (
     calculate_sha512,
     export_sigmf,
@@ -55,6 +56,7 @@ __all__ = [
     "CSPBTruth",
     "CSPBTruthRecord",
     "ChecksumName",
+    "RFMLValidationReport",
     "RadioML2016Dict",
     "RadioML2016Key",
     "RadioML2016Value",
@@ -85,6 +87,7 @@ __all__ = [
     "load_cspb_truth",
     "plan_sigmf_export",
     "read_tim",
+    "validate_rfml",
     "validate_store",
     "verify_inputs",
     "verify_sha512",
