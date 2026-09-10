@@ -375,12 +375,13 @@ Each recording-level index has these attributes:
   `channel`, or a custom sample axis.
 
 `field`
-: Required. Metadata field represented by the index, such as
+: Required nonempty string. Metadata field represented by the index, such as
   `radioml:snr`, `radioml:mod_class`, or an application-specific namespaced
   field.
 
 `kind`
-: Required. Describes the index kind. The default value is `metadata`.
+: Required nonempty string. Describes the index kind. The default value is
+  `metadata`.
 
 `unit`
 : Optional. Unit string for numeric values, such as `dB` or `Hz`.
@@ -398,7 +399,16 @@ Each recording-level index has these attributes:
 : Optional explanation accompanying `sigmf-zarr:valid=false`.
 
 An index array is a materialized metadata vector, not an automatically
-maintained secondary index. If a writer appends samples after creating an
+maintained secondary index. Its `field` attribute is descriptive. Multiple
+named indexes may describe the same field, and their values may differ from
+each other and from JSON metadata. Metadata accessors read JSON without
+consulting indexes. Index readers use the explicitly selected array. Neither
+representation is synchronized with the other.
+
+Writers remain responsible for semantic freshness after sample value edits,
+same-length reordering, or JSON edits. A matching checksum does not establish
+that an SNR value or label still describes the signal. If a writer appends
+samples after creating an
 axis-aligned index, the index becomes invalid and the writer must update or
 replace it before use. Integrity recalculation must reject a store containing
 an invalid index rather than hashing it as current.

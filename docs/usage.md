@@ -378,6 +378,42 @@ recording.add_index(
 Index length must match the selected runtime axis. For example, an `item`
 index on a batched recording with `16` items must have length `16`.
 
+JSON metadata and indexes are independent. The `field` attribute supports
+discovery without making the index the owner of a JSON field. Find matching
+indexes and select one explicitly:
+
+```python
+names = recording.find_indexes("radioml:mod_class", axis="item")
+print(names)
+raw_ids = recording.index("mod_class_id")[[2, 0, 2]]
+labels = recording.decode_index("mod_class_id", selection=[2, 0, 2])
+print(raw_ids, labels)
+```
+
+`find_indexes()` returns sorted names, including nested names, without reading
+array values. It includes invalid indexes so they remain discoverable. Opening
+the selected index checks its structure. No first match is chosen as a default.
+
+`decode_index()` maps selected integer IDs through the `labels` table. It
+returns a one-dimensional object array even for an integer selection. Integer
+sequences and slices preserve order and duplicates. Negative positions and
+reverse slices are supported. Invalid lookup metadata, Boolean or noninteger
+IDs, and out-of-range selected IDs raise errors. JSON lookup values, including
+objects and lists, are detached from storage and from other result entries.
+Raw index reads continue to return the original dtype and values.
+
+Use `attributes` in `add_index()` for descriptive JSON metadata such as a
+measurement definition or source reference. Additional attributes must not
+override `axis`, `field`, `kind`, `unit`, `labels`, `sigmf-zarr:valid`, or
+`sigmf-zarr:invalid-reason`. Invalid attributes are rejected before an existing
+index is replaced. Updating metadata or samples does not automatically refresh
+measurements, labels, or other index values.
+
+For consumers that need raw IDs with checked lookup metadata,
+`sigmf_zarr.indexes.validate_categorical_values(values, labels=labels)` validates
+the supplied vector and returns a detached JSON lookup table. It does not read
+storage or impose domain rules such as unique string labels.
+
 ## Resolved signal access
 
 `recording.signal()` resolves an unbatched recording.
@@ -396,6 +432,24 @@ and unchanged while using a view. Detached metadata does not freeze sample
 storage.
 
 ## Per-item metadata
+
+Recording opens validate every per-item JSON entry by default. For bounded
+worker startup or explicit index reads, select structural validation:
+
+```python
+recording = store.recordings.open(
+    "snippets", create=False, validation="structural"
+)
+metadata = recording.get_item_metadata(0)
+```
+
+Structural validation checks the recording and item-metadata storage
+descriptors, including array shape, UTF-8 dtype, and checksum configuration.
+It skips the full item JSON scan. Metadata access validates the requested
+entries. Full validation remains available through a default recording open
+or `validate_store()`. Structural opening does not certify the validity of
+unread entries or recalculate hashes. Keep the source unchanged while readers
+use it.
 
 Use per-item metadata for irregular or nested metadata that cannot be
 represented efficiently as a typed index. Each entry can supplement shared
