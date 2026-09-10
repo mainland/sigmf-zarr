@@ -96,7 +96,8 @@ complete.
 - Accept additional descriptive index attributes with protected base fields,
   and require nonempty `field` and `kind` descriptors.
 - Store multiple named split schemes with compact assignments, read-only
-  views, provenance, and explicit group-isolation validation.
+  views, provenance, and explicit group-isolation validation, including
+  isolation of reused constituent sources.
 
 ### Command line
 

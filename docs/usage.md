@@ -478,7 +478,7 @@ runs before an existing split is replaced.
 
 `method`, `seed`, and `generator` describe supplied assignments. The writer
 does not generate a random split. `method="group_random"` requires a grouping
-index. Nullable assignments are unsupported.
+index or a `group_sources` descriptor. Nullable assignments are unsupported.
 
 `recording.split(name)` returns a `SplitIndex` with read-only `assignments`,
 ordered `labels`, and detached `provenance`. It checks descriptors and integer
@@ -492,6 +492,25 @@ integrity checks, and `validate_store()` do not establish that domain guarantee.
 An optional `input_binding` stores explicit input hashes for a separate
 `verify_inputs()` check. It does not refresh assignments. Select each scheme by
 name even when several indexes describe `sigmf-zarr:split`.
+
+For constituent source reuse, pass a descriptor such as
+`group_sources={"field": "cspb:signals", "identity": "cspb:source_signal_index",
+"fallback_index": "signal_id"}`. The fallback applies only when the component
+field is absent. Unknown component identities fail validation. Use
+`sigmf_zarr.sources.source_groups()` to compute connected group IDs before
+assigning partitions.
+
+The CSPB example reads native truth metadata and creates a seeded holdout:
+
+```bash
+.venv/bin/python -m examples.cspb_split cspb.zarr --name splits/source
+```
+
+The requested fraction applies to connected groups, so item counts may differ
+substantially between partitions. If mixtures connect every source, the example
+refuses to create a holdout. Source reuse isolation does not establish physical
+emitter independence. The example binds its split to samples, source metadata,
+and the `signal_id` index.
 
 ## Resolved signal access
 

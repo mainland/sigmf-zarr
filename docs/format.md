@@ -439,12 +439,13 @@ partition scheme. Multiple schemes may share that field value. Index names
 identify schemes, and no scheme is the default.
 
 Optional provenance attributes are `split_type`, `method`, `seed`,
-`group_index`, `inputs`, `description`, and `generator`. The split API
-supports `holdout`, `kfold`, and `custom` types and `published`, `random`,
-`group_random`, `chronological`, and `custom` methods. A seed is a
-nonnegative integer. `group_random` requires `group_index`. These attributes
-record how assignments were produced and which source to check. They do not
-establish live dependencies.
+`group_index`, `group_sources`, `inputs`, `description`, and `generator`.
+The split API supports
+`holdout`, `kfold`, and `custom` types and `published`, `random`, `group_random`,
+`chronological`, and `custom` methods. A seed is a nonnegative integer.
+`group_random` requires `group_index` or `group_sources`. These attributes record
+how assignments were produced and which source to check. They do not establish
+live dependencies.
 
 Explicit split validation requires valid category IDs, at least two occupied
 partitions, and no empty declared partition. If a grouping index is declared,
@@ -452,6 +453,15 @@ every integer or string group identity must occur in one partition only.
 Generic index validation still checks structure, independently of split
 semantics. Source changes do not invalidate stored splits. Nullable splits are
 unsupported. No schema version change is required.
+
+`group_sources` selects a resolved global `field` containing a component list
+and an `identity` key within each component. An optional `fallback_index`
+supplies a single source identity only when the field is absent. Empty lists
+represent known empty scenes. Missing or malformed identities must fail
+validation. Integer and nonempty string identities are scoped to the recording.
+Each constituent identity must occur in one partition only. This also isolates
+transitively connected mixtures. The descriptor does not claim physical emitter
+or acquisition-session independence.
 
 `inputs` may contain an explicit binding produced by `capture_inputs()` before
 the split is written. `verify_inputs()` checks this binding separately.
