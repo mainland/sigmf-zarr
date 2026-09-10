@@ -544,6 +544,47 @@ axis-aligned index, the index becomes invalid and the writer must update or
 replace it before use. Integrity recalculation must reject a store containing
 an invalid index rather than hashing it as current.
 
+### Named split convention
+
+An item-aligned index with `field="sigmf-zarr:split"`, `kind="split"`,
+integer assignments, and unique nonempty string `labels` describes a named
+partition scheme. Multiple schemes may share that field value. Index names
+identify schemes, and no scheme is the default.
+
+Optional provenance attributes are `split_type`, `method`, `seed`,
+`group_index`, `inputs`, `description`, and `generator`. The split API
+supports `holdout`, `kfold`, and `custom` types and `published`, `random`,
+`group_random`, `chronological`, and `custom` methods. A seed is a
+nonnegative integer. `group_random` requires `group_index`. These attributes
+record how assignments were produced and which source to check. They do not
+establish live dependencies.
+
+Explicit split validation requires valid category IDs, at least two occupied
+partitions, and no empty declared partition. A declared grouping index must be
+a dense item index without a `validity` mask. Each group identity must be an
+integer or a nonempty string and must occur in one partition only.
+Generic index validation still checks structure, independently of split
+semantics. Source changes do not invalidate stored splits. Nullable splits are
+unsupported. No schema version change is required.
+
+`inputs` may contain an explicit binding produced by `capture_inputs()` before
+the split is written. It must have the version-1 binding structure that the
+[provenance documentation](provenance.md) defines. `verify_inputs()` checks
+whether the bound inputs are current separately.
+
+## JSON metadata
+
+Attributes and JSON-string array entries hold JSON values. Numbers must be
+finite, object keys must be strings, and strings must have a UTF-8 encoding.
+
+The Python implementation accepts lists and objects nested at most 128 levels
+deep. This is an implementation limit, not a format rule. It keeps nested
+values within the interpreter recursion limit, so every reader in the package
+can process any value that the writer accepts.
+
+When a JSON document contains duplicate object keys, readers use the last
+value for each key. The Python writers do not produce duplicate keys.
+
 ## Logical integrity
 
 Sample chunks use CRC32C by default. In Zarr format 3, CRC32C is the final

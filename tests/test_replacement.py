@@ -7,10 +7,14 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+from zarr.abc.store import Store
+from zarr.core.sync import sync
 from zarr.storage import MemoryStore
 
+import sigmf_zarr.store._transaction as transaction
 from sigmf_zarr.readonly import ReadOnlyArray
 from sigmf_zarr.store import SigMFZarrStore, ZarrFormat
+from sigmf_zarr.validation import validate_store
 
 
 @pytest.fixture(
@@ -583,3 +587,278 @@ def test_replacement_rollback_renames_without_free_space(
     np.testing.assert_array_equal(table[:], np.arange(6).reshape(2, 3))
     assert store.verify_integrity()
     assert list(tmp_path.iterdir()) == [tmp_path / "data.zarr"]
+
+
+def _rejected_calls(
+    store: SigMFZarrStore,
+) -> list[tuple[str, Any]]:
+    """List calls that must be rejected before any hash changes.
+
+    Args:
+        store: Example store with a batched recording `batch`.
+
+    Returns:
+        Pairs of a description and a callable that raises `ValueError`.
+    """
+    recording = store.recordings["rec"]
+    batch = store.recordings["batch"]
+    calls: list[tuple[str, Any]] = [
+        (
+            "item metadata",
+            lambda: batch.set_item_metadata([None, None]),
+        ),
+        (
+            "recording index",
+            lambda: recording.add_index(
+                "quality", [1, 2, 3, 4], axis="time", field="test:q"
+            ),
+        ),
+        (
+            "extension array",
+            lambda: recording.add_extension_array("table", [1, 2]),
+        ),
+        ("store index", lambda: store.add_index("labels", [1, 2])),
+        (
+            "store array",
+            lambda: store.create_array(
+                store._indexes_group, "labels", [1, 2], overwrite=False
+            ),
+        ),
+        (
+            "split",
+            lambda: batch.add_split("quality", [0, 1], labels=["a", "b"]),
+        ),
+        (
+            "compressor",
+            lambda: recording.add_extension_array(
+                "table", [1, 2], overwrite=True, compressor=cast(Any, "zstd")
+            ),
+        ),
+    ]
+    if store.zarr_format == 2:
+        calls.append(
+            (
+                "shards",
+                lambda: recording.add_extension_array(
+                    "table", [1, 2], overwrite=True, shards=(2,)
+                ),
+            )
+        )
+    return calls
+
+
+def test_rejected_calls_preserve_every_hash(store: SigMFZarrStore) -> None:
+    """A rejected target or encoding must leave all hashes in place.
+
+    Args:
+        store: Hashed example store in either format and backend.
+    """
+    batch = store.recordings.create("batch", batched=True, sample_shape=(4,))
+    batch.append_samples(np.zeros((2, 4), dtype=np.float32))
+    batch.set_item_metadata([None, None])
+    batch.add_index("quality", [0, 1], axis="item", field="test:q")
+    store.recordings["rec"].add_extension_array("table", [1, 2])
+    store.add_index("labels", [1, 2])
+    store.update_integrity()
+    for description, call in _rejected_calls(store):
+        with pytest.raises(ValueError, match=r"already exists|Zarr format"):
+            call()
+        assert store.metadata_sha512 is not None, description
+        for name in ("rec", "batch"):
+            recording = store.recordings[name]
+            assert recording.metadata_sha512 is not None, description
+            assert recording.verify_integrity(), description
+        assert store.verify_integrity(), description
+
+
+def _keys(backend: Store, prefix: str = "") -> list[str]:
+    """List stored keys below a prefix.
+
+    Args:
+        backend: Store backend.
+        prefix: Key prefix.
+
+    Returns:
+        Sorted keys.
+    """
+
+    async def collect() -> list[str]:
+        return sorted([key async for key in backend.list_prefix(prefix)])
+
+    return sync(collect())
+
+
+def _orphan(store: SigMFZarrStore, path: str) -> None:
+    """Delete a node's metadata document and leave its other objects.
+
+    Args:
+        store: Store containing the node.
+        path: Node path, such as `recordings/rec`.
+    """
+    document = ".zgroup" if store.zarr_format == 2 else "zarr.json"
+    sync(store._group.store.delete(f"{path}/{document}"))
+
+
+@pytest.mark.parametrize("kind", ["recordings", "collections"])
+def test_open_of_partial_resource_writes_nothing(
+    store: SigMFZarrStore, kind: str
+) -> None:
+    """Opening must not delete objects left without node metadata.
+
+    Args:
+        store: Hashed example store.
+        kind: Resource container to damage and open.
+    """
+    name = "rec" if kind == "recordings" else "group"
+    _orphan(store, f"{kind}/{name}")
+    backend = store._group.store
+    before = _keys(backend)
+    container = getattr(store, kind)
+    with pytest.raises(KeyError):
+        container.open(name)
+    with pytest.raises(KeyError):
+        container[name]
+    assert _keys(backend) == before
+
+
+def test_creation_over_orphan_objects_requires_overwrite(
+    store: SigMFZarrStore,
+) -> None:
+    """Creation must not adopt or delete objects that it did not write.
+
+    Args:
+        store: Hashed example store.
+    """
+    store.collections.create("group", overwrite=True)
+    _orphan(store, "recordings/rec")
+    backend = store._group.store
+    before = _keys(backend)
+    with pytest.raises(ValueError, match="belong to no node"):
+        store.recordings.create("rec", sample_shape=(2,))
+    assert _keys(backend) == before
+    recording = store.recordings.create(
+        "rec", overwrite=True, sample_shape=(2,)
+    )
+    assert recording.sample_shape == (2,)
+    assert "quality" not in recording.indexes
+    assert validate_store(store).valid
+
+
+def test_remove_finishes_orphan_objects(store: SigMFZarrStore) -> None:
+    """Removal must delete objects left without recording metadata.
+
+    Args:
+        store: Hashed example store.
+    """
+    store.collections.create("group", overwrite=True)
+    _orphan(store, "recordings/rec")
+    backend = store._group.store
+    assert _keys(backend, "recordings/rec/")
+    store.recordings.remove("rec")
+    assert _keys(backend, "recordings/rec/") == []
+    with pytest.raises(KeyError):
+        store.recordings.remove("rec")
+    with pytest.raises(KeyError):
+        store.recordings.remove("../indexes")
+    assert validate_store(store).valid
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_failed_nonlocal_removal_is_retryable_at_every_point(
+    zarr_format: ZarrFormat, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A removal that fails at any delete must leave a removable recording.
+
+    Args:
+        zarr_format: Physical Zarr format to create.
+        monkeypatch: Failure injection for the backend delete.
+    """
+    original_delete = MemoryStore.delete
+    for failing in range(100):
+        store = SigMFZarrStore.create(MemoryStore(), zarr_format=zarr_format)
+        recording = store.recordings.create(
+            "rec", batched=True, sample_shape=(4,), sample_chunks=(1, 4)
+        )
+        recording.append_samples(np.ones((3, 4), np.float32))
+        recording.add_index("q", [1, 2, 3], axis="item", field="test:q")
+        calls = [0]
+
+        async def failing_delete(
+            self: MemoryStore,
+            key: str,
+            calls: list[int] = calls,
+            failing: int = failing,
+        ) -> None:
+            """Fail one delete call.
+
+            Args:
+                self: Backend being modified.
+                key: Object key to delete.
+                calls: Number of delete calls so far.
+                failing: Index of the delete call that fails.
+
+            Raises:
+                OSError: For the selected call.
+            """
+            calls[0] += 1
+            if calls[0] == failing + 1:
+                raise OSError("delete failed")
+            await original_delete(self, key)
+
+        monkeypatch.setattr(MemoryStore, "delete", failing_delete)
+        try:
+            store.recordings.remove("rec")
+        except OSError:
+            pass
+        else:
+            break
+        finally:
+            monkeypatch.undo()
+        backend = store._group.store
+        # The recording stays listed until its last object is deleted.
+        assert "rec" in store.recordings or not _keys(
+            backend, "recordings/rec/"
+        )
+        if "rec" in store.recordings:
+            store.recordings.remove("rec")
+        assert _keys(backend, "recordings/rec/") == []
+        assert validate_store(store).valid
+    else:
+        pytest.fail("removal never completed")
+    assert failing > 3
+
+
+def test_replacement_backup_is_outside_store_opened_as_dot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store opened by a relative root must keep backups outside itself.
+
+    Args:
+        tmp_path: Temporary directory.
+        monkeypatch: Working directory and backup location capture.
+    """
+    root = tmp_path / "data.zarr"
+    SigMFZarrStore.create(root).recordings.create("rec", sample_shape=(4,))
+    monkeypatch.chdir(root)
+    parents: list[Path] = []
+    original = transaction.retained_backup_directory
+
+    def capture(parent: Path) -> Any:
+        """Record the backup parent directory.
+
+        Args:
+            parent: Requested parent directory.
+
+        Returns:
+            Original backup context.
+        """
+        parents.append(parent.resolve())
+        return original(parent)
+
+    monkeypatch.setattr(transaction, "retained_backup_directory", capture)
+    store = SigMFZarrStore.open(".", mode="r+")
+    store.recordings.create("rec", overwrite=True, sample_shape=(2,))
+    store.recordings.remove("rec")
+    assert parents == [tmp_path.resolve()] * 2
+    assert not list(root.glob(".sigmf-zarr-backup-*"))
+    assert validate_store(store).valid

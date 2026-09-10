@@ -284,7 +284,7 @@ complete.
   disable HDF5 plugin loading during import. Require scalar numeric label
   and SNR elements, and at most 32,768 classes.
 
-### Indexes
+### Indexes and splits
 
 - Discover indexes by descriptive field, and decode selected category IDs
   explicitly without synchronizing independent JSON metadata.
@@ -293,6 +293,8 @@ complete.
   required.
 - Accept additional descriptive index attributes with protected base fields,
   and require nonempty `field` and `kind` descriptors.
+- Store multiple named split schemes with compact assignments, read-only
+  views, provenance, and explicit group-isolation validation.
 
 ### Command line
 

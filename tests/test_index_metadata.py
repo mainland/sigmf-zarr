@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -460,6 +461,52 @@ def test_invalid_descriptors_do_not_replace_an_index(
     np.testing.assert_array_equal(recording.index("class_id")[:], [0, 1, 0])
     assert dict(recording.index("class_id").attrs) == attributes
     assert recording._store.verify_integrity()
+
+
+@pytest.mark.parametrize(
+    "name", ["", "/", "a/", "/a", "a//b", ".", "a/..", "../a", "a\x00b"]
+)
+def test_malformed_array_names_are_rejected(
+    recording: SigMFRecording, name: str
+) -> None:
+    """A name must identify one array below its group, never the group.
+
+    Args:
+        recording: Example recording in either physical format.
+        name: Malformed index, split, or extension-array name.
+    """
+    store = recording._store
+    store.add_index("store_class", np.zeros(4, dtype=np.int8))
+    recording.add_extension_array("owner/values", np.zeros(3))
+    store.update_integrity()
+    operations: list[Callable[[], object]] = [
+        lambda: recording.add_index(
+            name, [0, 1, 0], axis="item", field="x:y", overwrite=True
+        ),
+        lambda: recording.add_split(
+            name, [0, 1, 0], labels=["train", "test"], overwrite=True
+        ),
+        lambda: recording.add_extension_array(
+            name, np.zeros(3), overwrite=True
+        ),
+        lambda: store.add_index(name, np.zeros(4, np.int8), overwrite=True),
+        lambda: recording.index(name),
+        lambda: recording.split(name),
+        lambda: store.index(name),
+    ]
+    for operation in operations:
+        with pytest.raises(ValueError, match="name"):
+            operation()
+    for mutation in (recording.mutate_index, store.mutate_index):
+        with pytest.raises(ValueError, match="name"), mutation(name):
+            pass
+
+    assert store.verify_integrity()
+    reopened = SigMFZarrStore.open(store._group.store_path.store)
+    assert reopened.index("store_class").shape == (4,)
+    reopened_recording = reopened.recordings.open("rec")
+    assert reopened_recording.index("class_id").shape == (3,)
+    assert reopened_recording.extensions["owner/values"].shape == (3,)
 
 
 def test_validation_reports_non_group_containers(
