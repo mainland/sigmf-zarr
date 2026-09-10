@@ -562,3 +562,11 @@ The RadioML importer follows this pattern:
   `axis="item"`, `field="radioml:mod_class"`, and `labels=[...]`.
 - The `indexes/snr_db` array stores SNR values with `axis="item"`,
   `field="radioml:snr"`, and `unit="dB"`.
+
+## RFML field vocabulary
+
+The optional [RFML dataset profile](rfml.md) defines namespaced meanings for
+dense item indexes, including class labels, normalized quantities, identities,
+and SNR with a declared measurement convention. It uses the existing index
+representation and does not synchronize JSON or change the schema version.
+Source-specific importer fields remain supported.
