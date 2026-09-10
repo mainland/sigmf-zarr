@@ -583,6 +583,44 @@ def _edit_array_document(
 
 
 # Zarr format 3 cannot represent a null string fill value.
+@pytest.mark.parametrize(
+    ("zarr_format", "fill_value"), [(2, "{}"), (3, "{}"), (2, None), (3, "x")]
+)
+def test_item_metadata_fill_value_must_be_empty(
+    tmp_path: Path, zarr_format: ZarrFormat, fill_value: str | None
+) -> None:
+    """A declared item axis cannot make missing chunks read as entries.
+
+    With the fill value `{}`, every missing chunk would decode as valid empty
+    objects, so a small store declaring 2**40 items would take hours to open.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+        fill_value: Fill value written by another tool.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, zarr_format=zarr_format)
+    recording = store.recordings.create(
+        "rec", batched=True, sample_shape=(4,), sample_chunks=(1, 4)
+    )
+    recording.append_samples(
+        np.zeros((1, 4), dtype=np.float32), item_metadata=[None]
+    )
+    recording_path = store_path / "recordings" / "rec"
+    for name, changes in (
+        ("samples", {"shape": [2**40, 4]}),
+        ("item_metadata", {"shape": [2**40], "fill_value": fill_value}),
+    ):
+        _edit_array_document(recording_path / name, zarr_format, **changes)
+
+    reopened = SigMFZarrStore.open(store_path)
+    for validation in ("full", "structural"):
+        with pytest.raises(ValueError, match="fill value must be the empty"):
+            reopened.recordings.open("rec", validation=cast(Any, validation))
+    report = validate_store(store_path)
+    assert [issue.path for issue in report.issues] == ["recordings/rec"]
+    assert "fill value" in report.issues[0].message
 
 
 def test_writer_item_metadata_fill_value_is_empty(tmp_path: Path) -> None:

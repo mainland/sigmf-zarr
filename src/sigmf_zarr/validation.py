@@ -1062,6 +1062,55 @@ def _integrity_issue(
     return None
 
 
+def _item_metadata_issues(
+    path: str, recording: SigMFRecording, max_array_bytes: int | None
+) -> tuple[list[ValidationIssue], bool]:
+    """Validate the stored per-item metadata entries of one recording.
+
+    Entries are checked one chunk at a time. Under a limit, a chunk whose
+    nominal decoded size exceeds it is not read, and checking stops once
+    the decoded entry text exceeds it.
+
+    Args:
+        path: Logical recording path.
+        recording: Recording opened with structural validation.
+        max_array_bytes: Greatest decoded chunk size and total entry text,
+            in bytes, to read, or ``None`` for no limit.
+
+    Returns:
+        Issues, and whether every entry was read within the limit.
+    """
+    if not recording.has_item_metadata:
+        return [], True
+    array_path = f"{path}/item_metadata"
+    if max_array_bytes is not None:
+        chunk_size = _decoded_chunk_nbytes(recording.item_metadata_array)
+        if chunk_size > max_array_bytes:
+            return [
+                ValidationIssue(
+                    array_path,
+                    f"entries not validated: one decoded chunk or shard "
+                    f"holds {chunk_size} bytes, more than "
+                    f"max_array_bytes={max_array_bytes}",
+                )
+            ], False
+    try:
+        complete = recording._validate_item_metadata_entries(
+            max_text_bytes=max_array_bytes
+        )
+    except ValueError as exc:
+        return [ValidationIssue(path, _issue_message(exc))], True
+    if not complete:
+        return [
+            ValidationIssue(
+                array_path,
+                "entries not fully validated: they hold more than "
+                f"max_array_bytes={max_array_bytes} bytes of text",
+            )
+        ], False
+    return [], True
+
+
 def _recording_integrity_issues(
     path: str,
     recording: SigMFRecording,
@@ -1208,17 +1257,20 @@ def _recording_issues(
     # Treat each resource as an independent validation boundary so one broken
     # recording does not prevent a complete store report.
     try:
-        recording = store.recordings.open(recording_name)
+        # Entries are checked below under the read limit, not on open.
+        recording = store.recordings.open(
+            recording_name, validation="structural"
+        )
+        entry_issues, item_metadata_read = _item_metadata_issues(
+            path, recording, max_array_bytes
+        )
+        issues.extend(entry_issues)
         issues.extend(_attribute_issues(path, recording.group))
         issues.extend(_recording_layout_issues(path, recording))
-        if isinstance(recording.group.get("indexes"), ReadOnlyGroup):
-            for index_name, member in sorted(
-                recording.indexes.members(max_depth=None)
-            ):
-                if not isinstance(member, ReadOnlyArray):
-                    continue
-                indexes_checked += 1
-                recording.index(index_name)
+        index_issues, indexes_checked = _recording_index_issues(
+            path, recording
+        )
+        issues.extend(index_issues)
         if verify_integrity or require_integrity:
             issues.extend(
                 _recording_integrity_issues(
@@ -1227,6 +1279,7 @@ def _recording_issues(
                     verify_integrity=verify_integrity,
                     require_integrity=require_integrity,
                     max_array_bytes=max_array_bytes,
+                    item_metadata_read=item_metadata_read,
                 )
             )
     except _READ_ERRORS as exc:

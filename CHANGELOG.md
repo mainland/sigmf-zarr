@@ -48,6 +48,8 @@ complete.
   metadata before storage changes.
 - Derive per-item metadata presence from the array, protect its chunks with
   CRC32C, and provide validated entry and slice updates.
+- Support structural recording opens that defer per-item JSON validation
+  until access, while retaining full validation by default.
 - Require recording and collection names to identify immediate child groups.
   Require collection recording identifiers to name existing recordings, and
   reject removal of a referenced recording.
@@ -281,6 +283,16 @@ complete.
   files, inflate gzip chunks with a bound, verify Fletcher-32 checksums, and
   disable HDF5 plugin loading during import. Require scalar numeric label
   and SNR elements, and at most 32,768 classes.
+
+### Indexes
+
+- Discover indexes by descriptive field, and decode selected category IDs
+  explicitly without synchronizing independent JSON metadata.
+- Define the reserved index attribute `validity`, which declares missing
+  values, and reject indexes that declare it wherever dense values are
+  required.
+- Accept additional descriptive index attributes with protected base fields,
+  and require nonempty `field` and `kind` descriptors.
 
 ### Command line
 

@@ -1050,6 +1050,49 @@ def test_item_metadata_writers_reject_invalid_capture_starts(
     ]
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_deep_item_metadata_raises_value_error(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """Writers reject item JSON that readers cannot process.
+
+    Stored JSON nested beyond the decoder's recursion limit must also fail
+    with ValueError rather than RecursionError.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path, zarr_format=zarr_format)
+    recording = store.recordings.create("rec", batched=True, sample_shape=(4,))
+    recording.append_samples(
+        np.zeros((2, 4), dtype=np.float32), item_metadata=[None, None]
+    )
+    deep: JSONValue = 0
+    for _ in range(600):
+        deep = [deep]
+
+    with pytest.raises(ValueError, match="nested at most"):
+        recording.set_item_metadata_entry(0, {"global": {"x:deep": deep}})
+
+    depth = 100_000
+    raw = '{"global":{"x:deep":' + "[" * depth + "]" * depth + "}}"
+    item_metadata = zarr.open_array(
+        store_path, path="recordings/rec/item_metadata", mode="r+"
+    )
+    item_metadata[1] = raw
+    reopened = SigMFZarrStore.open(store_path)
+    with pytest.raises(ValueError, match="nested too deeply"):
+        reopened.recordings.open("rec", validation="full")
+    # The default structural open defers entry checks to access.
+    structural = reopened.recordings.open("rec")
+    with pytest.raises(ValueError, match="nested too deeply"):
+        structural.get_item_metadata(1)
+    with pytest.raises(ValueError, match="nested too deeply"):
+        structural.resolved_item_metadata(1)
+
+
 def test_item_metadata_slice_setter_validates_selection(
     tmp_path: Path,
 ) -> None:

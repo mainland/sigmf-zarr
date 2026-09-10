@@ -45,9 +45,8 @@ def test_input_binding_detects_changes(tmp_path: Path, changed: str) -> None:
         [1, 1],
         axis="item",
         field="test:derived",
+        attributes={"inputs": binding},
     )
-    with rec.mutate_index("derived") as derived:
-        derived.attrs["inputs"] = binding
     assert verify_inputs(rec, binding)
     if changed == "samples":
         with rec.mutate_samples() as samples:
@@ -116,6 +115,44 @@ def test_input_binding_ignores_declared_dataset_hash(
     assert verify_inputs(rec, binding)
     assert capture_inputs(rec) == binding
     rec.set_global_field("test:source", "changed")
+    assert not verify_inputs(rec, binding)
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ({"labels": [0, 1]}, {"labels": [False, True]}),
+        (
+            {"attributes": {"test:scale": 1}},
+            {"attributes": {"test:scale": 1.0}},
+        ),
+        (
+            {"attributes": {"test:scale": 1}},
+            {"attributes": {"test:scale": True}},
+        ),
+    ],
+)
+def test_input_binding_distinguishes_json_types(
+    tmp_path: Path, before: dict[str, Any], after: dict[str, Any]
+) -> None:
+    """Integers, floats, and Booleans must not compare equal in bindings.
+
+    Args:
+        tmp_path: Temporary store directory.
+        before: Index descriptors when the binding is captured.
+        after: Descriptors that differ only in JSON type.
+    """
+    store = SigMFZarrStore.create(tmp_path / "data.zarr")
+    rec = store.recordings.create(
+        "rec", batched=True, sample_shape=(4,), sample_axes=("time",)
+    )
+    rec.append_samples(np.zeros((2, 4), dtype=np.float32))
+    rec.add_index("class", [0, 1], axis="item", field="test:c", **before)
+    binding = capture_inputs(rec, indexes=["class"])
+    assert verify_inputs(rec, binding)
+    rec.add_index(
+        "class", [0, 1], axis="item", field="test:c", overwrite=True, **after
+    )
     assert not verify_inputs(rec, binding)
 
 
