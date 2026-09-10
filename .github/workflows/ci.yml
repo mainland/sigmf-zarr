@@ -26,6 +26,28 @@ jobs:
       - name: Run tests
         run: uv run pytest
 
+  pytorch:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Sync core development environment
+        run: uv sync --locked --extra dev
+      - name: Install CPU PyTorch
+        run: uv pip install --python .venv/bin/python 'torch>=2.6' --index-url https://download.pytorch.org/whl/cpu
+      - name: Run tests including adapter
+        run: .venv/bin/pytest
+      - name: Type check
+        run: .venv/bin/mypy src
+
   quality:
     runs-on: ubuntu-latest
     steps:
@@ -38,11 +60,9 @@ jobs:
       - name: Sync locked environment
         run: uv sync --locked --extra dev --extra docs
       - name: Lint
-        run: uv run ruff check src tests docs
+        run: uv run ruff check src tests docs benchmarks
       - name: Check docstring formatting
-        run: uv run docformatter --check --recursive src tests
-      - name: Type check
-        run: uv run mypy src
+        run: uv run docformatter --check --recursive src tests benchmarks
       - name: Build documentation
         run: uv run sphinx-build -b html -W docs docs/_build/html
 
@@ -59,6 +79,8 @@ jobs:
         run: |
           uv venv .venv
           uv pip install --python .venv/bin/python --resolution lowest-direct '.[dev]'
+      - name: Install minimum CPU PyTorch
+        run: uv pip install --python .venv/bin/python 'torch==2.6.0' --index-url https://download.pytorch.org/whl/cpu
       - name: Test minimum supported dependencies
         run: .venv/bin/pytest
 
@@ -94,6 +116,7 @@ jobs:
           uv venv .venv
           uv pip install --python .venv/bin/python dist/*.whl
           .venv/bin/sigmf-zarr import sigmf --help
+          .venv/bin/python -c 'import sys; import sigmf_zarr; assert "torch" not in sys.modules'
           .venv/bin/sigmf-zarr --version
           .venv/bin/sigmf-zarr import radioml2016 --help
           .venv/bin/sigmf-zarr import radioml2018 --help
