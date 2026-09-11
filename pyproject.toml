@@ -27,6 +27,7 @@ dependencies = [
   "crc32c>=2.4",
   "h5py>=3.11",
   "jsonschema>=4.0",
+  "lark>=1.2.2",
   "numcodecs>=0.12",
   "numpy>=2.0.2",
   "sigmf>=1.11.0",
@@ -35,6 +36,8 @@ dependencies = [
 
 [project.optional-dependencies]
 pytorch = ["torch>=2.6"]
+query = ["jmespath>=1.0.1"]
+viewer = ["PySide6>=6.10", "matplotlib>=3.10.7"]
 dev = [
   "docformatter",
   "fsspec[http]>=2024.6",
@@ -135,5 +138,7 @@ module = [
   "sigmf.*",
   "zarr",
   "zarr.*",
+  "jmespath",
+  "jmespath.*",
 ]
 ignore_missing_imports = true
