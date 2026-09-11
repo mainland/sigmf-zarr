@@ -98,7 +98,8 @@ complete.
 - Store multiple named split schemes with compact assignments, read-only
   views, provenance, and explicit group-isolation validation, including
   isolation of reused constituent sources.
-- Compile and evaluate batched index queries.
+- Compile and evaluate batched index queries, and filter candidate items with
+  Boolean JMESPath predicates over their metadata.
 
 ### Machine learning
 
