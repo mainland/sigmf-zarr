@@ -18,9 +18,10 @@ from sigmf_zarr.viewer.captures import (
     project_samples,
     sigmf_regions,
 )
-from sigmf_zarr.viewer.data import SampleWindow
+from sigmf_zarr.viewer.data import OverviewWindow, SampleWindow
 from sigmf_zarr.viewer.overlays import RegionLabel, RegionPatch, draw_regions
-from sigmf_zarr.viewer.plots import waveform
+from sigmf_zarr.viewer.overview import summarize_signal
+from sigmf_zarr.viewer.plots import overview_spectrogram, spectrogram, waveform
 from sigmf_zarr.viewer.presentation import (
     PlotOptions,
     sample_interval,
@@ -184,6 +185,78 @@ def test_annotation_label_visibility(monkeypatch: pytest.MonkeyPatch) -> None:
     axes.set_xlim(300, 400)
     canvas.draw()
     assert not drawn
+
+
+def test_overlays_split_at_retunes_and_keep_source_identity(
+    window: SampleWindow,
+) -> None:
+    """One annotation must project to separate rectangles at a retune.
+
+    Args:
+        window: Discontinuous capture fixture.
+    """
+    fig = Figure()
+    spectrogram(
+        fig, window, fft_size=64, options=PlotOptions(axis_mode="timestamp")
+    )
+    axes = fig.axes[0]
+    assert len(axes.images) == 2
+    assert axes.images[0].get_extent()[1] < axes.images[1].get_extent()[0]
+    patches = [
+        p for p in axes.patches if p.get_gid() == "recording/annotations/0"
+    ]
+    assert len(patches) == 2
+    assert [(p.get_y(), p.get_height()) for p in patches] == [
+        (10, 10),
+        (5, 10),
+    ]
+    assert patches[0].get_x() == pytest.approx(0.08)
+    assert patches[1].get_x() == pytest.approx(10)
+    assert len(axes.lines) == 2  # Capture boundaries only.
+    assert window.metadata["annotations"][0]["core:sample_start"] == 280
+    fig.clear()
+    spectrogram(fig, window, fft_size=64, options=PlotOptions(captures=False))
+    assert len(fig.axes[0].patches) == 2
+    assert not fig.axes[0].lines
+    fig.clear()
+    spectrogram(
+        fig,
+        window,
+        fft_size=64,
+        options=PlotOptions(captures=False, annotations=False),
+    )
+    assert not fig.axes[0].patches
+    assert len(fig.axes[0].images) == 2
+
+
+def test_capture_boundaries_exclude_fft_transients(
+    window: SampleWindow,
+) -> None:
+    """A discontinuous sign change must not create a spurious FFT transient.
+
+    Args:
+        window: Discontinuous constant signals.
+    """
+    signal = summarize_signal(
+        np.split(window.samples, [73, 129]),
+        200,
+        fft_size=64,
+        boundaries=(100,),
+    )
+    taper = np.hanning(65)[:-1]
+    expected = np.abs(np.fft.fftshift(np.fft.fft(taper)) / taper.sum()) ** 2
+    np.testing.assert_allclose(signal.spectrum, expected, atol=1e-20)
+    assert signal.mean_power == 1
+    fig = Figure()
+    overview_spectrogram(
+        fig,
+        OverviewWindow(replace(window, samples=window.samples[:0]), signal),
+        options=PlotOptions(axis_mode="timestamp"),
+    )
+    assert len(fig.axes[0].collections) == 2
+    for boundaries in ((100, 50), (100, 100), (-1,), (200,)):
+        with pytest.raises(ValueError):
+            summarize_signal([window.samples], 200, boundaries=boundaries)
 
 
 def test_waveform_modes_overlap_unknown_and_fine_timestamps(
