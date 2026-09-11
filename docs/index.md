@@ -17,6 +17,7 @@ radioml
 cspb
 panoradio
 pytorch
+query
 rfml
 format
 sigmf-zarr.sigmf-ext
