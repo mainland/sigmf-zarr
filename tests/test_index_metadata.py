@@ -13,6 +13,7 @@ from zarr.core.array import Array
 from sigmf_zarr import SigMFRecording, SigMFZarrStore, validate_store
 from sigmf_zarr.indexes import validate_categorical_values
 from sigmf_zarr.json import JSONObject, json_object
+from sigmf_zarr.query import compile_query
 from sigmf_zarr.store import ZarrFormat
 
 
@@ -507,6 +508,57 @@ def test_malformed_array_names_are_rejected(
     reopened_recording = reopened.recordings.open("rec")
     assert reopened_recording.index("class_id").shape == (3,)
     assert reopened_recording.extensions["owner/values"].shape == (3,)
+
+
+def test_group_paths_are_not_arrays(recording: SigMFRecording) -> None:
+    """Lookups, mutations, and overwrites must not treat a group as an index.
+
+    Args:
+        recording: Example recording in either physical format.
+    """
+    store = recording._store
+    recording.add_index("quality/snr", [1, 2, 3], axis="item", field="x:snr")
+    recording.add_extension_array("owner/values", np.zeros(3))
+    store.add_index("group/values", np.zeros(4, dtype=np.int8))
+    store.update_integrity()
+
+    for lookup in (
+        lambda: recording.index("quality"),
+        lambda: recording.split("quality"),
+        lambda: recording.decode_index("quality", selection=0),
+        lambda: compile_query("quality == 1").select(recording),
+        lambda: store.index("group"),
+    ):
+        with pytest.raises(KeyError, match="group"):
+            lookup()
+    for mutation, name in (
+        (recording.mutate_index, "quality"),
+        (store.mutate_index, "group"),
+    ):
+        with pytest.raises(KeyError, match="group"), mutation(name):
+            pass
+    assert dict(recording.indexes["quality"].attrs) == {}
+    assert dict(store.indexes["group"].attrs) == {}
+    assert store.verify_integrity()
+
+    for replacement in (
+        lambda: recording.add_index(
+            "quality", [0, 0, 0], axis="item", field="x:y", overwrite=True
+        ),
+        lambda: recording.add_split(
+            "quality", [0, 1, 0], labels=["train", "test"], overwrite=True
+        ),
+        lambda: recording.add_extension_array(
+            "owner", np.zeros(3), overwrite=True
+        ),
+        lambda: store.add_index("group", np.zeros(4), overwrite=True),
+    ):
+        with pytest.raises(ValueError, match="existing group"):
+            replacement()
+    assert recording.index("quality/snr")[:].tolist() == [1, 2, 3]
+    assert recording.extensions["owner/values"].shape == (3,)
+    assert store.index("group/values").shape == (4,)
+    assert store.verify_integrity()
 
 
 def test_validation_reports_non_group_containers(

@@ -284,7 +284,7 @@ complete.
   disable HDF5 plugin loading during import. Require scalar numeric label
   and SNR elements, and at most 32,768 classes.
 
-### Indexes and splits
+### Indexes, splits, and queries
 
 - Discover indexes by descriptive field, and decode selected category IDs
   explicitly without synchronizing independent JSON metadata.
@@ -299,6 +299,7 @@ complete.
   `validity` mask and empty-string group identities when a split is created.
 - Reject object index values that are not strings instead of storing their
   `str()` text.
+- Compile and evaluate batched index queries.
 
 ### Machine learning
 
