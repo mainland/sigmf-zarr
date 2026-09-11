@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from zarr.core.array import Array
 
+from sigmf_zarr.filtering import filter_items
 from sigmf_zarr.query import IndexQuery, compile_query
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
 
@@ -306,6 +307,20 @@ def test_query_rebinds_label_tables(recording: SigMFRecording) -> None:
         overwrite=True,
     )
     assert query.select(recording).tolist() == [0, 2, 4]
+
+
+def test_query_with_separate_json_filter(recording: SigMFRecording) -> None:
+    """The optional JSON predicate remains independent of the index query.
+
+    Args:
+        recording: Source recording.
+    """
+    pytest.importorskip("jmespath")
+    assert filter_items(
+        recording,
+        index_query="snr >= 10",
+        metadata_query="global.snr == `1000`",
+    ).tolist() == [2, 3]
 
 
 def test_strings_quoted_names_and_bad_categories(

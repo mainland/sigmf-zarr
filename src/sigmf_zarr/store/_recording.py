@@ -2315,17 +2315,71 @@ class SigMFRecording:
         Returns:
             Object containing resolved `global`, `captures`, and `annotations`.
         """
-        entry = self.get_item_metadata(item_index)
-        item_global = cast(JSONObject, entry.get("global", {}))
-        item_captures = cast(list[JSONObject], entry.get("captures", []))
-        item_annotations = cast(
-            list[JSONObject], entry.get("annotations", [])
+        return self.resolved_item_metadata_batch([item_index])[0]
+
+    def resolved_item_metadata_batch(
+        self, item_indices: Sequence[int]
+    ) -> list[JSONObject]:
+        """Resolve selected item JSON with one batched array selection.
+
+        Args:
+            item_indices: Original item positions. Order and duplicates are
+                preserved. Negative positions count from the end.
+
+        Returns:
+            Independent resolved metadata objects. Shared global fields are
+            shallowly overridden by item fields. Captures and annotations are
+            appended. Indexes are not consulted. Memory scales with the
+            requested entries, so callers should use bounded batches.
+
+        Raises:
+            IndexError: If a position is out of range.
+            TypeError: If a position is not an integer or is Boolean.
+            ValueError: If selected item JSON is malformed.
+        """
+        length = len(self)
+        positions = []
+        for item in item_indices:
+            if isinstance(item, bool | np.bool_) or not isinstance(
+                item, int | np.integer
+            ):
+                raise TypeError("Item positions must be non-Boolean integers")
+            if not -length <= item < length:
+                raise IndexError(item)
+            positions.append(int(item) % length)
+        if not positions:
+            return []
+        # One orthogonal read preserves requested order and repeats without a
+        # backend round trip per item. Missing local metadata acts as an empty
+        # override, so shared metadata still resolves for every selected item.
+        encoded = (
+            _read_index_selection(self.item_metadata_array, positions)
+            if self.has_item_metadata else ["{}"] * len(positions)
         )
-        return {
-            "global": {**self.global_metadata, **item_global},
-            "captures": [*self.captures, *item_captures],
-            "annotations": [*self.annotations, *item_annotations],
-        }
+        shared = self.metadata()
+        result: list[JSONObject] = []
+        for item, raw in zip(positions, encoded, strict=True):
+            entry = type(self)._decode_item_metadata_entry(
+                raw, item_index=item
+            )
+            metadata: JSONObject = {
+                "global": {
+                    **shared.get("global", {}),
+                    **cast(JSONObject, entry.get("global", {})),
+                },
+                "captures": [
+                    *shared.get("captures", []),
+                    *cast(list[JSONObject], entry.get("captures", [])),
+                ],
+                "annotations": [
+                    *shared.get("annotations", []),
+                    *cast(list[JSONObject], entry.get("annotations", [])),
+                ],
+            }
+            # The merges above still share nested objects. Detach each result
+            # so editing one item cannot alter another, including duplicates.
+            result.append(deepcopy(metadata))
+        return result
 
     def channel_metadata(self, channel_index: int) -> JSONObject:
         """Return metadata for one explicit sample channel.
