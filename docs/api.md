@@ -140,3 +140,20 @@
 `sigmf_zarr.pytorch.RecordingDataset` provides dense map-style loading, and
 `RecordingItem` defines its typed item mapping. See [PyTorch datasets](pytorch.md)
 for constructor options, transforms, worker handling, and validation.
+
+## Index queries
+
+The core query module has no optional dependencies. See [Index queries](query.md)
+for language syntax and execution semantics.
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.query
+   :members:
+```
+
+## JSON filtering
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.filtering
+   :members:
+```
