@@ -125,3 +125,17 @@ The optional `progress(examined, total)` and `cancelled()` callbacks have no GUI
 dependencies. Cancellation raises `concurrent.futures.CancelledError` without
 returning partial results. Checks occur between index reads and batches.
 In-flight backend reads finish under their backend timeout configuration.
+
+## Combine with JSON filtering
+
+`sigmf_zarr.filtering.filter_items()` accepts an `index_query` string or
+compiled `IndexQuery`, existing `IndexFilter` conditions, and an optional
+JMESPath `metadata_query`. Index conditions are combined with the index query
+using AND. The JSON predicate evaluates resolved item metadata only for
+surviving index candidates. Items are resolved one at a time and share the
+recording's shared metadata instead of copying it. Candidates wait until their
+`item_metadata` chunk is complete, so each chunk is decoded once. Memory
+therefore scales with the matches, one batch and one stored chunk of index
+values, the encoded item JSON of one stored chunk, the shared metadata, and one
+decoded item. JMESPath requires the `query` extra. This optional JSON facility
+is separate from the core index query language.

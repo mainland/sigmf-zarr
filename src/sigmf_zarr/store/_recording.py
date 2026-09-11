@@ -2970,15 +2970,91 @@ class SigMFRecording:
         Returns:
             Object containing resolved `global`, `captures`, and `annotations`.
         """
-        entry = self.get_item_metadata(item_index)
-        item_global = cast(JSONObject, entry.get("global", {}))
-        item_captures = cast(list[JSONObject], entry.get("captures", []))
-        item_annotations = cast(list[JSONObject], entry.get("annotations", []))
-        return {
-            "global": {**self.global_metadata, **item_global},
-            "captures": [*self.captures, *item_captures],
-            "annotations": [*self.annotations, *item_annotations],
-        }
+        return self.resolved_item_metadata_batch([item_index])[0]
+
+    def resolved_item_metadata_batch(
+        self, item_indices: Sequence[int]
+    ) -> list[JSONObject]:
+        """Resolve selected item JSON with one batched array selection.
+
+        Args:
+            item_indices: Original item positions. Order and duplicates are
+                preserved. Negative positions count from the end.
+
+        Returns:
+            Independent resolved metadata objects. Shared global fields are
+            shallowly overridden by item fields. Captures and annotations are
+            appended. Indexes are not consulted. Memory scales with the
+            requested entries, so callers should use bounded batches.
+
+        Raises:
+            IndexError: If a position is out of range.
+            TypeError: If a position is not an integer or is Boolean.
+            ValueError: If selected item JSON is malformed or nested too
+                deeply.
+        """
+        positions = [self._item_position(item) for item in item_indices]
+        if not positions:
+            return []
+        result: list[JSONObject] = []
+        for item, metadata in self._resolved_item_metadata_views(positions):
+            # Views share nested objects. Detach each result so editing one
+            # item cannot alter another, including duplicates. Shared
+            # attributes are checked on open, but another handle can replace
+            # them afterward.
+            try:
+                result.append(deepcopy(metadata))
+            except RecursionError as exc:
+                raise ValueError(
+                    f"Resolved metadata for item {item} is nested too deeply"
+                ) from exc
+        return result
+
+    def _resolved_item_metadata_views(
+        self, positions: Sequence[int]
+    ) -> Generator[tuple[int, JSONObject], None, None]:
+        """Resolve item JSON lazily without copying shared metadata.
+
+        Args:
+            positions: Nonnegative item positions within the item axis.
+
+        Yields:
+            Each position and its resolved metadata. Results share nested
+            objects with each other and with the stored shared metadata, so
+            callers must not modify them. Only one item's JSON is decoded at
+            a time.
+
+        Raises:
+            ValueError: If selected item JSON is malformed or nested too
+                deeply.
+        """
+        # One orthogonal read preserves requested order and repeats without a
+        # backend round trip per item. Missing local metadata acts as an empty
+        # override, so shared metadata still resolves for every selected item.
+        encoded = (
+            _read_index_selection(self.item_metadata_array, positions)
+            if self.has_item_metadata
+            else ["{}"] * len(positions)
+        )
+        shared = self.metadata()
+        shared_global = cast(JSONObject, shared.get("global", {}))
+        for item, raw in zip(positions, encoded, strict=True):
+            entry = type(self)._decode_item_metadata_entry(
+                raw, item_index=item
+            )
+            metadata: JSONObject = {
+                "global": {
+                    **shared_global,
+                    **cast(JSONObject, entry.get("global", {})),
+                }
+            }
+            for key in ("captures", "annotations"):
+                common = cast(list[JSONValue], shared.get(key, []))
+                local = cast(list[JSONValue], entry.get(key, []))
+                # Reuse the shared list when the item adds nothing, so the
+                # cost per item does not grow with shared annotations.
+                metadata[key] = [*common, *local] if local else common
+            yield item, metadata
 
     def channel_metadata(
         self, channel_index: int | np.integer[Any]

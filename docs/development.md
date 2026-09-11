@@ -102,7 +102,8 @@ so measure coverage only with every extra installed.
 Tox runs the tests without the lock, so a runtime dependency missing from
 `pyproject.toml` fails. Its environments are:
 
-- `3.12`, `3.13`, and `3.14`: The core tests on each supported Python version.
+- `3.12`, `3.13`, and `3.14`: The core and query tests on each supported Python
+  version.
 - `full`: The tests with every optional integration and coverage, on the
   Python version that runs tox.
 - `min`: The tests with the lowest supported direct dependency versions.

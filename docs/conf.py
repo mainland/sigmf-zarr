@@ -50,6 +50,7 @@ nitpick_ignore = [
     ("py:class", "numpy.complex64"),
     ("py:class", "numpy.float32"),
     ("py:class", "numpy.int16"),
+    ("py:class", "numpy.int64"),
     # zarr does not document these configuration types and aliases.
     ("py:class", "zarr.core.array.CompressorLike"),
     ("py:class", "zarr.core.array.CompressorsLike"),
@@ -73,6 +74,7 @@ nitpick_ignore = [
     # Public signatures name these types by their private defining module.
     # The API reference documents their public names.
     ("py:class", "argparse._SubParsersAction"),
+    ("py:class", "sigmf_zarr.query._Node"),
     ("py:class", "sigmf_zarr.readonly._ReadOnlyIndexer"),
     ("py:class", "sigmf_zarr.store._common.ChecksumName"),
     ("py:class", "sigmf_zarr.store._common.ZarrFormat"),
