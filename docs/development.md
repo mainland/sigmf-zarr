@@ -48,7 +48,8 @@ python3 -m venv .venv
 The locked environment installs CPU PyTorch from the PyTorch CPU index, which
 `[tool.uv.sources]` in `pyproject.toml` selects. The setting affects only uv's
 development environment. Package installations and the pip path resolve `torch`
-from PyPI, whose Linux wheels include CUDA support.
+from PyPI, whose Linux wheels include CUDA support. The tox environments set
+`UV_TORCH_BACKEND=cpu`, so they also install CPU PyTorch.
 
 Editable installs load source changes directly, but their installed version
 metadata is captured when the package is built. After changing commits or

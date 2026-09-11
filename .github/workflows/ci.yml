@@ -59,6 +59,10 @@ jobs:
         with:
           version: "0.13.5"
           enable-cache: false
+      - name: Install Qt system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
       # The full environment runs on the interpreter that runs tox.
       - run: >-
           uvx --python ${{ matrix.python-version }}
@@ -75,6 +79,10 @@ jobs:
         with:
           version: "0.13.5"
           enable-cache: false
+      - name: Install Qt system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
       - run: uvx --with tox-uv==1.37.0 tox==4.67.1 -e min
 
   lint:
