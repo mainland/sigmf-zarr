@@ -27,6 +27,7 @@ dependencies = [
   "crc32c>=2.4",
   "h5py>=3.11",
   "jsonschema>=4.0",
+  "lark>=1.2.2",
   "numcodecs>=0.12",
   "numpy>=2.0.2",
   "sigmf>=1.11.0",
@@ -35,6 +36,9 @@ dependencies = [
 
 [project.optional-dependencies]
 pytorch = ["torch>=2.6"]
+query = ["jmespath>=1.0.1"]
+# Matplotlib 3.11.2 crashes when it paints its Qt toolbar icons.
+viewer = ["PySide6>=6.10", "matplotlib>=3.10.7,!=3.11.2"]
 
 [dependency-groups]
 test = [
@@ -48,7 +52,7 @@ docs = [
   "sphinx==9.1.0",
 ]
 dev = [
-  "sigmf-zarr[pytorch]",
+  "sigmf-zarr[pytorch,query,viewer]",
   { include-group = "test" },
   { include-group = "docs" },
   "mypy==2.1.0",
@@ -151,6 +155,8 @@ strict = true
 warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 pretty = true
+# Matplotlib's Qt backends are unannotated.
+untyped_calls_exclude = ["matplotlib"]
 
 [[tool.mypy.overrides]]
 module = [
@@ -161,6 +167,7 @@ module = [
   "sigmf.*",
   "zarr",
   "zarr.*",
+  "jmespath",
 ]
 ignore_missing_imports = true
 
@@ -179,18 +186,20 @@ env_list = [
 [tool.tox.env_run_base]
 description = "Run the tests without the lock"
 dependency_groups = ["test"]
-extras = []
+extras = ["query"]
 commands = [["pytest", { replace = "posargs", extend = true }]]
 
 [tool.tox.env.full]
 description = "Run the tests with every optional integration and coverage"
-extras = ["pytorch"]
+extras = ["pytorch", "query", "viewer"]
+set_env = { QT_QPA_PLATFORM = "offscreen" }
 commands = [["pytest", "--cov", "--cov-report=term-missing", { replace = "posargs", extend = true }]]
 
 [tool.tox.env.min]
 description = "Run the tests with the lowest direct dependency versions"
 uv_resolution = "lowest-direct"
-extras = ["pytorch"]
+extras = ["pytorch", "query", "viewer"]
+set_env = { QT_QPA_PLATFORM = "offscreen" }
 
 [tool.tox.env.lint]
 description = "Run the pre-commit hooks, which use the .venv environment"
