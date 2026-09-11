@@ -689,3 +689,10 @@ An explicit `overwrite_store=True` recreates the destination store before the
 recording import and does not preserve its previous contents. Import rollback
 and export replacement handle operation failures. They do not provide a
 transaction across process termination, power loss, or concurrent access.
+
+## Desktop dataset viewer
+
+Install `sigmf-zarr[viewer]` and run `sigmf-zarr view STORE` to browse records
+and step through individual items in batched samples. The optional Qt and
+Matplotlib application includes a multiline index query editor. See
+[Dataset viewer](viewer.md) for controls and reusable components.

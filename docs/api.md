@@ -157,3 +157,28 @@ for language syntax and execution semantics.
 .. automodule:: sigmf_zarr.filtering
    :members:
 ```
+
+## Optional viewer
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.viewer.data
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.overview
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.windows
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.regions
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.captures
+   :members:
+```
+
+`sigmf_zarr.viewer.qt.DatasetViewer` provides an embeddable Qt browser,
+and `MatplotlibPanel` hosts consumer-supplied plotting functions.
+`sigmf_zarr.viewer.timeline.RangeSelector` provides a reusable integer range
+selector independent of dataset access. See
+[Dataset viewer](viewer.md) for extension contracts and complete examples.
