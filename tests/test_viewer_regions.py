@@ -14,6 +14,8 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
 
+import sigmf_zarr.viewer.captures as viewer_captures
+import sigmf_zarr.viewer.presentation as presentation
 from sigmf_zarr.json import JSONObject, JSONValue
 from sigmf_zarr.viewer.captures import (
     AxisMode,
@@ -21,9 +23,10 @@ from sigmf_zarr.viewer.captures import (
     project_samples,
     sigmf_regions,
 )
-from sigmf_zarr.viewer.data import SampleWindow
+from sigmf_zarr.viewer.data import OverviewWindow, SampleWindow
 from sigmf_zarr.viewer.overlays import RegionLabel, RegionPatch, draw_regions
-from sigmf_zarr.viewer.plots import waveform
+from sigmf_zarr.viewer.overview import summarize_signal
+from sigmf_zarr.viewer.plots import overview_spectrogram, spectrogram, waveform
 from sigmf_zarr.viewer.presentation import (
     MAX_DRAWN_REGIONS,
     PlotOptions,
@@ -220,6 +223,80 @@ def test_annotation_label_visibility(monkeypatch: pytest.MonkeyPatch) -> None:
     axes.set_xlim(300, 400)
     canvas.draw()
     assert not drawn
+
+
+def test_overlays_split_at_retunes_and_keep_source_identity(
+    window: SampleWindow,
+) -> None:
+    """One annotation must project to separate rectangles at a retune.
+
+    Args:
+        window: Discontinuous capture fixture.
+    """
+    fig = Figure()
+    spectrogram(
+        fig, window, fft_size=64, options=PlotOptions(axis_mode="timestamp")
+    )
+    axes = fig.axes[0]
+    assert len(axes.images) == 2
+    assert axes.images[0].get_extent()[1] < axes.images[1].get_extent()[0]
+    patches = [
+        p for p in axes.patches if p.get_gid() == "recording/annotations/0"
+    ]
+    assert len(patches) == 2
+    rectangles = [p for p in patches if isinstance(p, RegionPatch)]
+    assert rectangles == patches
+    assert [(p.get_y(), p.get_height()) for p in rectangles] == [
+        (10, 10),
+        (5, 10),
+    ]
+    assert rectangles[0].get_x() == pytest.approx(0.08)
+    assert rectangles[1].get_x() == pytest.approx(10)
+    assert len(axes.lines) == 2  # Capture boundaries only.
+    assert entry(window.metadata["annotations"], 0)["core:sample_start"] == 280
+    fig.clear()
+    spectrogram(fig, window, fft_size=64, options=PlotOptions(captures=False))
+    assert len(fig.axes[0].patches) == 2
+    assert not fig.axes[0].lines
+    fig.clear()
+    spectrogram(
+        fig,
+        window,
+        fft_size=64,
+        options=PlotOptions(captures=False, annotations=False),
+    )
+    assert not fig.axes[0].patches
+    assert len(fig.axes[0].images) == 2
+
+
+def test_capture_boundaries_exclude_fft_transients(
+    window: SampleWindow,
+) -> None:
+    """A discontinuous sign change must not create a spurious FFT transient.
+
+    Args:
+        window: Discontinuous constant signals.
+    """
+    signal = summarize_signal(
+        np.split(window.samples, [73, 129]),
+        200,
+        fft_size=64,
+        boundaries=(100,),
+    )
+    taper = np.hanning(65)[:-1]
+    expected = np.abs(np.fft.fftshift(np.fft.fft(taper)) / taper.sum()) ** 2
+    np.testing.assert_allclose(signal.spectrum, expected, atol=1e-20)
+    assert signal.mean_power == 1
+    fig = Figure()
+    overview_spectrogram(
+        fig,
+        OverviewWindow(replace(window, samples=window.samples[:0]), signal),
+        options=PlotOptions(axis_mode="timestamp"),
+    )
+    assert len(fig.axes[0].collections) == 2
+    for boundaries in ((100, 50), (100, 100), (-1,), (200,)):
+        with pytest.raises(ValueError, match="Boundaries must be sorted"):
+            summarize_signal([window.samples], 200, boundaries=boundaries)
 
 
 def test_waveform_modes_overlap_unknown_and_fine_timestamps(
@@ -428,6 +505,92 @@ def test_capture_precision_beyond_nanoseconds() -> None:
     assert unknown.timestamp is None
 
 
+@pytest.mark.parametrize("label", [r"$\frac{a}$", "cost $5 to $10"])
+@pytest.mark.parametrize("draw", [waveform, spectrogram])
+def test_annotation_labels_are_literal_text(
+    label: str, draw: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stored labels containing dollar signs must not be parsed as math.
+
+    Args:
+        label: Annotation description from stored metadata.
+        draw: Plot function drawing annotation overlays.
+        monkeypatch: Fixture recording text rendering calls.
+    """
+    from matplotlib.text import Text
+
+    metadata: JSONObject = {
+        "global": {"core:sample_rate": 1},
+        "annotations": [
+            {
+                "core:sample_start": 0,
+                "core:sample_count": 256,
+                "core:description": label,
+            }
+        ],
+    }
+    window = SampleWindow(
+        "test", None, 0, {}, np.ones(256, dtype=complex), metadata, {}
+    )
+    figure = Figure(figsize=(8, 6))
+    canvas = FigureCanvasAgg(figure)
+    draw(figure, window)
+    drawn = []
+    original = Text.draw
+
+    def record_draw(text: Text, renderer: Any) -> None:
+        """Record visible annotation labels.
+
+        Args:
+            text: Text artist being rendered.
+            renderer: Matplotlib renderer.
+        """
+        if isinstance(text, RegionLabel):
+            drawn.append(text)
+        original(text, renderer)
+
+    monkeypatch.setattr(Text, "draw", record_draw)
+    canvas.draw()
+    assert [text.get_text() for text in drawn] == [label]
+    assert not drawn[0].get_parse_math()
+
+
+@pytest.mark.parametrize(
+    ("rate", "stamp"),
+    [
+        (1e-9, "2025-01-01T00:00:00Z"),
+        (1e-300, "2025-01-01T00:00:00Z"),
+        (1, "9999-12-31T23:59:59Z"),
+    ],
+)
+def test_timestamp_ticks_outside_date_range(rate: float, stamp: str) -> None:
+    """Ticks beyond the supported date range must fall back to seconds.
+
+    Args:
+        rate: Sample rate placing later samples far from the epoch.
+        stamp: Capture timestamp of the first sample.
+    """
+    metadata: JSONObject = {
+        "global": {"core:sample_rate": rate},
+        "captures": [{"core:sample_start": 0, "core:datetime": stamp}],
+    }
+    window = SampleWindow(
+        "rec", None, 0, {}, np.ones(512), metadata, {}, total_samples=512
+    )
+    options = PlotOptions(axis_mode="timestamp")
+    for draw in (waveform, spectrogram):
+        figure = Figure()
+        canvas = FigureCanvasAgg(figure)
+        draw(figure, window, options=options)
+        canvas.draw()
+        formatter = figure.axes[0].xaxis.get_major_formatter()
+        assert formatter(0) == stamp[:10] + "\n" + stamp[11:19]
+        labels = [tick.get_text() for tick in figure.axes[0].get_xticklabels()]
+        assert any(text.endswith(" s") for text in labels)
+    if rate == 1:
+        assert formatter(1) == "253402300800 s"
+
+
 def _drawn_keys(figure: Figure) -> list[str]:
     """Return the source keys of region overlays in drawing order.
 
@@ -478,6 +641,64 @@ def _timed_window(captures: int) -> SampleWindow:
         {},
         total_samples=4 * captures,
     )
+
+
+@pytest.mark.parametrize("draw", [waveform, spectrogram])
+def test_timestamp_timing_is_derived_once_per_plot(
+    draw: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Timestamp plots must not parse capture timing for every point.
+
+    Args:
+        draw: Plot function using capture timestamps.
+        monkeypatch: Fixture counting metadata derivations.
+    """
+    calls: list[str] = []
+    for module in (presentation, viewer_captures):
+        original = module.capture_segments
+
+        def counted(
+            metadata: Any, length: int, original: Any = original
+        ) -> Any:
+            """Count one derivation of capture segments.
+
+            Args:
+                metadata: Resolved SigMF metadata.
+                length: Stored signal length.
+                original: Function being counted.
+
+            Returns:
+                Segments from the original function.
+            """
+            calls.append("segments")
+            return original(metadata, length)
+
+        monkeypatch.setattr(module, "capture_segments", counted)
+    original_origin = presentation.timestamp_origin
+
+    def counted_origin(window: SampleWindow) -> Any:
+        """Count one timestamp origin request.
+
+        Args:
+            window: Displayed window.
+
+        Returns:
+            Origin from the original function.
+        """
+        calls.append("origin")
+        return original_origin(window)
+
+    monkeypatch.setattr(presentation, "timestamp_origin", counted_origin)
+    counts = []
+    for captures in (10, 200):
+        calls.clear()
+        figure = Figure()
+        FigureCanvasAgg(figure)
+        draw(figure, _timed_window(captures), options=PlotOptions("timestamp"))
+        assert _drawn_keys(figure)
+        counts.append(len(calls))
+    # The work per plot must not grow with the number of captures.
+    assert counts[0] == counts[1] <= 3
 
 
 def test_overlay_limit_reports_omitted_regions() -> None:
@@ -542,6 +763,42 @@ def test_region_split_at_captures_counts_toward_limit() -> None:
     )
     notes = [text.get_text() for text in figure.axes[0].texts]
     assert "Regions not drawn: 1. Zoom in to show them." in notes
+
+
+@pytest.mark.parametrize("draw", [waveform, spectrogram])
+def test_timestamp_overlays_below_float_resolution(draw: Any) -> None:
+    """An overlay too short to resolve must not prevent drawing.
+
+    Args:
+        draw: Plot function drawing annotation overlays.
+    """
+    # Seconds relative to the 2024 origin have a resolution of about 4 ns
+    # one year later. A one-sample annotation at 1 GHz is shorter than that.
+    metadata: JSONObject = {
+        "global": {"core:sample_rate": 1000000000},
+        "captures": [
+            {"core:sample_start": 0, "core:datetime": "2024-01-01T00:00:00Z"},
+            {
+                "core:sample_start": 32,
+                "core:datetime": "2025-01-01T00:00:00Z",
+            },
+        ],
+        "annotations": [
+            {"core:sample_start": 40, "core:sample_count": 1},
+            {"core:sample_start": 4, "core:sample_count": 8},
+        ],
+    }
+    window = SampleWindow(
+        "rec", None, 0, {}, np.ones(64, dtype=complex), metadata, {}
+    )
+    figure = Figure()
+    canvas = FigureCanvasAgg(figure)
+    draw(figure, window, options=PlotOptions(axis_mode="timestamp"))
+    canvas.draw()
+    keys = _drawn_keys(figure)
+    assert "recording/annotations/0" not in keys
+    assert "recording/annotations/1" in keys
+    assert "recording/captures/1" in keys
 
 
 @pytest.mark.parametrize("mode", ["elapsed", "timestamp"])
