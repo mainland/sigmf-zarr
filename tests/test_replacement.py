@@ -142,3 +142,104 @@ def test_failed_rollback_retains_recovery_files(
     assert (backups[0] / "parent-attributes.json").is_file()
     saved = zarr.open_group(backups[0] / "node", mode="r")
     np.testing.assert_array_equal(saved["samples"][:], np.arange(4))
+
+
+@pytest.mark.parametrize("scope", ["recording", "store", "extension"])
+def test_invalid_array_chunks_preserve_previous_values(
+    store: SigMFZarrStore, scope: str
+) -> None:
+    """Invalid codec geometry must preserve existing arrays and hashes.
+
+    Args:
+        store: Hashed example store in either format and backend.
+        scope: Array creation interface to exercise.
+    """
+    recording = store.recordings["rec"]
+    store.add_index("nested/quality", [1, 2, 3, 4])
+    recording.add_extension_array("nested/quality", [1, 2, 3, 4])
+    store.update_integrity()
+    with pytest.raises((ValueError, ZeroDivisionError)):
+        if scope == "recording":
+            recording.add_index(
+                "quality", [5, 6, 7, 8], axis="time", field="test:q",
+                overwrite=True, chunks=(0,),
+            )
+        elif scope == "store":
+            store.add_index(
+                "nested/quality", [5, 6, 7, 8], overwrite=True, chunks=(0,)
+            )
+        else:
+            recording.add_extension_array(
+                "nested/quality", [5, 6, 7, 8], overwrite=True, chunks=(0,)
+            )
+    for array in (
+        recording.index("quality"),
+        store.index("nested/quality"),
+        recording.extensions["nested/quality"],
+    ):
+        np.testing.assert_array_equal(array[:], [1, 2, 3, 4])
+    assert store.verify_integrity()
+
+
+@pytest.mark.parametrize("scope", ["index", "item_metadata"])
+def test_failed_array_write_restores_data_and_descriptors(
+    store: SigMFZarrStore, scope: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure after writing replacement data must restore the old array.
+
+    Args:
+        store: Hashed example store in either format and backend.
+        scope: Array replacement path to exercise.
+        monkeypatch: Inject a failure after a backend write.
+    """
+    from zarr.core.array import Array
+
+    recording = store.recordings.open("batch", batched=True, sample_shape=(4,))
+    recording.append_samples(np.zeros((2, 4)))
+    recording.set_item_metadata([{"global": {"test:label": "old"}}, {}])
+    recording.add_index("label", ["a", "b"], axis="item", field="test:label")
+    store.update_integrity()
+    write = Array.__setitem__
+
+    def fail_after_write(array: Array, key: Any, value: Any) -> None:
+        """Complete one array write, then simulate an I/O failure."""
+        write(array, key, value)
+        raise OSError("write interrupted")
+
+    monkeypatch.setattr(Array, "__setitem__", fail_after_write)
+    with pytest.raises(OSError, match="write interrupted"):
+        if scope == "index":
+            recording.add_index(
+                "label", ["new", "new"], axis="item", field="test:new",
+                overwrite=True,
+            )
+        else:
+            recording.set_item_metadata([{}, {}], overwrite=True)
+    assert recording.index("label")[:].tolist() == ["a", "b"]
+    assert recording.index("label").attrs["field"] == "test:label"
+    assert recording.get_item_metadata(0) == {"global": {"test:label": "old"}}
+    assert store.verify_integrity()
+
+
+def test_successful_array_replacement_removes_old_descriptors(
+    store: SigMFZarrStore,
+) -> None:
+    """A replacement must publish its new values without stale attributes.
+
+    Args:
+        store: Hashed example store.
+    """
+    recording = store.recordings["rec"]
+    recording.add_index(
+        "quality", [9, 8, 7, 6], axis="time", field="test:new",
+        overwrite=True, unit="dB",
+    )
+    index = recording.index("quality")
+    np.testing.assert_array_equal(index[:], [9, 8, 7, 6])
+    assert dict(index.attrs) == {
+        "axis": "time", "field": "test:new", "kind": "metadata", "unit": "dB"
+    }
+    assert store.metadata_sha512 is None
+    assert recording.metadata_sha512 is None
+    store.update_integrity()
+    assert store.verify_integrity()

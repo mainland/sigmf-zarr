@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import numpy as np
@@ -2003,39 +2003,45 @@ class SigMFRecording:
         Raises:
             ValueError: If the array already exists and overwrite is false.
         """
-        self._invalidate_integrity(metadata=True)
-        group = self._raw_group
-        if "item_metadata" in group:
-            if not overwrite:
-                raise ValueError(
-                    "Array 'item_metadata' already exists. Pass "
-                    "overwrite=True to replace it"
-                )
-            del group["item_metadata"]
+        with replacement_transaction(
+            self._raw_group,
+            "item_metadata",
+            overwrite=overwrite,
+            parents=(self._store._group, self._raw_group),
+        ):
+            self._invalidate_integrity(metadata=True)
+            group = self._raw_group
+            if "item_metadata" in group:
+                if not overwrite:
+                    raise ValueError(
+                        "Array 'item_metadata' already exists. Pass "
+                        "overwrite=True to replace it"
+                    )
+                del group["item_metadata"]
 
-        chunks = self._store.default_index_chunks(len(encoded))
-        # Both physical formats store the same logical UTF-8 JSON strings, but
-        # their serializer and codec APIs are intentionally different.
-        if self._store.zarr_format == 2:
-            array = group.create_array(
-                "item_metadata",
-                shape=encoded.shape,
-                dtype=cast(Any, VariableLengthUTF8()),
-                chunks=chunks,
-                compressor=NumcodecsZstd(),
-                filters=[NumcodecsVLenUTF8(), NumcodecsCRC32C()],
-            )
-        else:
-            array = group.create_array(
-                "item_metadata",
-                shape=encoded.shape,
-                dtype=cast(Any, VariableLengthUTF8()),
-                chunks=chunks,
-                serializer=VLenUTF8Codec(),
-                compressors=(ZstdCodec(), Crc32cCodec()),
-            )
-        array[:] = encoded
-        return array
+            chunks = self._store.default_index_chunks(len(encoded))
+            # Both formats store UTF-8 JSON strings through different
+            # serializer and codec APIs.
+            if self._store.zarr_format == 2:
+                array = group.create_array(
+                    "item_metadata",
+                    shape=encoded.shape,
+                    dtype=cast(Any, VariableLengthUTF8()),
+                    chunks=chunks,
+                    compressor=NumcodecsZstd(),
+                    filters=[NumcodecsVLenUTF8(), NumcodecsCRC32C()],
+                )
+            else:
+                array = group.create_array(
+                    "item_metadata",
+                    shape=encoded.shape,
+                    dtype=cast(Any, VariableLengthUTF8()),
+                    chunks=chunks,
+                    serializer=VLenUTF8Codec(),
+                    compressors=(ZstdCodec(), Crc32cCodec()),
+                )
+            array[:] = encoded
+            return array
 
     def set_item_metadata(
         self,
@@ -2574,6 +2580,7 @@ class SigMFRecording:
         compressors: CompressorsLike = "auto",
         compressor: CompressorLike = "auto",
         serializer: SerializerLike = "auto",
+        attributes: JSONObject | None = None,
     ) -> Array:
         """Create one managed array, optionally at a nested path.
 
@@ -2587,6 +2594,7 @@ class SigMFRecording:
             compressors: Optional compressors configuration.
             compressor: Optional single-compressor configuration.
             serializer: Optional serializer configuration.
+            attributes: Validated attributes written before committing.
 
         Returns:
             Created Zarr array.
@@ -2594,18 +2602,31 @@ class SigMFRecording:
         Raises:
             ValueError: If the target exists and `overwrite` is false.
         """
-        self._invalidate_integrity(metadata=True)
-        return self._store.create_array(
-            group,
-            name,
-            data,
-            overwrite=overwrite,
-            chunks=chunks,
-            shards=shards,
-            compressors=compressors,
-            compressor=compressor,
-            serializer=serializer,
-        )
+        with (
+            replacement_transaction(
+                group,
+                name,
+                overwrite=True,
+                parents=(self._store._group, self._raw_group),
+            )
+            if overwrite
+            else nullcontext()
+        ):
+            self._invalidate_integrity(metadata=True)
+            array = self._store.create_array(
+                group,
+                name,
+                data,
+                overwrite=overwrite,
+                chunks=chunks,
+                shards=shards,
+                compressors=compressors,
+                compressor=compressor,
+                serializer=serializer,
+            )
+            if attributes is not None:
+                array.attrs.update(attributes)
+            return array
 
     def add_extension_array(
         self,
@@ -2696,15 +2717,6 @@ class SigMFRecording:
                 f"match axis {axis!r} length {axis_length}"
             )
 
-        index = self._create_array(
-            self._indexes_group,
-            index_name,
-            value_array,
-            overwrite=overwrite,
-            chunks=(
-                chunks or self._store.default_index_chunks(len(value_array))
-            ),
-        )
         attrs: JSONObject = {
             "axis": axis,
             "field": field,
@@ -2714,7 +2726,16 @@ class SigMFRecording:
             attrs["unit"] = unit
         if labels is not None:
             attrs["labels"] = list(labels)
-        index.attrs.update(attrs)
+        index = self._create_array(
+            self._indexes_group,
+            index_name,
+            value_array,
+            overwrite=overwrite,
+            attributes=json_object(attrs, name="index attributes"),
+            chunks=(
+                chunks or self._store.default_index_chunks(len(value_array))
+            ),
+        )
         if isinstance(index, Array):
             return ReadOnlyArray(index)
         return cast(ReadOnlyArray, index)

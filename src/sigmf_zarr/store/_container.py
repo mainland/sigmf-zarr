@@ -38,6 +38,7 @@ from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
 from sigmf_zarr.store._collection import SigMFCollection
 from sigmf_zarr.store._common import ChecksumName, ZarrFormat
 from sigmf_zarr.store._recording import SigMFRecording
+from sigmf_zarr.store._transaction import replacement_transaction
 
 
 class SigMFRecordings:
@@ -877,72 +878,75 @@ class SigMFZarrStore:
                 `overwrite` is false, or an encoding available only in Zarr
                 format 3 is requested for a Zarr format 2 store.
         """
-        self._invalidate_metadata_integrity()
-        name_path = Path(name)
-        array_name = name_path.name
-        array_group = (
-            group
-            if name_path.parent == Path(".")
-            else group.require_group(str(name_path.parent))
-        )
-
-        if array_name in array_group:
-            if overwrite:
-                del array_group[array_name]
-            else:
-                raise ValueError(
-                    f"Array {name!r} already exists. Pass overwrite=True "
-                    "to replace it"
-                )
-
-        value_array = np.asarray(data)
-
-        string_data = value_array.dtype.kind in {"U", "O"}
-        if string_data and serializer == "auto":
-            # Object arrays let the variable-length UTF-8 codecs own the wire
-            # representation instead of fixing a NumPy Unicode width.
-            value_array = value_array.astype(str).astype(object)
-            if self.zarr_format == 3:
-                serializer = VLenUTF8Codec()
-
-        resolved_chunks = chunks
-        if resolved_chunks is None:
-            resolved_chunks = self.default_index_chunks(len(value_array))
-
-        if self.zarr_format == 2:
-            if shards is not None:
-                raise ValueError(
-                    "Array sharding requires Zarr format 3. Omit shards or "
-                    "create a Zarr format 3 store"
-                )
-            if serializer != "auto":
-                raise ValueError(
-                    "Explicit serializers require Zarr format 3"
-                )
-            resolved_compressor = type(self)._compressor_v2(
-                compressors=compressors,
-                compressor=compressor,
+        with replacement_transaction(
+            group, name, overwrite=overwrite, parents=(self._group,)
+        ):
+            self._invalidate_metadata_integrity()
+            name_path = Path(name)
+            array_name = name_path.name
+            array_group = (
+                group
+                if name_path.parent == Path(".")
+                else group.require_group(str(name_path.parent))
             )
-            return type(self)._create_array_v2(
+
+            if array_name in array_group:
+                if overwrite:
+                    del array_group[array_name]
+                else:
+                    raise ValueError(
+                        f"Array {name!r} already exists. Pass overwrite=True "
+                        "to replace it"
+                    )
+
+            value_array = np.asarray(data)
+
+            string_data = value_array.dtype.kind in {"U", "O"}
+            if string_data and serializer == "auto":
+                # UTF-8 codecs own the wire representation instead of fixing
+                # a NumPy Unicode width.
+                value_array = value_array.astype(str).astype(object)
+                if self.zarr_format == 3:
+                    serializer = VLenUTF8Codec()
+
+            resolved_chunks = chunks
+            if resolved_chunks is None:
+                resolved_chunks = self.default_index_chunks(len(value_array))
+
+            if self.zarr_format == 2:
+                if shards is not None:
+                    raise ValueError(
+                        "Array sharding requires Zarr format 3. Omit shards "
+                        "or create a Zarr format 3 store"
+                    )
+                if serializer != "auto":
+                    raise ValueError(
+                        "Explicit serializers require Zarr format 3"
+                    )
+                resolved_compressor = type(self)._compressor_v2(
+                    compressors=compressors,
+                    compressor=compressor,
+                )
+                return type(self)._create_array_v2(
+                    array_group,
+                    array_name,
+                    value_array,
+                    chunks=resolved_chunks,
+                    compressor=resolved_compressor,
+                    string_data=string_data,
+                )
+
+            return type(self)._create_array_v3(
                 array_group,
                 array_name,
                 value_array,
                 chunks=resolved_chunks,
-                compressor=resolved_compressor,
+                shards=shards,
+                compressors=compressors,
+                compressor=compressor,
+                serializer=serializer,
                 string_data=string_data,
             )
-
-        return type(self)._create_array_v3(
-            array_group,
-            array_name,
-            value_array,
-            chunks=resolved_chunks,
-            shards=shards,
-            compressors=compressors,
-            compressor=compressor,
-            serializer=serializer,
-            string_data=string_data,
-        )
 
     @classmethod
     def _compressor_v2(
