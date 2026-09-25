@@ -49,6 +49,7 @@ from sigmf_zarr.json import (
 )
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
 from sigmf_zarr.store._common import ChecksumName, ZarrFormat
+from sigmf_zarr.store._transaction import replacement_transaction
 
 if TYPE_CHECKING:
     from sigmf_zarr.store._container import SigMFZarrStore
@@ -185,27 +186,33 @@ class SigMFRecording:
         """
         self._store = store
         self._recording_name = recording_name
-        self._ensure_exists(
-            create=create,
+        with replacement_transaction(
+            store._recordings_group,
+            recording_name,
             overwrite=overwrite,
-            batched=batched,
-            sample_dtype=sample_dtype,
-            sample_shape=sample_shape,
-            sample_axes=sample_axes,
-            global_metadata=global_metadata,
-            captures=captures,
-            annotations=annotations,
-            channel_metadata=channel_metadata,
-            sample_chunks=sample_chunks,
-            sample_shards=sample_shards,
-            sample_compressor=sample_compressor,
-            sample_checksum=sample_checksum,
-        )
-        self._validate_metadata_attrs()
-        self._validate_sample_array_shape()
-        self._validate_item_metadata_array()
-        self._validate_channel_metadata_groups()
-        self._validate_sample_checksum()
+            parents=(store._group,),
+        ):
+            self._ensure_exists(
+                create=create,
+                overwrite=overwrite,
+                batched=batched,
+                sample_dtype=sample_dtype,
+                sample_shape=sample_shape,
+                sample_axes=sample_axes,
+                global_metadata=global_metadata,
+                captures=captures,
+                annotations=annotations,
+                channel_metadata=channel_metadata,
+                sample_chunks=sample_chunks,
+                sample_shards=sample_shards,
+                sample_compressor=sample_compressor,
+                sample_checksum=sample_checksum,
+            )
+            self._validate_metadata_attrs()
+            self._validate_sample_array_shape()
+            self._validate_item_metadata_array()
+            self._validate_channel_metadata_groups()
+            self._validate_sample_checksum()
 
     def _validate_metadata_attrs(self) -> None:
         """Validate recording JSON attributes and stored dtype metadata.
