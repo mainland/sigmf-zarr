@@ -2370,7 +2370,9 @@ class SigMFRecording:
 
         Raises:
             ValueError: If the bundle has unknown keys, malformed SigMF
-                sections, storage-level overrides, or non-JSON values.
+                sections, storage-level overrides, a `core:offset` or
+                capture `core:sample_start` that is not an integer from 0 to
+                2**63 - 1, or non-JSON values.
         """
         if value is None:
             return {}
@@ -2405,13 +2407,20 @@ class SigMFRecording:
             )
             normalized["global"] = dict(item_global)
         if "captures" in entry:
-            normalized["captures"] = cast(
-                JSONValue,
-                json_object_list(
-                    entry["captures"],
-                    name=f"{name} captures",
-                ),
+            captures = json_object_list(
+                entry["captures"],
+                name=f"{name} captures",
             )
+            for index, capture in enumerate(captures):
+                if "core:sample_start" in capture:
+                    cls._validate_capture_start(
+                        capture, name=f"{name} captures[{index}]"
+                    )
+                    _check_sample_index(
+                        capture["core:sample_start"],
+                        name=f"{name} captures[{index}] core:sample_start",
+                    )
+            normalized["captures"] = cast(JSONValue, captures)
         if "annotations" in entry:
             normalized["annotations"] = cast(
                 JSONValue,
@@ -2880,12 +2889,135 @@ class SigMFRecording:
         entry.setdefault("core:sample_start", sample_start)
         self._raw_group.attrs["captures"] = [*self.captures, entry]
 
+    @staticmethod
+    def _validate_capture_start(entry: JSONObject, *, name: str) -> None:
+        """Require a nonnegative integer capture start.
+
+        Args:
+            entry: Capture record to check.
+            name: Capture name for validation errors.
+
+        Raises:
+            ValueError: If `core:sample_start` is missing, negative, Boolean,
+                or not an integer.
+        """
+        start = entry.get("core:sample_start")
+        if type(start) is not int or start < 0:
+            raise ValueError(
+                f"{name} must have a nonnegative integer core:sample_start"
+            )
+
+    @classmethod
+    def _normalize_append_captures(
+        cls,
+        captures: Sequence[JSONObject],
+        *,
+        offset: JSONValue,
+        name: str,
+    ) -> list[JSONValue]:
+        """Validate one item's captures and default its initial sample start.
+
+        Args:
+            captures: Capture records for one appended item.
+            offset: Resolved `core:offset` for the item, or zero.
+            name: Capture-list name for validation errors.
+
+        Returns:
+            Detached capture records with explicit time-sample starts.
+
+        Raises:
+            ValueError: If captures are malformed or a sample start is
+                missing, negative, or not an integer.
+        """
+        # Untyped callers can pass any value.
+        if not isinstance(  # type: ignore[redundant-expr]
+            captures, Sequence
+        ) or isinstance(captures, str | bytes):  # type: ignore[unreachable]
+            raise ValueError(f"Expected {name} to be a sequence of captures")
+        entries = json_object_list(list(captures), name=name)
+        result: list[JSONValue] = []
+        for index, entry in enumerate(entries):
+            if index == 0:
+                entry.setdefault("core:sample_start", offset)
+            cls._validate_capture_start(entry, name=f"{name}[{index}]")
+            result.append(entry)
+        return result
+
+    def _encode_append_metadata(
+        self,
+        count: int,
+        *,
+        item_metadata: Sequence[JSONObject | None] | None,
+        item_captures: Sequence[Sequence[JSONObject] | None] | None,
+    ) -> list[str] | None:
+        """Prepare aligned item metadata before an append changes storage.
+
+        Args:
+            count: Number of appended items.
+            item_metadata: Optional metadata bundles for the appended items.
+            item_captures: Optional capture lists for the appended items.
+
+        Returns:
+            Encoded bundles, or `None` when neither argument is supplied.
+
+        Raises:
+            ValueError: If counts differ, metadata is invalid, or both
+                arguments supply captures for the same item.
+        """
+        # Untyped callers can pass any value.
+        if item_captures is not None and (
+            not isinstance(  # type: ignore[redundant-expr]
+                item_captures, Sequence
+            )
+            or isinstance(item_captures, str | bytes)  # type: ignore[unreachable]
+        ):
+            raise ValueError("Expected item_captures to be a sequence")
+        for name, values in (
+            ("metadata", item_metadata),
+            ("captures", item_captures),
+        ):
+            if values is not None and len(values) != count:
+                raise ValueError(
+                    f"Expected {name} for {count} appended items, "
+                    f"got {len(values)}"
+                )
+        if item_captures is None:
+            return (
+                None
+                if item_metadata is None
+                else type(self)._encode_item_metadata(item_metadata)
+            )
+        shared_offset = self.global_metadata.get("core:offset", 0)
+        encoded = []
+        for index, captures in enumerate(item_captures):
+            entry = self._normalize_item_metadata_entry(
+                None if item_metadata is None else item_metadata[index],
+                name=f"item_metadata[{index}]",
+            )
+            if captures is not None:
+                if "captures" in entry:
+                    raise ValueError(
+                        f"Captures supplied in both item_captures[{index}] "
+                        f"and item_metadata[{index}]"
+                    )
+                item_global = cast(JSONObject, entry.get("global", {}))
+                entry["captures"] = self._normalize_append_captures(
+                    captures,
+                    offset=item_global.get("core:offset", shared_offset),
+                    name=f"item_captures[{index}]",
+                )
+            encoded.append(
+                self._encode_item_metadata_entry(entry, item_index=index)
+            )
+        return encoded
+
     def _append_batched_samples(
         self,
         sample_array: npt.NDArray[Any],
         *,
         capture: JSONObject | None,
         item_metadata: Sequence[JSONObject | None] | None,
+        item_captures: Sequence[Sequence[JSONObject] | None] | None,
     ) -> None:
         """Append one batch of samples to a batched recording.
 
@@ -2893,6 +3025,7 @@ class SigMFRecording:
             sample_array: Batch of samples with shape `(N, *sample_shape)`.
             capture: Optional capture metadata for the appended batch.
             item_metadata: Optional metadata bundle for each appended item.
+            item_captures: Optional capture list for each appended item.
 
         Raises:
             ValueError: If rank differs from the sample array rank, the
@@ -2911,15 +3044,10 @@ class SigMFRecording:
             )
 
         append_count = int(sample_array.shape[0])
-        if item_metadata is not None and len(item_metadata) != append_count:
-            raise ValueError(
-                f"Expected metadata for {append_count} appended items, got "
-                f"{len(item_metadata)}"
-            )
-        encoded_item_metadata = (
-            None
-            if item_metadata is None
-            else type(self)._encode_item_metadata(item_metadata)
+        encoded_item_metadata = self._encode_append_metadata(
+            append_count,
+            item_metadata=item_metadata,
+            item_captures=item_captures,
         )
         if append_count == 0:
             if capture is not None:
@@ -3033,20 +3161,35 @@ class SigMFRecording:
         *,
         capture: JSONObject | None = None,
         item_metadata: Sequence[JSONObject | None] | None = None,
+        item_captures: Sequence[Sequence[JSONObject] | None] | None = None,
     ) -> None:
         """Append samples to a recording.
 
         Batched recordings append along the leading `item` axis. Unbatched
-        recordings append along the explicit `time` axis.
+        recordings append along the explicit `time` axis. An append of zero
+        items or samples validates its arguments and changes nothing. It
+        must not supply `capture`, because a capture describes at least one
+        sample.
 
         Args:
             samples: Samples to append.
-            capture: Optional capture metadata for the appended samples. When
-                provided, `core:sample_start` defaults to the old item index
-                for batched recordings or the old time sample count for
-                unbatched recordings.
+            capture: Optional shared capture metadata. When provided,
+                `core:sample_start` defaults to the old item index for
+                batched recordings. For unbatched recordings, it defaults
+                to `core:offset`, or zero when absent, plus the old time
+                sample count.
             item_metadata: Optional metadata bundle for each appended item.
                 Only valid for batched recordings.
+            item_captures: One capture list or `None` per appended item.
+                Only valid for batched recordings. Each list is stored in
+                that item's metadata. The first capture defaults to the
+                item's resolved `core:offset`, or zero. Later captures
+                must provide `core:sample_start`. Starts are nonnegative
+                integer time-sample coordinates within the item's source.
+                Timestamps are never broadcast or inferred. An item must
+                not supply captures through both this argument and
+                `item_metadata`. Input metadata is copied and validated
+                before storage changes.
 
         Raises:
             ValueError: If rank differs from the sample array rank or any
@@ -3065,11 +3208,13 @@ class SigMFRecording:
                 sample_array,
                 capture=capture,
                 item_metadata=item_metadata,
+                item_captures=item_captures,
             )
             return
-        if item_metadata is not None:
+        if item_metadata is not None or item_captures is not None:
             raise ValueError(
-                "item_metadata is only supported for batched recordings"
+                "item_metadata and item_captures are only supported "
+                "for batched recordings"
             )
         self._append_unbatched_samples(sample_array, capture=capture)
 
