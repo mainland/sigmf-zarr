@@ -18,9 +18,7 @@ if TYPE_CHECKING:
     from zarr.core.buffer import BufferPrototype
 
 try:
-    from aiohttp import (  # type: ignore[import-not-found, unused-ignore]
-        ClientError as _ClientError,
-    )
+    from aiohttp import ClientError as _ClientError
 except ImportError:  # pragma: no cover - fsspec[http] installs aiohttp.
     _BACKEND_ERRORS: tuple[type[Exception], ...] = ()
 else:
