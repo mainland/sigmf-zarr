@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from zarr.abc.store import Store
 from zarr.core.buffer import default_buffer_prototype
@@ -18,6 +18,8 @@ from zarr.core.config import config as zarr_config
 from zarr.core.group import Group
 from zarr.core.sync import sync
 from zarr.storage import LocalStore
+
+from sigmf_zarr._consolidated import open_group
 
 _OPERATION: ContextVar[object | None] = ContextVar(
     "sigmf_zarr_operation", default=None
@@ -271,6 +273,10 @@ def _creation_transaction(
 ) -> Iterator[None]:
     """Remove a partially created node if its creation fails.
 
+    On a writable, listable store, creation requires that no object is
+    stored below the first new ancestor, so rollback can delete that whole
+    prefix without removing objects that the operation did not create.
+
     Args:
         group: Parent that will contain the new node.
         name: Relative node name, including any nested path.
@@ -278,19 +284,46 @@ def _creation_transaction(
 
     Yields:
         Control to the creating operation.
+
+    Raises:
+        ValueError: If objects that belong to no node are already stored
+            below the first new ancestor.
     """
+    cleanup_name = name
+    for ancestor in reversed(PurePosixPath(name).parents):
+        if ancestor != PurePosixPath(".") and str(ancestor) not in group:
+            cleanup_name = str(ancestor)
+            break
+    backend = group.store
+    listable = _listable(backend)
+    cleanup_path = (group.store_path / cleanup_name).path
+    if listable:
+        stray = _first_key_below(backend, cleanup_path)
+        if stray is not None:
+            raise ValueError(
+                f"Cannot create {name!r}: the store already holds objects "
+                f"below {cleanup_path!r}, such as {stray!r}, that belong to "
+                "no node. A failed write can leave such objects. Pass "
+                "overwrite=True to replace them, or remove them first"
+            )
     attributes = [(parent, parent.attrs.asdict()) for parent in parents]
     try:
-        yield
+        with _settled_on_failure():
+            yield
     except BaseException:
-        # Leave the name available and restore any invalidated ancestor
-        # hashes, because the store content is unchanged. Reopen parents to
-        # observe hash changes made through other handles. Compare first to
-        # avoid writes to an unchanged read-only store.
-        if name in group:
-            del group[name]
+        # Remove the first new ancestor with all partially created descendants.
+        # Delete the whole prefix on a writable store, because a failed node
+        # metadata write can leave descendants without a visible node. The
+        # prefix was empty on entry, so it holds only objects this operation
+        # created. Reopen parents to observe hash changes made through other
+        # handles. Compare first to avoid writes to an unchanged read-only
+        # store.
+        if listable:
+            sync(backend.delete_dir(cleanup_path))
+        elif cleanup_name in group:
+            del group[cleanup_name]
         for parent, attrs in attributes:
-            current = Group.open(
+            current = open_group(
                 parent.store_path, zarr_format=parent.metadata.zarr_format
             )
             if current.attrs.asdict() != attrs:

@@ -8,14 +8,19 @@ from typing import Any, cast
 import numpy as np
 import numpy.typing as npt
 import pytest
-from numcodecs import CRC32C, Blosc, VLenUTF8, Zstd
+from numcodecs import CRC32C, LZ4, Blosc, GZip, VLenUTF8, Zstd
 from zarr.codecs import (
     BloscCodec,
+    Crc32cCodec,
+    GzipCodec,
     VLenUTF8Codec,
+    ZstdCodec,
 )
+from zarr.core.array import Array
 from zarr.core.group import Group
 
 from sigmf_zarr.json import JSONValue, json_object
+from sigmf_zarr.readonly import ReadOnlyArray
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
 
 
@@ -943,6 +948,34 @@ def test_item_metadata_validation_reads_chunks(
     recording._validate_item_metadata_array()
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_one_item_appends_do_not_fix_item_metadata_chunks(
+    tmp_path: Path, zarr_format: int
+) -> None:
+    """The first append must not choose a one-item metadata chunk.
+
+    The chunk length is fixed when the array is created, so a few appends
+    stand in for the long one-item append loop of `docs/usage.md`.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=cast(ZarrFormat, zarr_format)
+    )
+    recording = store.recordings.create(
+        "rec", batched=True, sample_shape=(2, 128)
+    )
+    for _ in range(5):
+        recording.append_samples(
+            np.zeros((1, 2, 128), dtype=np.float32), item_metadata=[None]
+        )
+    assert recording.samples.chunks == (1024, 2, 128)
+    assert recording.item_metadata_array.chunks == (1024,)
+    assert recording._item_metadata_array.nchunks_initialized == 1
+
+
 def test_append_samples_keeps_item_metadata_aligned(tmp_path: Path) -> None:
     """Batched appends should extend item metadata with explicit defaults.
 
@@ -1246,6 +1279,51 @@ def test_decode_json_index_rejects_non_object_entries(tmp_path: Path) -> None:
             store.decode_json_index(name)
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_object_indexes_require_strings(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """Object index values must not be converted to text with str().
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=zarr_format
+    )
+    recording = store.recordings.create(
+        "rec", batched=True, sample_shape=(4,), sample_axes=("time",)
+    )
+    recording.append_samples(np.zeros((3, 4), dtype=np.float32))
+    recording.add_index(
+        "mixed",
+        np.array(["a", "b", "c"], dtype=object),
+        axis="item",
+        field="t:m",
+    )
+    store.update_integrity()
+    for values in (
+        np.array([7, "seven", None], dtype=object),
+        np.array(["a", "b", None], dtype=object),
+    ):
+        for overwrite in (False, True):
+            with pytest.raises(ValueError, match="must be strings"):
+                recording.add_index(
+                    "mixed" if overwrite else "new",
+                    values,
+                    axis="item",
+                    field="t:m",
+                    overwrite=overwrite,
+                )
+    with pytest.raises(ValueError, match=r"json\.dumps"):
+        store.add_index("objects", np.array([{"a": 1}, {"b": None}]))
+    assert recording.index("mixed")[:].tolist() == ["a", "b", "c"]
+    assert "new" not in recording.indexes
+    assert "objects" not in store.indexes
+    assert store.verify_integrity()
+
+
 def test_recording_open_rejects_invalid_sample_axes(tmp_path: Path) -> None:
     """Opening should reject invalid sample-axis metadata.
 
@@ -1471,6 +1549,28 @@ def test_set_global_field_rejects_managed_storage_fields(
     assert store.recordings["rec"].sample_shape == (2, 8)
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_object_strings_keep_trailing_nul_characters(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """Object string values must be stored exactly.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=zarr_format
+    )
+    values = np.array(["a\x00", "b\x00\x00", "c"], dtype=object)
+    store.add_index("names", values)
+    recording = store.recordings.create("rec", batched=True, sample_shape=(2,))
+    recording.append_samples(np.zeros((3, 2), np.float32))
+    recording.add_index("labels", values, axis="item", field="test:label")
+    assert list(store.index("names")[:]) == list(values)
+    assert list(recording.index("labels")[:]) == list(values)
+
+
 def test_recording_open_rejects_invalid_sample_shape_rank(
     tmp_path: Path,
 ) -> None:
@@ -1493,175 +1593,36 @@ def test_recording_open_rejects_invalid_sample_shape_rank(
         store.recordings.open("rec")
 
 
-def test_create_array_uses_utf8_serializer_for_unicode_data() -> None:
-    """Unicode arrays should be normalized for UTF-8-backed storage."""
+@pytest.mark.parametrize("zarr_format", [2, 3])
+@pytest.mark.parametrize("dtype", ["U", "O"])
+def test_recording_extensions_store_variable_length_utf8(
+    tmp_path: Path, zarr_format: ZarrFormat, dtype: str
+) -> None:
+    """Unicode and object strings must retain UTF-8 and variable lengths.
 
-    class FakeStore:
-        def __init__(self) -> None:
-            """Initialize a fake store."""
-            self.created: dict[str, object] | None = None
-
-        @staticmethod
-        def default_index_chunks(num_values: int) -> tuple[int]:
-            """Choose fake index chunks.
-
-            Args:
-                num_values: Number of index values.
-
-            Returns:
-                One-dimensional chunk shape.
-            """
-            return (min(4096, max(1, num_values)),)
-
-        def create_array(
-            self,
-            group: object,
-            name: str,
-            data: object,
-            *,
-            overwrite: bool,
-            chunks: tuple[int, ...] | None = None,
-            shards: object = None,
-            compressors: object = "auto",
-            compressor: object = "auto",
-            serializer: object = "auto",
-        ) -> dict[str, object]:
-            """Create a fake array.
-
-            Args:
-                group: Parent group placeholder.
-                name: Array name.
-                data: Array data.
-                overwrite: Whether replacement is allowed.
-                chunks: Optional chunk shape.
-                shards: Optional shard shape.
-                compressors: Optional compressors configuration.
-                compressor: Optional single-compressor configuration.
-                serializer: Optional serializer configuration.
-
-            Returns:
-                Created array details.
-            """
-            del group, overwrite, shards, compressors, compressor
-            value_array = np.asarray(data)
-            if value_array.dtype.kind in {"U", "O"} and serializer == "auto":
-                value_array = value_array.astype(str).astype(object)
-                serializer = VLenUTF8Codec()
-            self.created = {
-                "name": name,
-                "data": value_array,
-                "chunks": chunks
-                or self.default_index_chunks(len(value_array)),
-                "serializer": serializer,
-            }
-            return self.created
-
-    recording = object.__new__(SigMFRecording)
-    # The fake stands in for the store and records the creation arguments.
-    recording._store = cast(SigMFZarrStore, FakeStore())
-
-    # The fake returns its record of the arguments instead of an array.
-    created = cast(
-        "dict[str, object]",
-        recording._create_array(
-            cast(Group, object()),
-            "labels",
-            np.array(["AM-DSB", "BPSK"]),
-            overwrite=False,
-        ),
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+        dtype: NumPy Unicode or object input representation.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=zarr_format
     )
-
-    assert isinstance(created["serializer"], VLenUTF8Codec)
-    assert np.asarray(created["data"]).dtype.kind == "O"
+    recording = store.recordings.create("rec", sample_shape=(4,))
+    values = np.array(["AM", "caf\u00e9"], dtype=dtype)  # codespell:ignore
+    recording.add_extension_array("labels", values)
+    labels = recording.extensions["labels"]
+    assert isinstance(labels, ReadOnlyArray)
+    np.testing.assert_array_equal(labels[:], values)
+    with recording.mutate_extensions() as group:
+        writable_labels = group["labels"]
+        assert isinstance(writable_labels, Array)
+        writable_labels[0] = "A much longer label"
+    updated_labels = recording.extensions["labels"]
+    assert isinstance(updated_labels, ReadOnlyArray)
     np.testing.assert_array_equal(
-        np.asarray(created["data"], dtype=object),
-        np.array(["AM-DSB", "BPSK"], dtype=object),
-    )
-
-
-def test_create_array_normalizes_object_arrays_to_strings() -> None:
-    """Object arrays of strings should be normalized before creation."""
-
-    class FakeStore:
-        def __init__(self) -> None:
-            """Initialize a fake store."""
-            self.created: dict[str, object] | None = None
-
-        @staticmethod
-        def default_index_chunks(num_values: int) -> tuple[int]:
-            """Choose fake index chunks.
-
-            Args:
-                num_values: Number of index values.
-
-            Returns:
-                One-dimensional chunk shape.
-            """
-            return (min(4096, max(1, num_values)),)
-
-        def create_array(
-            self,
-            group: object,
-            name: str,
-            data: object,
-            *,
-            overwrite: bool,
-            chunks: tuple[int, ...] | None = None,
-            shards: object = None,
-            compressors: object = "auto",
-            compressor: object = "auto",
-            serializer: object = "auto",
-        ) -> dict[str, object]:
-            """Create a fake array.
-
-            Args:
-                group: Parent group placeholder.
-                name: Array name.
-                data: Array data.
-                overwrite: Whether replacement is allowed.
-                chunks: Optional chunk shape.
-                shards: Optional shard shape.
-                compressors: Optional compressors configuration.
-                compressor: Optional single-compressor configuration.
-                serializer: Optional serializer configuration.
-
-            Returns:
-                Created array details.
-            """
-            del group, overwrite, shards, compressors, compressor
-            value_array = np.asarray(data)
-            if value_array.dtype.kind in {"U", "O"} and serializer == "auto":
-                value_array = value_array.astype(str).astype(object)
-                serializer = VLenUTF8Codec()
-            self.created = {
-                "name": name,
-                "data": value_array,
-                "chunks": chunks
-                or self.default_index_chunks(len(value_array)),
-                "serializer": serializer,
-            }
-            return self.created
-
-    recording = object.__new__(SigMFRecording)
-    # The fake stands in for the store and records the creation arguments.
-    recording._store = cast(SigMFZarrStore, FakeStore())
-
-    # The fake returns its record of the arguments instead of an array.
-    created = cast(
-        "dict[str, object]",
-        recording._create_array(
-            cast(Group, object()),
-            "labels",
-            np.array(["AM-DSB", "BPSK"], dtype=object),
-            overwrite=False,
-        ),
-    )
-
-    assert isinstance(created["serializer"], VLenUTF8Codec)
-    assert np.asarray(created["data"]).dtype.kind == "O"
-    np.testing.assert_array_equal(
-        np.asarray(created["data"], dtype=object),
-        np.array(["AM-DSB", "BPSK"], dtype=object),
+        updated_labels[:],
+        ["A much longer label", "caf\u00e9"],  # codespell:ignore
     )
 
 
@@ -1759,6 +1720,108 @@ def test_item_metadata_positions_must_be_integers(
     }
     assert recording.get_item_metadata(1) == {}
     assert store.verify_integrity()
+
+
+@pytest.mark.parametrize(
+    ("zarr_format", "compressor", "expected"),
+    [
+        (3, Blosc(cname="lz4", clevel=7, shuffle=Blosc.BITSHUFFLE), None),
+        (3, Zstd(level=4), None),
+        (3, GZip(level=3), None),
+        (2, GzipCodec(level=3), GZip(level=3)),
+        (2, ZstdCodec(level=4), Zstd(level=4)),
+    ],
+    ids=["v3-blosc", "v3-zstd", "v3-gzip", "v2-gzip", "v2-zstd"],
+)
+def test_compressors_translate_between_formats(
+    tmp_path: Path,
+    zarr_format: ZarrFormat,
+    compressor: object,
+    expected: object,
+) -> None:
+    """Equivalent compressors must work in both Zarr formats.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+        compressor: Compressor in the other format's representation.
+        expected: Format-2 numcodecs codec, or None for Zarr format 3.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=zarr_format
+    )
+    recording = store.recordings.create(
+        "rec",
+        sample_shape=(4,),
+        sample_compressor=cast(Any, compressor),
+        sample_checksum=None,
+    )
+    recording.set_samples(np.arange(4, dtype=np.float32))
+    extension = recording.add_extension_array(
+        "values", np.arange(8), compressor=cast(Any, compressor)
+    )
+    piped = recording.add_extension_array(
+        "piped", np.arange(8), compressors=cast(Any, compressor)
+    )
+    for array in (recording.samples, extension, piped):
+        codecs = cast(tuple[Any, ...], array.compressors)
+        assert len(codecs) == 1
+        if expected is not None:
+            assert codecs[0] == expected
+            continue
+        if isinstance(compressor, Blosc):
+            blosc = codecs[0]
+            assert isinstance(blosc, BloscCodec)
+            # Some zarr releases store these settings as enums, others as
+            # strings.
+            cname = getattr(blosc.cname, "value", blosc.cname)
+            shuffle = getattr(blosc.shuffle, "value", blosc.shuffle)
+            assert (cname, blosc.clevel, shuffle) == ("lz4", 7, "bitshuffle")
+        elif isinstance(compressor, Zstd):
+            assert codecs[0] == ZstdCodec(level=4)
+        else:
+            assert codecs[0] == GzipCodec(level=3)
+    np.testing.assert_array_equal(recording.samples[:], np.arange(4))
+    np.testing.assert_array_equal(extension[:], np.arange(8))
+
+
+@pytest.mark.parametrize(
+    ("zarr_format", "compressor", "match"),
+    [
+        (3, LZ4(), "numcodecs Blosc, Zstd, or GZip"),
+        (3, "zstd", "Zarr format 3"),
+        (2, {"name": "zstd"}, "numcodecs codec"),
+        (2, Crc32cCodec(), "GzipCodec"),
+    ],
+    ids=["v3-lz4", "v3-string", "v2-mapping", "v2-crc32c"],
+)
+def test_unsupported_compressors_name_accepted_forms(
+    tmp_path: Path,
+    zarr_format: ZarrFormat,
+    compressor: object,
+    match: str,
+) -> None:
+    """A compressor without an equivalent must raise one clear error.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+        compressor: Compressor with no equivalent in the format.
+        match: Expected part of the error message.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=zarr_format
+    )
+    with pytest.raises(ValueError, match=match):
+        store.recordings.create(
+            "rec", sample_shape=(4,), sample_compressor=cast(Any, compressor)
+        )
+    recording = store.recordings.create("other", sample_shape=(4,))
+    with pytest.raises(ValueError, match=match):
+        recording.add_extension_array(
+            "values", [1, 2], compressor=cast(Any, compressor)
+        )
+    assert "values" not in recording.extensions
 
 
 def test_set_global_field_rejects_unencodable_keys(tmp_path: Path) -> None:

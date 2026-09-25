@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from os import PathLike
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal, cast
 
 import numpy as np
@@ -47,7 +47,9 @@ from sigmf_zarr.store._collection import SigMFCollection
 from sigmf_zarr.store._common import (
     ChecksumName,
     ZarrFormat,
+    _check_array_dtype,
     _check_array_target,
+    _python_dimensions,
     _require_array,
     _validate_resource_name,
     index_marker_error,
@@ -195,7 +197,9 @@ class SigMFRecordings:
             overwrite: Whether to replace an existing recording.
             batched: Whether the sample array has a leading item axis.
             recording_cls: Recording wrapper class to instantiate.
-            sample_dtype: Element dtype of the sample array.
+            sample_dtype: Element dtype of the sample array: a Boolean,
+                integer, floating-point, or complex dtype. A big-endian
+                dtype is stored and recorded in little-endian byte order.
             sample_axes: Optional axis names for `sample_shape`.
             global_metadata: SigMF-like global metadata.
             captures: Capture metadata.
@@ -203,7 +207,8 @@ class SigMFRecordings:
             channel_metadata: Optional metadata for each channel.
             sample_chunks: Optional sample chunk shape.
             sample_shards: Optional sample shard shape.
-            sample_compressor: Optional sample compressor.
+            sample_compressor: Optional sample compressor. Accepted forms
+                follow :meth:`SigMFZarrStore.create_array`.
             sample_checksum: Optional chunk-level sample checksum.
 
         Returns:
@@ -1087,10 +1092,9 @@ class SigMFZarrStore:
         name: str,
         values: npt.NDArray[Any],
         *,
-        chunks: tuple[int, ...],
+        chunks: tuple[int, ...] | Literal["auto"],
         shards: ShardsLike | None,
         compressors: CompressorsLike,
-        compressor: CompressorLike,
         serializer: SerializerLike,
         string_data: bool,
     ) -> Array[Any]:
@@ -1100,10 +1104,9 @@ class SigMFZarrStore:
             group: Parent group.
             name: Array name within `group`.
             values: Values used to initialize the array.
-            chunks: Logical chunk shape.
+            chunks: Logical chunk shape, or `"auto"` for Zarr's choice.
             shards: Optional physical shard shape.
             compressors: Compressor pipeline configuration.
-            compressor: Optional single-compressor compatibility setting.
             serializer: Array serializer configuration.
             string_data: Whether values require variable-length UTF-8 storage.
 
@@ -1118,10 +1121,9 @@ class SigMFZarrStore:
                 chunks=chunks,
                 shards=shards,
                 compressors=compressors,
-                compressor=compressor,
                 serializer=serializer,
             )
-            array[:] = values
+            array[...] = values
             return array
         return group.create_array(
             name,
@@ -1129,7 +1131,6 @@ class SigMFZarrStore:
             chunks=chunks,
             shards=shards,
             compressors=compressors,
-            compressor=compressor,
             serializer=serializer,
         )
 
@@ -1148,6 +1149,13 @@ class SigMFZarrStore:
     ) -> Array[Any]:
         """Create one array under a group, optionally at a nested path.
 
+        Each compressor is `"auto"`, `None`, or a codec. Both formats
+        accept numcodecs `Blosc`, `Zstd`, and `GZip` instances and
+        `zarr.codecs` `BloscCodec`, `ZstdCodec`, and `GzipCodec` instances,
+        translated to the equivalent codec of the store's format. Zarr format
+        2 also accepts any other numcodecs codec. Zarr format 3 also accepts
+        any other bytes-to-bytes codec and codec mappings.
+
         Args:
             group: Parent group in which to create the array.
             name: Array name or nested relative path under `group`.
@@ -1155,86 +1163,166 @@ class SigMFZarrStore:
             overwrite: Whether an existing array at the same path may be
                 replaced.
             chunks: Optional chunk shape for the created array. When
-                omitted, one-dimensional index-style chunks are used.
-            shards: Optional shard shape passed through to Zarr.
-            compressors: Optional compressors configuration passed through
-                to Zarr.
-            compressor: Optional single-compressor configuration passed
-                through to Zarr.
+                omitted, a one-dimensional array uses chunks of at most 4096
+                values, and an array of any other rank uses Zarr's automatic
+                chunk shape. A zero-dimensional array has one chunk.
+            shards: Optional shard shape passed through to Zarr. Requires
+                Zarr format 3.
+            compressors: Optional compressor, or sequence of compressors,
+                applied in order. Zarr format 2 accepts at most one.
+            compressor: Optional single compressor. Specify at most one of
+                `compressors` and `compressor`.
             serializer: Optional serializer configuration passed through
-                to Zarr.
+                to Zarr. Requires Zarr format 3.
 
         Returns:
             The created Zarr array.
 
         Raises:
-            ValueError: If the target array already exists and
-                `overwrite` is false, or an encoding available only in Zarr
-                format 3 is requested for a Zarr format 2 store.
+            ValueError: If `name` is empty or has an empty, `.`, or `..`
+                segment, `data` has a structured or void dtype, an object
+                array holds a value that is not a string, the target array
+                already exists and `overwrite` is false, `overwrite` targets
+                an existing group, an encoding available only in Zarr format
+                3 is requested for a Zarr format 2 store, or a compressor has
+                no equivalent in the store's format.
         """
-        self._invalidate_metadata_integrity()
-        name_path = Path(name)
-        array_name = name_path.name
-        array_group = (
-            group
-            if name_path.parent == Path(".")
-            else group.require_group(str(name_path.parent))
-        )
-
-        if array_name in array_group:
-            if overwrite:
-                del array_group[array_name]
-            else:
-                raise ValueError(
-                    f"Array {name!r} already exists. Pass overwrite=True "
-                    "to replace it"
-                )
-
+        _check_array_target(group, name, kind="Array", overwrite=overwrite)
+        chunks = _python_dimensions(chunks)
+        shards = _python_dimensions(shards)
         value_array = np.asarray(data)
-
-        string_data = value_array.dtype.kind in {"U", "O"}
-        if string_data and serializer == "auto":
-            # Object arrays let the variable-length UTF-8 codecs own the wire
-            # representation instead of fixing a NumPy Unicode width.
-            value_array = value_array.astype(str).astype(object)
-            if self.zarr_format == 3:
-                serializer = VLenUTF8Codec()
-
-        resolved_chunks = chunks
-        if resolved_chunks is None:
-            resolved_chunks = self.default_index_chunks(len(value_array))
-
-        if self.zarr_format == 2:
-            if shards is not None:
-                raise ValueError(
-                    "Array sharding requires Zarr format 3. Omit shards or "
-                    "create a Zarr format 3 store"
-                )
-            if serializer != "auto":
-                raise ValueError("Explicit serializers require Zarr format 3")
-            resolved_compressor = type(self)._compressor_v2(
-                compressors=compressors,
-                compressor=compressor,
+        _check_array_dtype(value_array.dtype)
+        # Object arrays are stored as UTF-8 text. Converting other objects
+        # with str() would store 7 as "7" and None as "None".
+        if value_array.dtype.kind == "O" and not all(
+            isinstance(value, str) for value in value_array.flat
+        ):
+            raise ValueError(
+                "Object array values must be strings. Encode other values, "
+                "such as JSON objects, as strings with json.dumps()"
             )
-            return type(self)._create_array_v2(
-                array_group,
-                array_name,
-                value_array,
-                chunks=resolved_chunks,
-                compressor=resolved_compressor,
-                string_data=string_data,
-            )
-
-        return type(self)._create_array_v3(
-            array_group,
-            array_name,
-            value_array,
-            chunks=resolved_chunks,
+        # Resolve every encoding option before the transaction, so a rejected
+        # option neither invalidates hashes nor moves an existing array.
+        compressors, compressor = self._resolve_encoding(
             shards=shards,
             compressors=compressors,
             compressor=compressor,
             serializer=serializer,
-            string_data=string_data,
+        )
+        with replacement_transaction(
+            group,
+            name,
+            overwrite=overwrite,
+            parents=(self._refresh_root(),),
+        ):
+            self._invalidate_metadata_integrity()
+            # Zarr paths always use "/" separators, independently of the OS.
+            name_path = PurePosixPath(name)
+            array_name = name_path.name
+            array_group = (
+                group
+                if name_path.parent == PurePosixPath(".")
+                else group.require_group(str(name_path.parent))
+            )
+
+            if array_name in array_group:
+                if overwrite:
+                    del array_group[array_name]
+                else:
+                    raise ValueError(
+                        f"Array {name!r} already exists. Pass overwrite=True "
+                        "to replace it"
+                    )
+
+            string_data = value_array.dtype.kind in {"U", "O"}
+            if string_data and serializer == "auto":
+                # UTF-8 codecs own the wire representation instead of fixing
+                # a NumPy Unicode width. Object values are already strings.
+                # Converting them through dtype `U` would strip trailing NUL
+                # characters.
+                value_array = (
+                    value_array.copy()
+                    if value_array.dtype.kind == "O"
+                    else value_array.astype(object)
+                )
+                if self.zarr_format == 3:
+                    serializer = VLenUTF8Codec()
+
+            resolved_chunks: tuple[int, ...] | Literal["auto"]
+            if chunks is not None:
+                resolved_chunks = chunks
+            elif value_array.ndim == 1:
+                resolved_chunks = self.default_index_chunks(len(value_array))
+            else:
+                # Zarr's automatic shape bounds the chunk size for any rank.
+                # A zero-dimensional array has a single chunk.
+                resolved_chunks = "auto"
+
+            if self.zarr_format == 2:
+                return type(self)._create_array_v2(
+                    array_group,
+                    array_name,
+                    value_array,
+                    chunks=resolved_chunks,
+                    compressor=compressor,
+                    string_data=string_data,
+                )
+
+            return type(self)._create_array_v3(
+                array_group,
+                array_name,
+                value_array,
+                chunks=resolved_chunks,
+                shards=shards,
+                compressors=compressors,
+                serializer=serializer,
+                string_data=string_data,
+            )
+
+    def _resolve_encoding(
+        self,
+        *,
+        shards: ShardsLike | None,
+        compressors: CompressorsLike,
+        compressor: CompressorLike,
+        serializer: SerializerLike,
+    ) -> tuple[CompressorsLike, CompressorLike]:
+        """Check encoding options and translate compressors for this store.
+
+        Args:
+            shards: Optional shard shape.
+            compressors: Compressor or compressor pipeline.
+            compressor: Single compressor configuration.
+            serializer: Serializer configuration.
+
+        Returns:
+            Compressor pipeline and single compressor for Zarr. In Zarr
+            format 2 the pipeline is `"auto"` and the single compressor is
+            a numcodecs codec. In Zarr format 3 the single compressor is
+            `"auto"`.
+
+        Raises:
+            ValueError: If an encoding available only in Zarr format 3 is
+                requested for a Zarr format 2 store, both compressor settings
+                are supplied, or a compressor has no equivalent in the
+                store's format.
+        """
+        if self.zarr_format == 3:
+            return (
+                type(self)._compressors_v3(
+                    compressors=compressors, compressor=compressor
+                ),
+                "auto",
+            )
+        if shards is not None:
+            raise ValueError(
+                "Array sharding requires Zarr format 3. Omit shards "
+                "or create a Zarr format 3 store"
+            )
+        if serializer != "auto":
+            raise ValueError("Explicit serializers require Zarr format 3")
+        return "auto", type(self)._compressor_v2(
+            compressors=compressors, compressor=compressor
         )
 
     @classmethod
@@ -1265,13 +1353,64 @@ class SigMFZarrStore:
             )
         if compressors is None:
             return None
-        if not isinstance(compressors, Sequence) or len(compressors) != 1:
+        if not isinstance(compressors, Iterable) or isinstance(
+            compressors, str | Mapping
+        ):
+            return SigMFRecording._sample_compressor_v2(
+                cast(CompressorLike, compressors)
+            )
+        pipeline = list(compressors)
+        if len(pipeline) != 1:
             raise ValueError(
                 "Zarr format 2 supports one compressor, not a compressor "
                 "pipeline"
             )
         return SigMFRecording._sample_compressor_v2(
-            cast(CompressorLike, compressors[0])
+            cast(CompressorLike, pipeline[0])
+        )
+
+    @classmethod
+    def _compressors_v3(
+        cls,
+        *,
+        compressors: CompressorsLike,
+        compressor: CompressorLike,
+    ) -> CompressorsLike:
+        """Resolve generic array compression for Zarr format 3.
+
+        Args:
+            compressors: Compressor or compressor pipeline.
+            compressor: Single compressor configuration.
+
+        Returns:
+            A Zarr format 3 compressor pipeline configuration.
+
+        Raises:
+            ValueError: If both settings are supplied, or a codec cannot be
+                represented in Zarr format 3.
+        """
+        if compressor != "auto":
+            if compressors != "auto":
+                raise ValueError(
+                    "Specify either compressors or compressor, not both"
+                )
+            # A single compressor is a one-codec pipeline. Passing it as
+            # `compressors` avoids Zarr's deprecated `compressor` argument.
+            compressors = cast(
+                CompressorsLike, () if compressor is None else (compressor,)
+            )
+        if compressors == "auto" or compressors is None:
+            return compressors
+        if not isinstance(compressors, Iterable) or isinstance(
+            compressors, str | Mapping
+        ):
+            compressors = cast(CompressorsLike, (compressors,))
+        return cast(
+            CompressorsLike,
+            tuple(
+                SigMFRecording._compressor_v3(codec)
+                for codec in cast(Iterable[object], compressors)
+            ),
         )
 
     def add_index(

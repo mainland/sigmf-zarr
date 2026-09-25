@@ -452,17 +452,42 @@ Re-run `store.update_integrity()` after completing a series of changes.
 
 ## Mutation and failure behavior
 
-Replacing a recording or collection with `overwrite=True` preserves the old
-resource and ancestor metadata until creation, data writes, and validation
-finish. If any of these steps raises an exception, the operation restores the
-old resource. If restoration also fails, an `OSError` identifies retained
-recovery files. Local replacements move the old directory to a backup on the
-same filesystem. Other writable, listable backends copy encoded objects to
-temporary disk storage, using memory proportional to one encoded object.
+Replacing a recording, collection, index, extension array, or item metadata
+array with `overwrite=True` preserves the old resource and ancestor metadata
+until creation, data writes, and validation finish. If any of these steps
+raises an exception, the operation restores the old resource. Zarr performs
+some writes concurrently, so restoration first waits for every write that the
+failed step started. After a `KeyboardInterrupt`, the exception propagates only
+after the interrupted writes finish. If restoration also fails, an `OSError`
+identifies retained recovery files. Local replacements move the old directory
+to a backup on the same filesystem, and restoration moves it back, so neither
+step needs free disk space. Other writable, listable backends copy
+encoded objects to temporary disk storage, using memory proportional to one
+encoded object.
 
-Creating a recording or collection follows the same boundary. If creation
-fails, the operation removes the partial resource and restores any ancestor
-hashes it invalidated, so the name remains available.
+In a local directory store, `store.recordings.remove()` follows the same
+boundary. If the store hash update fails, the recording moves back and the
+store hash is restored. Other backends remove the store hash and then delete
+the recording directly, without a backup, so removal does not copy the
+recording. They delete the recording group's own metadata last. If the
+deletion fails, the recording remains listed with part of its content.
+`validate_store()` reports such a partial recording. Call `remove()` again to
+finish the removal.
+
+A failed write outside these boundaries, or another tool, can leave objects
+under `recordings/<name>/` or `collections/<name>/` without the group's
+metadata. Such orphan objects form no resource. Opening the name raises
+`KeyError` and never writes or deletes anything. `store.recordings.remove()`
+deletes orphan objects under a recording name when the store can list them.
+
+Creating a recording, collection, index, extension array, or item metadata
+array follows the same boundary. If creation fails, the operation removes the
+partial resource and restores any ancestor hashes it invalidated, so the name
+remains available. On a store that can list its objects, creation requires
+that no orphan objects exist under the new name, so rollback never deletes an
+object that the operation did not write. Without `overwrite=True`, orphan
+objects make creation raise `ValueError`. With `overwrite=True`, creation
+replaces them like an existing resource.
 
 Callers must serialize access during replacement. This rollback boundary does
 not provide concurrent-reader snapshots or recovery from process crashes.
