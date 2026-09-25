@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from concurrent.futures import CancelledError
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 import pytest
+from zarr.core.array import Array
 
+from sigmf_zarr.store import SigMFZarrStore
+from sigmf_zarr.viewer import DatasetSource
 from sigmf_zarr.viewer.overview import summarize_peaks, summarize_signal
 from sigmf_zarr.viewer.windows import WindowFunction
 
@@ -152,3 +159,74 @@ def test_reduction_handles_invalid_frames_and_input() -> None:
     ):
         with pytest.raises(ValueError):
             summarize_signal([samples], 128, **settings)
+
+
+def test_overview_reads_bounded_blocks_and_cancels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Long source reads must cover all samples in bounded, cancellable blocks.
+
+    Args:
+        tmp_path: Temporary store directory.
+        monkeypatch: Array-read observer.
+    """
+    path = tmp_path / "long.zarr"
+    store = SigMFZarrStore.create(path)
+    recording = store.recordings.open(
+        "long",
+        batched=False,
+        sample_dtype="complex64",
+        sample_shape=(150000,),
+        sample_axes=("time",),
+    )
+    recording.set_samples(np.full(150000, 3 + 4j, dtype=np.complex64))
+    source = DatasetSource(path)
+    original = Array.__getitem__
+    reads: list[slice] = []
+
+    def observe(
+        array: Array, selection: Any, *args: Any, **kwargs: Any
+    ) -> Any:
+        """Record sample-array slices before delegating to Zarr."""
+        if array.path.endswith("samples"):
+            reads.append(selection[0])
+        return original(array, selection, *args, **kwargs)
+
+    monkeypatch.setattr(Array, "__getitem__", observe)
+    result = source.read_overview("long", start=7, count=140000)
+    assert reads == [
+        slice(7, 8),
+        slice(7, 65543),
+        slice(65543, 131079),
+        slice(131079, 140007),
+    ]
+    assert result.context.start == 7
+    assert result.context.samples.size == 0
+    assert result.signal.count == 140000
+    assert result.signal.mean_power == 25
+    assert result.signal.peak_magnitude == 5
+    assert result.signal.power.shape == (512, 256)
+    reads.clear()
+    with pytest.raises(CancelledError):
+        source.read_overview(
+            "long", count=140000, cancelled=lambda: len(reads) >= 2
+        )
+    assert reads == [slice(0, 1), slice(0, 65536)]
+    with pytest.raises(IndexError):
+        source.read_overview("long", start=100000, count=100000)
+    reads.clear()
+    peaks = source.read_peaks("long", start=7, count=140000)
+    assert reads == [
+        slice(7, 65543),
+        slice(65543, 131079),
+        slice(131079, 140007),
+    ]
+    np.testing.assert_array_equal(peaks, np.full(1024, 5))
+    reads.clear()
+    with pytest.raises(CancelledError):
+        source.read_peaks("long", count=140000, cancelled=lambda: bool(reads))
+    assert reads == [slice(0, 65536)]
+    with pytest.raises(IndexError):
+        source.read_peaks("long", start=100000, count=100000)
+    with pytest.raises(ValueError):
+        source.read_peaks("long", count=0)
