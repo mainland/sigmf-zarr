@@ -191,6 +191,9 @@
    :members:
    :undoc-members:
 
+.. automodule:: sigmf_zarr.cli.view
+   :members:
+   :undoc-members:
 ```
 
 ## Optional PyTorch adapter
@@ -198,6 +201,11 @@
 `sigmf_zarr.pytorch.RecordingDataset` provides dense map-style loading, and
 `RecordingItem` defines its typed item mapping. See [PyTorch datasets](pytorch.md)
 for constructor options, transforms, worker handling, and validation.
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.pytorch
+   :members:
+```
 
 ## Index queries
 
@@ -215,6 +223,52 @@ for language syntax and execution semantics.
 .. automodule:: sigmf_zarr.filtering
    :members:
 ```
+
+## Optional viewer
+
+```{eval-rst}
+.. automodule:: sigmf_zarr.viewer.data
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.overview
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.windows
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.regions
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.captures
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.presentation
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.overlays
+   :members:
+   :exclude-members: set
+
+.. automodule:: sigmf_zarr.viewer.plots
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.timeline
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.region_qt
+   :members:
+
+.. automodule:: sigmf_zarr.viewer.qt
+   :members:
+
+.. autoclass:: sigmf_zarr.viewer.qt.PlotToolbar
+```
+
+`sigmf_zarr.viewer.qt.DatasetViewer` provides an embeddable Qt browser,
+and `MatplotlibPanel` hosts consumer-supplied plotting functions.
+`sigmf_zarr.viewer.timeline.RangeSelector` provides a reusable integer range
+selector independent of dataset access. See
+[Dataset viewer](viewer.md) for extension contracts and complete examples.
 
 ## Experiment manifests
 

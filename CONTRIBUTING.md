@@ -8,7 +8,7 @@ Use Python 3.12 or newer and the repository `uv.lock` file:
 ```bash
 uv sync
 .venv/bin/pre-commit install
-.venv/bin/python -m pytest
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest
 .venv/bin/pre-commit run --all-files
 .venv/bin/python -m sphinx -W --keep-going -b html docs docs/_build/html
 uv build

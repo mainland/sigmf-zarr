@@ -139,3 +139,6 @@ therefore scales with the matches, one batch and one stored chunk of index
 values, the encoded item JSON of one stored chunk, the shared metadata, and one
 decoded item. JMESPath requires the `query` extra. This optional JSON facility
 is separate from the core index query language.
+
+The [dataset viewer](viewer.md) uses the same query module. Its **Displayed
+indexes** selection affects presentation only and does not restrict queries.

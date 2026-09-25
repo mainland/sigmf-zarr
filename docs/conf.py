@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from importlib.metadata import version as package_version
+from importlib.util import find_spec
 
 project = "SigMF-Zarr"
 author = "Geoffrey Mainland"
@@ -35,6 +36,15 @@ myst_enable_extensions = [
     "deflist",
 ]
 
+# The tox documentation environment installs no optional extras. Mock only
+# the missing ones, because the import hook of an installed PySide6 fails on
+# mocked Matplotlib modules.
+autodoc_mock_imports = [
+    name
+    for name in ("PySide6", "matplotlib", "torch")
+    if find_spec(name) is None
+]
+
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 autodoc_typehints_format = "short"
@@ -49,6 +59,7 @@ nitpick_ignore = [
     # NumPy documents its scalar types as attributes, not classes.
     ("py:class", "numpy.complex64"),
     ("py:class", "numpy.float32"),
+    ("py:class", "numpy.float64"),
     ("py:class", "numpy.int16"),
     ("py:class", "numpy.int64"),
     # zarr does not document these configuration types and aliases.
@@ -58,16 +69,25 @@ nitpick_ignore = [
     ("py:class", "zarr.core.array.ShardsLike"),
     ("py:class", "zarr.core.array_spec.ArrayConfig"),
     ("py:class", "zarr.core.array_spec.ArrayConfigParams"),
+    # Matplotlib documents its Qt canvas only in prose. Autodoc leaves the
+    # name unqualified in one signature that it cannot evaluate.
+    ("py:class", "FigureCanvasQTAgg"),
+    ("py:class", "matplotlib.backends.backend_qtagg.FigureCanvasQTAgg"),
     # Autodoc cannot evaluate annotations that name imports made only for
     # type checking, so it leaves every name in them unqualified.
     ("py:class", "AccessModeLiteral"),
     ("py:class", "Array"),
+    ("py:class", "Colormap"),
     ("py:class", "CompressorLike"),
     ("py:class", "Figure"),
     ("py:class", "Group"),
     ("py:class", "PathLike"),
+    ("py:class", "QScrollBar"),
+    ("py:class", "QWidget"),
     ("py:class", "ShardsLike"),
     ("py:class", "StoreLike"),
+    ("py:class", "Tensor"),
+    ("py:class", "WindowFunction"),
     ("py:class", "np.intp"),
     ("py:class", "npt.DTypeLike"),
     ("py:class", "npt.NDArray"),
@@ -84,10 +104,17 @@ nitpick_ignore = [
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
+    "matplotlib": ("https://matplotlib.org/stable/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
+    "PySide6": ("https://doc.qt.io/qtforpython-6/", None),
+    "torch": ("https://docs.pytorch.org/docs/stable/", None),
     "zarr": ("https://zarr.readthedocs.io/en/stable/", None),
 }
 
-# NumPy's public typing aliases resolve to private modules whose paths change
-# between NumPy releases.
-nitpick_ignore_regex = [("py:class", r"numpy\._typing\..*")]
+nitpick_ignore_regex = [
+    # NumPy's public typing aliases resolve to private modules whose paths
+    # change between NumPy releases.
+    ("py:class", r"numpy\._typing\..*"),
+    # Annotations that name mocked PySide6 widgets lose their module.
+    ("py:class", r"Q[A-Z][A-Za-z]*"),
+]
