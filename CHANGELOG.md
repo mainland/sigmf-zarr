@@ -113,7 +113,14 @@ complete.
 - Add a RadioML VT-CNN2 training example with seeded modulation/SNR-stratified
   splits, CPU target transforms, spawn workers, and validation accuracy by SNR.
 
+### Desktop viewer
+
+- Add an optional Qt viewer that opens stores read-only and plots waveforms,
+  constellations, spectra, and spectrograms with capture-aware overlays.
+- Interpret shared and per-item captures, including independent and
+  fractional timestamps, when computing plot time coordinates.
+
 ### Command line
 
 - Provide the `sigmf-zarr` command for store inspection, validation, integrity
-  updates, SigMF interchange, and dataset import.
+  updates, SigMF interchange, dataset import, and the desktop viewer.
