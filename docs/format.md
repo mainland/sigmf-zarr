@@ -256,6 +256,26 @@ adds a capture entry to `captures`. If the entry does not already include
 - For unbatched recordings, `core:sample_start` defaults to `core:offset`
   (zero when absent) plus the old `time` sample count
 
+For independently acquired items, `append_samples(..., item_captures=...)`
+accepts one capture list or `None` per appended item. Each list is stored in
+that item's `item_metadata` bundle. An item may have multiple captures with
+distinct timestamps and acquisition settings. The writer does not broadcast
+timestamps or infer temporal continuity between items or captures.
+
+The first capture in each supplied list defaults `core:sample_start` to the
+item's resolved `core:offset`, or zero when absent. Later captures must specify
+`core:sample_start`. Starts must be nonnegative integers in the item's source
+time-sample coordinates. Explicit starts are preserved. A `None` entry adds
+no captures, and an empty list supplies an empty per-item capture list.
+
+`item_captures` is valid only for batched recordings and must have the same
+length as the appended batch. It may accompany shared `capture` metadata and
+per-item `global` or `annotations` metadata. An item must not supply captures
+through both `item_captures` and `item_metadata`. A `None` entry in
+`item_captures` leaves captures supplied through `item_metadata` unchanged.
+The writer validates and copies the supplied metadata before changing samples,
+metadata arrays, indexes, or integrity state.
+
 Unbatched appends extend the explicit `time` axis and update
 `sigmf-zarr:sample-shape`. Batched appends extend the leading runtime `item`
 axis and keep `sigmf-zarr:sample-shape` unchanged.

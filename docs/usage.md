@@ -169,6 +169,52 @@ For unbatched recordings, appends extend the `time` axis. If
 with the old time sample count. For batched recordings, appends extend the
 leading `item` axis and `core:sample_start` defaults to the old item count.
 
+For independently acquired items, supply `item_captures` with one capture list
+per appended item. Use multiple captures within a list for transitions or
+acquisition gaps within one item:
+
+```python
+import numpy as np
+
+from sigmf_zarr import SigMFZarrStore
+
+with SigMFZarrStore.create("captured.zarr", overwrite=True) as captured_store:
+    captured = captured_store.recordings.create(
+        "snippets",
+        batched=True,
+        sample_dtype=np.complex64,
+        sample_shape=(1024,),
+        sample_axes=("time",),
+        global_metadata={"core:sample_rate": 1_000_000.0},
+    )
+    captured.append_samples(
+        np.zeros((2, 1024), dtype=np.complex64),
+        capture={"core:frequency": 915_000_000.0},
+        item_captures=[
+            [{"core:datetime": "2026-09-25T12:00:10.123456789Z"}],
+            [
+                {"core:datetime": "2026-09-25T12:00:02Z"},
+                {
+                    "core:sample_start": 512,
+                    "core:datetime": "2026-09-25T12:00:03Z",
+                },
+            ],
+        ],
+    )
+```
+
+The example stores a separate timestamp for each item and a later capture
+within the second item. The first capture in each list defaults to time-sample
+position zero, or the item's resolved `core:offset` when present. Later
+captures must provide explicit starts. The writer does not infer missing
+capture timestamps.
+
+Use `None` for an item with no capture list to add. Use `item_metadata`
+alongside `item_captures` for per-item globals or annotations. For a given
+item, supply captures through only one of those arguments. Both arguments
+must have one entry per appended item. All metadata is validated before
+storage changes.
+
 ## Metadata indexes
 
 Indexes are dense one-dimensional arrays aligned with a runtime sample axis.
@@ -260,9 +306,9 @@ not individual scalar entries. All `item_metadata` chunks use CRC32C so normal
 reads detect physical corruption before JSON is accepted.
 
 The metadata list must contain one entry per appended item. If a recording
-already has item metadata, appending without `item_metadata` adds empty objects
-to keep the array aligned. Prefer typed indexes for dense scalar values such as
-class IDs and SNRs.
+already has item metadata, appending without `item_metadata` or `item_captures`
+adds empty objects to keep the array aligned. Prefer typed indexes for dense
+scalar values such as class IDs and SNRs.
 
 ## Channel metadata
 
