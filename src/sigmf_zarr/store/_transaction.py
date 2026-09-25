@@ -7,7 +7,7 @@ import shutil
 import tempfile
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, nullcontext
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from zarr.abc.store import Store
 from zarr.core.buffer import default_buffer_prototype
@@ -86,15 +86,19 @@ def _creation_transaction(
         Control to the creating operation.
     """
     attributes = [(parent, parent.attrs.asdict()) for parent in parents]
+    cleanup_name = name
+    for ancestor in reversed(PurePosixPath(name).parents):
+        if ancestor != PurePosixPath(".") and str(ancestor) not in group:
+            cleanup_name = str(ancestor)
+            break
     try:
         yield
     except BaseException:
-        # Leave the name available and restore any invalidated ancestor
-        # hashes, because the store content is unchanged. Reopen parents to
-        # observe hash changes made through other handles. Compare first to
-        # avoid writes to an unchanged read-only store.
-        if name in group:
-            del group[name]
+        # Remove the first new ancestor with all partially created descendants.
+        # Reopen parents to observe hash changes made through other handles.
+        # Compare first to avoid writes to an unchanged read-only store.
+        if cleanup_name in group:
+            del group[cleanup_name]
         for parent, attrs in attributes:
             current = Group.open(
                 parent.store_path, zarr_format=parent.metadata.zarr_format
