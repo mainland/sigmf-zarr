@@ -256,6 +256,23 @@ adds a capture entry to `captures`. If the entry does not already include
 - For unbatched recordings, `core:sample_start` defaults to `core:offset`
   (zero when absent) plus the old `time` sample count
 
+In a batched recording, shared capture starts index items. The capture with
+the greatest `core:sample_start` at or before an item supplies its shared
+capture fields until the next shared capture. Duplicate starts use the last
+entry. A shared `core:datetime` timestamps the first stored time sample of the
+item at that offset. A shared `core:global_index` also applies only to that
+item. Neither source anchor extends to subsequent items.
+Items are independent examples and need not be consecutive in time.
+
+Per-item capture starts are absolute sample indices. `core:offset` gives the
+index of the item's first stored time sample. Captures describe transitions
+within the signal and take precedence over shared captures at duplicate time
+positions. The resolved signal view uses shared capture fields as defaults for
+each per-item capture, except for `core:datetime`, `core:global_index`, and
+`core:sample_start`. Each per-item source anchor must be supplied explicitly.
+Shared and per-item annotations retain time-sample
+coordinates. Stored metadata and the JSON resolution rules remain unchanged.
+
 For independently acquired items, `append_samples(..., item_captures=...)`
 accepts one capture list or `None` per appended item. Each list is stored in
 that item's `item_metadata` bundle. An item may have multiple captures with

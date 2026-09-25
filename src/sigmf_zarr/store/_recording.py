@@ -59,6 +59,7 @@ from sigmf_zarr.store._common import (
 from sigmf_zarr.store._transaction import replacement_transaction
 
 if TYPE_CHECKING:
+    from sigmf_zarr.signals import SignalView
     from sigmf_zarr.store._container import SigMFZarrStore
 
 
@@ -2407,6 +2408,22 @@ class SigMFRecording:
             self._item_metadata_array[normalized_index],
             item_index=normalized_index,
         )
+
+    def signal(self, item_index: int | None = None) -> SignalView:
+        """Resolve one signal's layout, captures, and bounded sample access.
+
+        Args:
+            item_index: Nonnegative item for a batch, otherwise None.
+
+        Returns:
+            Signal view with detached metadata in absolute sample coordinates.
+
+        Raises:
+            ValueError: If the selection or metadata coordinates are invalid.
+        """
+        from sigmf_zarr.signals import SignalView
+
+        return SignalView(self, item_index)
 
     def resolved_item_metadata(self, item_index: int) -> JSONObject:
         """Resolve shared recording metadata for one batch item.

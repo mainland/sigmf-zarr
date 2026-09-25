@@ -168,6 +168,8 @@ For unbatched recordings, appends extend the `time` axis. If
 `core:sample_start` is omitted from the capture metadata, SigMF-Zarr fills it
 with the old time sample count. For batched recordings, appends extend the
 leading `item` axis and `core:sample_start` defaults to the old item count.
+A shared capture timestamp applies only to the item at that offset. It does
+not establish timestamps for later items.
 
 For independently acquired items, supply `item_captures` with one capture list
 per appended item. Use multiple captures within a list for transitions or
@@ -245,6 +247,23 @@ recording.add_index(
 
 Index length must match the selected runtime axis. For example, an `item`
 index on a batched recording with `16` items must have length `16`.
+
+## Resolved signal access
+
+`recording.signal()` resolves an unbatched recording.
+`recording.signal(item_index=0)` resolves one explicit batch item. The resulting
+`SignalView` exposes named axes, shape, dtype, sample rate, source offset,
+capture segments, and detached metadata. Its `read_samples(start, stop)` method
+reads a bounded range in stored time coordinates and preserves per-signal axis
+order. It never reads neighboring items. Starts and stops use local stored
+positions even when `core:offset` is nonzero.
+
+The view resolves per-item overrides and translates the applicable shared
+capture from item offsets to the signal's source sample coordinates. It retains
+explicit source anchors without inferring timestamps or global indices. The
+recording's raw metadata remains available separately. Keep the recording open
+and unchanged while using a view. Detached metadata does not freeze sample
+storage.
 
 ## Per-item metadata
 
