@@ -19,6 +19,7 @@ from sigmf_zarr.integrity import (
 from sigmf_zarr.json import JSONObject, json_object
 from sigmf_zarr.readonly import ReadOnlyGroup
 from sigmf_zarr.store._common import _validate_resource_name
+from sigmf_zarr.store._transaction import replacement_transaction
 
 if TYPE_CHECKING:
     from sigmf_zarr.store._container import SigMFZarrStore
@@ -73,13 +74,19 @@ class SigMFCollection:
         _validate_resource_name(collection_name, kind="Collection")
         self._store = store
         self._collection_name = collection_name
-        self._ensure_exists(
-            create=create,
+        with replacement_transaction(
+            store._collections_group,
+            collection_name,
             overwrite=overwrite,
-            metadata=metadata,
-            recording_ids=recording_ids,
-        )
-        self._validate()
+            parents=(store._refresh_root(),),
+        ):
+            self._ensure_exists(
+                create=create,
+                overwrite=overwrite,
+                metadata=metadata,
+                recording_ids=recording_ids,
+            )
+            self._validate()
 
     def _validate(self) -> None:
         """Validate collection metadata and recording references.

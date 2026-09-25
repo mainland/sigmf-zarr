@@ -56,6 +56,7 @@ from sigmf_zarr.store._common import (
     ZarrFormat,
     _validate_resource_name,
 )
+from sigmf_zarr.store._transaction import replacement_transaction
 
 if TYPE_CHECKING:
     from sigmf_zarr.store._container import SigMFZarrStore
@@ -250,27 +251,33 @@ class SigMFRecording:
         _validate_resource_name(recording_name, kind="Recording")
         self._store = store
         self._recording_name = recording_name
-        self._ensure_exists(
-            create=create,
+        with replacement_transaction(
+            store._recordings_group,
+            recording_name,
             overwrite=overwrite,
-            batched=batched,
-            sample_dtype=sample_dtype,
-            sample_shape=sample_shape,
-            sample_axes=sample_axes,
-            global_metadata=global_metadata,
-            captures=captures,
-            annotations=annotations,
-            channel_metadata=channel_metadata,
-            sample_chunks=sample_chunks,
-            sample_shards=sample_shards,
-            sample_compressor=sample_compressor,
-            sample_checksum=sample_checksum,
-        )
-        self._validate_metadata_attrs()
-        self._validate_sample_array_shape()
-        self._validate_item_metadata_array()
-        self._validate_channel_metadata_groups()
-        self._validate_sample_checksum()
+            parents=(store._refresh_root(),),
+        ):
+            self._ensure_exists(
+                create=create,
+                overwrite=overwrite,
+                batched=batched,
+                sample_dtype=sample_dtype,
+                sample_shape=sample_shape,
+                sample_axes=sample_axes,
+                global_metadata=global_metadata,
+                captures=captures,
+                annotations=annotations,
+                channel_metadata=channel_metadata,
+                sample_chunks=sample_chunks,
+                sample_shards=sample_shards,
+                sample_compressor=sample_compressor,
+                sample_checksum=sample_checksum,
+            )
+            self._validate_metadata_attrs()
+            self._validate_sample_array_shape()
+            self._validate_item_metadata_array()
+            self._validate_channel_metadata_groups()
+            self._validate_sample_checksum()
 
     def _validate_metadata_attrs(self) -> None:
         """Validate recording JSON attributes and stored dtype metadata.
@@ -473,6 +480,12 @@ class SigMFRecording:
             sample_axes=normalized_axes,
             channel_metadata=channel_metadata,
         )
+        # Reject malformed caller metadata before writing any arrays.
+        json_object(global_metadata or {}, name="global metadata")
+        recording_captures = json_object_list(captures or [], name="captures")
+        recording_annotations = json_object_list(
+            annotations or [], name="annotations"
+        )
         group = self._store._recordings_group.create_group(self.name)
         chunk_shape = sample_chunks or type(self)._default_creation_chunks(
             sample_dtype,
@@ -520,10 +533,8 @@ class SigMFRecording:
         group.attrs.update(
             {
                 "global": recording_global,
-                "captures": json_object_list(captures or [], name="captures"),
-                "annotations": json_object_list(
-                    annotations or [], name="annotations"
-                ),
+                "captures": recording_captures,
+                "annotations": recording_annotations,
             }
         )
 
