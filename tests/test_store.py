@@ -19,7 +19,7 @@ from zarr.codecs import (
 from zarr.core.array import Array
 from zarr.core.group import Group
 
-from sigmf_zarr.json import JSONValue, json_object
+from sigmf_zarr.json import JSONObject, JSONValue, json_object
 from sigmf_zarr.readonly import ReadOnlyArray
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
 
@@ -885,6 +885,43 @@ def test_item_metadata_setters_validate_before_mutation(
 
     assert recording.get_item_metadata(0) == {}
     assert recording.integrity == integrity
+
+
+@pytest.mark.parametrize("start", [-5, "x", True, 1.0])
+def test_item_metadata_writers_reject_invalid_capture_starts(
+    tmp_path: Path, start: object
+) -> None:
+    """Every item metadata write path must require valid capture starts.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        start: Invalid `core:sample_start` value.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create("rec", batched=True, sample_shape=(4,))
+    recording.append_samples(np.zeros((2, 4), dtype=np.float32))
+    bundle = cast(JSONObject, {"captures": [{"core:sample_start": start}]})
+    message = "nonnegative integer core:sample_start"
+
+    with pytest.raises(ValueError, match=message):
+        recording.set_item_metadata_entry(0, bundle)
+    with pytest.raises(ValueError, match=message):
+        recording.set_item_metadata([None, bundle])
+    with pytest.raises(ValueError, match=message):
+        recording.set_item_metadata_slice(slice(0, 1), [bundle])
+    with pytest.raises(ValueError, match=message):
+        recording.append_samples(
+            np.zeros((1, 4), dtype=np.float32), item_metadata=[bundle]
+        )
+
+    assert len(recording) == 2
+    assert recording.get_item_metadata(0) == {}
+    recording.set_item_metadata_entry(
+        0, {"captures": [{"core:sample_start": 3}]}
+    )
+    assert recording.signal(0).metadata["captures"] == [
+        {"core:sample_start": 3}
+    ]
 
 
 def test_item_metadata_slice_setter_validates_selection(

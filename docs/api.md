@@ -30,6 +30,16 @@
    :show-inheritance:
 ```
 
+## Resolved signals
+
+```{eval-rst}
+.. autoclass:: sigmf_zarr.signals.SignalView
+   :members:
+
+.. autoclass:: sigmf_zarr.signals.CaptureSegment
+   :members:
+```
+
 ## Integrity
 
 ```{eval-rst}

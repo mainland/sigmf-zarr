@@ -209,6 +209,8 @@ For unbatched recordings, appends extend the `time` axis. If
 with `core:offset`, or zero when `core:offset` is absent, plus the old time
 sample count. For batched recordings, appends extend the
 leading `item` axis and `core:sample_start` defaults to the old item count.
+A shared capture timestamp applies only to the item at that offset. It does
+not establish timestamps for later items.
 
 A shared capture must pass the checks that `validate_store()` applies. Its
 `core:sample_start` must be a nonnegative integer that does not precede the
@@ -291,6 +293,29 @@ recording.add_index(
 
 Index length must match the selected runtime axis. For example, an `item`
 index on a batched recording with `16` items must have length `16`.
+
+## Resolved signal access
+
+`recording.signal()` resolves an unbatched recording.
+`recording.signal(item_index=0)` resolves one explicit batch item. The resulting
+`SignalView` exposes named axes, shape, dtype, sample rate, source offset,
+capture segments, and detached metadata. Its `read_samples(start, stop)` method
+reads a bounded range in stored time coordinates and preserves per-signal axis
+order. It never reads neighboring items. Starts and stops use local stored
+positions even when `core:offset` is nonzero.
+
+The view resolves per-item overrides and translates the applicable shared
+capture from item offsets to the signal's source sample coordinates. It retains
+explicit source anchors without inferring timestamps or global indices. The
+recording's raw metadata remains available separately. Keep the recording open
+and unchanged while using a view. Detached metadata does not freeze sample
+storage.
+
+Signal resolution requires a nonnegative integer `core:sample_start` in every
+shared and per-item capture. `item_captures` fills in the start of the first
+capture of each item, but captures written through `item_metadata` keep the
+fields they are given. `signal()` raises `ValueError` and names the capture
+when a start is missing.
 
 ## Per-item metadata
 
