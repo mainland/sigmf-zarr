@@ -1720,7 +1720,9 @@ class SigMFRecording:
             Writable backing Zarr sample array.
 
         Raises:
-            ValueError: If the mutation changes the sample array shape.
+            ValueError: If the mutation changes the sample array shape. The
+                original shape is restored. Values outside a shrunken extent
+                may be lost, and the sample hashes remain absent.
         """
         samples = self._samples_array
         original_shape = tuple(int(size) for size in samples.shape)
@@ -1728,18 +1730,11 @@ class SigMFRecording:
             with self._mutation(metadata=True, samples=True):
                 yield samples
         finally:
-            # Shape changes must invalidate aligned indexes even when the
-            # caller exits the context by raising an exception.
+            # Restore the shape even when the caller raises. The stored
+            # sample shape and aligned metadata describe the original length.
             current_shape = tuple(int(size) for size in samples.shape)
             if current_shape != original_shape:
-                for axis, old_size, new_size in zip(
-                    self.runtime_axes,
-                    original_shape,
-                    current_shape,
-                    strict=False,
-                ):
-                    if old_size != new_size:
-                        self._invalidate_axis_indexes(axis)
+                samples.resize(original_shape)
         if current_shape != original_shape:
             raise ValueError(
                 "mutate_samples() cannot resize the sample array. Use "
@@ -2611,6 +2606,66 @@ class SigMFRecording:
             )
         return encoded
 
+    @contextmanager
+    def _length_change_rollback(
+        self, *, values_replaced: bool = False
+    ) -> Generator[None, None, None]:
+        """Restore consistent lengths and attributes if a resize fails.
+
+        Appends and `set_samples()` resize the sample array, resize item
+        metadata, and update attributes in separate writes. An exception
+        between them would leave lengths that disagree and an unopenable
+        recording. On failure, arrays return to their original lengths, and
+        index markers and recording and store attributes are restored.
+        Process crashes are not covered.
+
+        Args:
+            values_replaced: Whether the operation may overwrite existing
+                sample values. If so, rollback keeps the sample hashes and
+                `core:sha512` absent, because restored lengths do not restore
+                overwritten values.
+
+        Yields:
+            Control to the resizing operation.
+        """
+        samples = self._samples_array
+        sample_shape = tuple(int(size) for size in samples.shape)
+        item_length = (
+            int(self._item_metadata_array.shape[0])
+            if self.has_item_metadata
+            else None
+        )
+        recording_attrs = self._raw_group.attrs.asdict()
+        root_attrs = self._store._refresh_root().attrs.asdict()
+        index_attrs = {
+            name: index.attrs.asdict()
+            for name, index in self._indexes_group.members(max_depth=None)
+            if isinstance(index, Array)
+        }
+        try:
+            yield
+        except BaseException:
+            # Truncation discards only appended positions. Earlier values are
+            # unchanged unless the operation replaced them.
+            self._samples_array.resize(sample_shape)
+            if item_length is not None:
+                self._item_metadata_array.resize((item_length,))
+            elif self.has_item_metadata:
+                del self._raw_group["item_metadata"]
+            for name, attrs in index_attrs.items():
+                self._indexes_group[name].attrs.put(attrs)
+            if values_replaced:
+                recording_attrs.pop(INTEGRITY_ATTR, None)
+                global_metadata = dict(
+                    cast(JSONObject, recording_attrs.get("global", {}))
+                )
+                global_metadata.pop(SHA512_KEY, None)
+                recording_attrs["global"] = global_metadata
+                root_attrs.pop(INTEGRITY_ATTR, None)
+            self._raw_group.attrs.put(recording_attrs)
+            self._store._refresh_root().attrs.put(root_attrs)
+            raise
+
     def _append_batched_samples(
         self,
         sample_array: npt.NDArray[Any],
@@ -2651,29 +2706,31 @@ class SigMFRecording:
 
         start = len(self)
         stop = start + append_count
-        if append_count:
-            # Existing item indexes no longer align after the axis grows.
-            self._invalidate_axis_indexes("item")
-        with self._mutation(metadata=True, samples=True):
-            samples = self._samples_array
-            samples.resize((stop, *self.sample_shape))
-            samples[start:stop] = sample_array
+        sample_shape = self.sample_shape
+        with self._length_change_rollback():
+            if append_count:
+                # Existing item indexes no longer align after the axis grows.
+                self._invalidate_axis_indexes("item")
+            with self._mutation(metadata=True, samples=True):
+                samples = self._samples_array
+                samples.resize((stop, *sample_shape))
+                samples[start:stop] = sample_array
 
-        if self.has_item_metadata:
-            values = encoded_item_metadata or ["{}"] * append_count
-            self._item_metadata_array.resize((stop,))
-            self._item_metadata_array[start:stop] = np.asarray(
-                values,
-                dtype=object,
-            )
-        elif encoded_item_metadata is not None:
-            self._create_item_metadata_array(
-                np.asarray(
-                    ["{}"] * start + encoded_item_metadata, dtype=object
-                ),
-                overwrite=False,
-            )
-        self._append_capture(capture, sample_start=start)
+            if self.has_item_metadata:
+                values = encoded_item_metadata or ["{}"] * append_count
+                self._item_metadata_array.resize((stop,))
+                self._item_metadata_array[start:stop] = np.asarray(
+                    values,
+                    dtype=object,
+                )
+            elif encoded_item_metadata is not None:
+                self._create_item_metadata_array(
+                    np.asarray(
+                        ["{}"] * start + encoded_item_metadata, dtype=object
+                    ),
+                    overwrite=False,
+                )
+            self._append_capture(capture, sample_start=start)
 
     def _append_unbatched_samples(
         self,
@@ -2719,23 +2776,24 @@ class SigMFRecording:
         stop = start + int(sample_array.shape[time_axis])
         shape = [int(dim) for dim in self._samples_array.shape]
         shape[time_axis] = stop
-        if stop != start:
-            # A longer time axis invalidates every dense time-aligned index.
-            self._invalidate_axis_indexes("time")
-        with self._mutation(metadata=True, samples=True):
-            samples = self._samples_array
-            samples.resize(tuple(shape))
+        with self._length_change_rollback():
+            if stop != start:
+                # A longer time axis invalidates every time-aligned index.
+                self._invalidate_axis_indexes("time")
+            with self._mutation(metadata=True, samples=True):
+                samples = self._samples_array
+                samples.resize(tuple(shape))
 
-            key: list[slice] = [slice(None)] * samples.ndim
-            key[time_axis] = slice(start, stop)
-            samples[tuple(key)] = sample_array
+                key: list[slice] = [slice(None)] * samples.ndim
+                key[time_axis] = slice(start, stop)
+                samples[tuple(key)] = sample_array
 
-        metadata = dict(self.global_metadata)
-        metadata[f"{self.ZARR_EXTENSION_NAMESPACE}:sample-shape"] = [
-            int(dim) for dim in shape
-        ]
-        self._raw_group.attrs["global"] = metadata
-        self._append_capture(capture, sample_start=capture_start)
+            metadata = dict(self.global_metadata)
+            metadata[f"{self.ZARR_EXTENSION_NAMESPACE}:sample-shape"] = [
+                int(dim) for dim in shape
+            ]
+            self._raw_group.attrs["global"] = metadata
+            self._append_capture(capture, sample_start=capture_start)
 
     def append_samples(
         self,
@@ -2837,18 +2895,19 @@ class SigMFRecording:
         if new_time_length == 0:
             raise ValueError("The time axis must contain at least one sample")
         sample_array = _exact_samples(sample_array, self._samples_array.dtype)
-        if new_time_length != old_time_length:
-            self._invalidate_axis_indexes("time")
-        with self._mutation(metadata=True, samples=True):
-            samples_array = self._samples_array
-            samples_array.resize(sample_shape)
-            samples_array[:] = sample_array
+        with self._length_change_rollback(values_replaced=True):
+            if new_time_length != old_time_length:
+                self._invalidate_axis_indexes("time")
+            with self._mutation(metadata=True, samples=True):
+                samples_array = self._samples_array
+                samples_array.resize(sample_shape)
+                samples_array[:] = sample_array
 
-        metadata = dict(self.global_metadata)
-        metadata[f"{self.ZARR_EXTENSION_NAMESPACE}:sample-shape"] = [
-            int(dim) for dim in sample_shape
-        ]
-        self._raw_group.attrs["global"] = metadata
+            metadata = dict(self.global_metadata)
+            metadata[f"{self.ZARR_EXTENSION_NAMESPACE}:sample-shape"] = [
+                int(dim) for dim in sample_shape
+            ]
+            self._raw_group.attrs["global"] = metadata
 
     def info(self) -> str:
         """Return a human-readable summary of one recording.

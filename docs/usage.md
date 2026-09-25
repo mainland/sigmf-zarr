@@ -442,3 +442,12 @@ remains available.
 Callers must serialize access during replacement. This rollback boundary does
 not provide concurrent-reader snapshots or recovery from process crashes.
 Replacing an entire store with `overwrite=True` remains destructive.
+
+An append resizes the sample array and any item metadata and updates several
+attributes. If an exception interrupts these writes, the append truncates the
+arrays to their original lengths and restores the attributes, index markers,
+and hashes, so the recording matches its state before the append.
+`set_samples()` restores lengths and attributes the same way, but it may
+already have replaced sample values. It therefore leaves the sample hashes and
+`core:sha512` absent. `mutate_samples()` restores the original sample array
+shape if the caller resizes it, then raises `ValueError`.
