@@ -335,7 +335,8 @@ with SigMFZarrStore.create("captured.zarr", overwrite=True) as captured_store:
 The example stores a separate timestamp for each item and a later capture
 within the second item. The first capture in each list defaults to time-sample
 position zero, or the item's resolved `core:offset` when present. Later
-captures must provide explicit starts. The writer does not infer missing
+captures must provide explicit starts. The viewer retains the shared center
+frequency unless a per-item capture overrides it. It does not infer missing
 capture timestamps.
 
 Use `None` for an item with no capture list to add. Use `item_metadata`
@@ -830,6 +831,13 @@ An explicit `overwrite_store=True` recreates the destination store before the
 recording import and does not preserve its previous contents. Import rollback
 and export replacement handle operation failures. They do not provide a
 transaction across process termination, power loss, or concurrent access.
+
+## Desktop dataset viewer
+
+Install `sigmf-zarr[viewer]` and run `sigmf-zarr view STORE` to browse records
+and step through individual items in batched samples. The optional Qt and
+Matplotlib application includes a multiline index query editor. See
+[Dataset viewer](viewer.md) for controls and reusable components.
 
 ## Review an export before writing
 

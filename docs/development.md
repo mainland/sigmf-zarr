@@ -47,12 +47,12 @@ versions.
 For adapter development, include PyTorch:
 
 ```bash
-uv sync --extra dev --extra docs --extra pytorch
-uv run --extra pytorch pytest
+uv sync --extra dev --extra docs --extra query --extra pytorch --extra viewer
+uv run --extra query --extra pytorch --extra viewer pytest
 ```
 
 On Linux, the default PyPI build includes CUDA support. For CPU-only testing,
-install from the PyTorch CPU index after syncing the core environment, then
+install from the PyTorch CPU index after syncing the viewer environment, then
 invoke tools directly so another sync does not replace that installation:
 
 ```bash
@@ -61,16 +61,30 @@ uv pip install --python .venv/bin/python 'torch>=2.6' --index-url https://downlo
 .venv/bin/mypy src examples
 ```
 
-Core-only test environments skip the adapter tests. The PyTorch CI job runs
-the full suite with the CPU dependency installed.
+For desktop viewer development, install the
+[Qt system dependencies](viewer.md) and include the
+optional Python dependencies:
+
+```bash
+uv sync --extra dev --extra docs --extra query --extra viewer
+QT_QPA_PLATFORM=offscreen .venv/bin/pytest tests/test_viewer_qt.py --no-cov
+```
+
+The viewer CI job exercises Qt without a graphical display. Type checks require
+both `pytorch` and `viewer` extras.
+
+Core-only test environments skip the adapter and desktop GUI tests. The
+combined PyTorch/viewer CI job runs the full suite with CPU PyTorch and enforces the coverage threshold. Core-only
+jobs run behavioral tests with `pytest --no-cov`, since optional GUI modules
+are intentionally absent.
 
 ## Checks
 
 Run project checks through the locked environment:
 
 ```bash
-uv run pytest
-uv run --extra pytorch mypy src examples
+uv run --extra query --extra pytorch --extra viewer pytest
+uv run --extra query --extra pytorch --extra viewer mypy src examples
 uv run ruff check src tests docs benchmarks examples
 uv run docformatter --check --recursive src tests benchmarks examples
 uv build

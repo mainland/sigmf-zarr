@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -263,3 +265,79 @@ def test_unbatched_and_selection_errors(source: DatasetSource) -> None:
         source.read_window("continuous", start=8)
     with pytest.raises(ValueError, match="Select an item"):
         source.read_window("rec", coordinates={"channel": 0})
+
+
+def test_optional_imports_and_cli_help() -> None:
+    """Base imports, data access, and CLI help must not import GUI packages."""
+    code = """
+import sys
+import sigmf_zarr
+import sigmf_zarr.filtering
+import sigmf_zarr.viewer
+from sigmf_zarr.cli.sigmf import SigMFCommand
+SigMFCommand().build_parser()
+optional = {"PySide6", "matplotlib", "torch", "jmespath"}
+assert not optional.intersection(sys.modules)
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
+    subprocess.run(
+        [sys.executable, "-m", "sigmf_zarr.cli.sigmf", "view", "--help"],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_view_command_reports_missing_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing desktop extra should produce an installation hint.
+
+    Args:
+        monkeypatch: Patch fixture.
+    """
+    import argparse
+
+    import sigmf_zarr.cli.view as view
+
+    monkeypatch.setattr(view, "find_spec", lambda name: None)
+    with pytest.raises(ValueError, match="sigmf-zarr\\[viewer\\]"):
+        view.ViewCommand().handle(argparse.Namespace(store="unused"))
+
+
+def test_view_command_does_not_require_jmespath(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The viewer can launch when only the optional JSON dependency is absent.
+
+    Args:
+        monkeypatch: Patch fixture.
+    """
+    import argparse
+    from types import ModuleType
+
+    import sigmf_zarr.cli.view as view
+
+    launched = []
+    module = ModuleType("sigmf_zarr.viewer.qt")
+
+    def launch(path: str) -> int:
+        """Record the requested store without starting a Qt event loop.
+
+        Args:
+            path: Store location supplied by the command.
+
+        Returns:
+            Successful exit status.
+        """
+        launched.append(path)
+        return 0
+
+    monkeypatch.setattr(module, "launch", launch, raising=False)
+    monkeypatch.setitem(sys.modules, "sigmf_zarr.viewer.qt", module)
+    monkeypatch.setattr(
+        view,
+        "find_spec",
+        lambda name: None if name == "jmespath" else object(),
+    )
+    assert view.ViewCommand().handle(argparse.Namespace(store="example")) == 0
+    assert launched == ["example"]

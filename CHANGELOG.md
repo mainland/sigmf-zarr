@@ -11,6 +11,12 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
 - Append distinct per-item capture lists with independent timestamps through
   `item_captures`, preserving shared item-offset captures and validating all
   metadata before storage changes.
+- Retain shared capture settings in the viewer when per-item captures supply
+  independent timestamps. Never inherit a shared timestamp into those captures.
+- Preserve fractional capture timestamps before computing relative plot
+  coordinates, including submicrosecond differences between captures.
+- Interpret batched shared captures as item offsets in the viewer, preserving
+  per-item time-sample captures and original metadata scopes.
 - Define the initial logical store, recording, collection, index, channel, and
   item-metadata model.
 - Support physical Zarr formats 2 and 3 through zarr-python 3.

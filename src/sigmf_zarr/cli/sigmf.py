@@ -16,6 +16,7 @@ from sigmf_zarr.cli.import_radioml2016 import ImportRadioML2016Command
 from sigmf_zarr.cli.import_radioml2018 import ImportRadioML2018Command
 from sigmf_zarr.cli.import_rml22 import ImportRML22Command
 from sigmf_zarr.cli.store import StoreCommand
+from sigmf_zarr.cli.view import ViewCommand
 from sigmf_zarr.export_plan import plan_sigmf_export
 from sigmf_zarr.sigmf import (
     export_sigmf,
@@ -350,6 +351,7 @@ class SigMFCommand(CommandGroup):
                 StoreCommand(context),
                 ImportGroup(),
                 ExportCommand(),
+                ViewCommand(),
             ),
             destination="command_name",
         )
