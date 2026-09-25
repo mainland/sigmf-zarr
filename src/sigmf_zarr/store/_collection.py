@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from collections.abc import Generator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from zarr.core.group import Group
@@ -21,6 +21,10 @@ from sigmf_zarr.integrity import (
 from sigmf_zarr.json import JSONObject, json_object
 from sigmf_zarr.readonly import ReadOnlyGroup
 from sigmf_zarr.store._common import _validate_resource_name
+from sigmf_zarr.store._transaction import (
+    _settled_on_failure,
+    replacement_transaction,
+)
 
 if TYPE_CHECKING:
     from sigmf_zarr.store._container import SigMFZarrStore
@@ -75,13 +79,25 @@ class SigMFCollection:
         _validate_resource_name(collection_name, kind="Collection")
         self._store = store
         self._collection_name = collection_name
-        self._ensure_exists(
-            create=create,
-            overwrite=overwrite,
-            metadata=metadata,
-            recording_ids=recording_ids,
-        )
-        self._validate()
+        # Only creation needs rollback. An open must not write or delete
+        # anything, even when the collection is damaged.
+        with (
+            replacement_transaction(
+                store._collections_group,
+                collection_name,
+                overwrite=overwrite,
+                parents=(store._refresh_root(),),
+            )
+            if create
+            else nullcontext()
+        ):
+            self._ensure_exists(
+                create=create,
+                overwrite=overwrite,
+                metadata=metadata,
+                recording_ids=recording_ids,
+            )
+            self._validate()
 
     def _validate(self) -> None:
         """Validate collection metadata and recording references.
@@ -349,8 +365,12 @@ class SigMFCollection:
         group = self._raw_group
         original = group.attrs.asdict()
         try:
-            yield group
-            self._validate()
+            # A failed or interrupted write can still be running. Restore
+            # only after it finishes, so it cannot overwrite the restored
+            # attributes.
+            with _settled_on_failure():
+                yield group
+                self._validate()
         except BaseException:
             # Malformed attributes would make the collection unopenable.
             group.attrs.put(original)

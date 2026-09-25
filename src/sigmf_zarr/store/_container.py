@@ -24,7 +24,7 @@ from zarr.core.array import (
 from zarr.core.common import AccessModeLiteral
 from zarr.core.dtype import VariableLengthUTF8
 from zarr.core.group import Group
-from zarr.storage import StoreLike
+from zarr.storage import LocalStore, StoreLike
 
 from sigmf_zarr._consolidated import (
     members,
@@ -54,6 +54,11 @@ from sigmf_zarr.store._common import (
     store_location,
 )
 from sigmf_zarr.store._recording import SigMFRecording
+from sigmf_zarr.store._transaction import (
+    delete_node,
+    delete_orphan,
+    replacement_transaction,
+)
 
 
 class SigMFRecordings:
@@ -230,17 +235,43 @@ class SigMFRecordings:
     def remove(self, recording_name: str) -> None:
         """Remove a recording through the managed mutation boundary.
 
+        In a local directory store, removal is a transaction. The recording
+        moves to a backup on the same filesystem, and a failed store hash
+        update moves it back and restores the hash. Other backends delete the
+        recording directly after removing the store hash, because a backup
+        would copy the whole recording. They delete the recording group's
+        own metadata last, so if the deletion fails, the recording remains
+        listed with part of its content. `validate_store()` reports such a
+        partial recording, and calling `remove()` again finishes the
+        removal.
+
+        A failed write can also leave objects under `recordings/<name>/`
+        without the recording group's metadata. Such orphan objects form no
+        recording, but `remove()` deletes them when the store can list
+        them.
+
         Args:
             recording_name: Recording name to remove.
 
         Raises:
-            KeyError: If the recording does not exist.
-            ValueError: If a collection references the recording. Update
-                those collections first so removal cannot leave dangling
-                references.
+            KeyError: If neither the recording nor orphan objects under its
+                name exist.
+            ValueError: If a collection references the recording, or a local
+                store is read-only. Update referencing collections first so
+                removal cannot leave dangling references.
+            OSError: If restoring a local recording after a failure also
+                fails. The error identifies retained recovery files.
         """
         if recording_name not in self:
-            raise KeyError(recording_name)
+            try:
+                _validate_resource_name(recording_name, kind="Recording")
+            except ValueError:
+                raise KeyError(recording_name) from None
+            if not delete_orphan(
+                self._store._recordings_group, recording_name
+            ):
+                raise KeyError(recording_name)
+            return
         referencing = [
             collection.name
             for collection in self._store.collections
@@ -251,7 +282,18 @@ class SigMFRecordings:
                 f"Recording {recording_name!r} is referenced by collections "
                 f"{referencing!r}"
             )
-        self._discard(recording_name)
+        if not isinstance(self._store._group.store, LocalStore):
+            self._discard(recording_name)
+            return
+        # The transaction moves the recording away before its body runs. If
+        # the body fails, it moves the recording back and restores the hash.
+        with replacement_transaction(
+            self._store._recordings_group,
+            recording_name,
+            overwrite=True,
+            parents=(self._store._refresh_root(),),
+        ):
+            self._store._invalidate_metadata_integrity()
 
     def _discard(self, recording_name: str) -> None:
         """Delete a recording without checking collection references.
@@ -262,7 +304,7 @@ class SigMFRecordings:
             recording_name: Existing recording name.
         """
         self._store._invalidate_metadata_integrity()
-        del self._store._recordings_group[recording_name]
+        delete_node(self._store._recordings_group, recording_name)
 
 
 class SigMFCollections:

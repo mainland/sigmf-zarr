@@ -449,3 +449,21 @@ An index is marked invalid before the context body runs and restored to valid
 only after successful structural validation. Resizing a sample axis similarly
 invalidates indexes aligned with that axis until they are repaired or replaced.
 Re-run `store.update_integrity()` after completing a series of changes.
+
+## Mutation and failure behavior
+
+Replacing a recording or collection with `overwrite=True` preserves the old
+resource and ancestor metadata until creation, data writes, and validation
+finish. If any of these steps raises an exception, the operation restores the
+old resource. If restoration also fails, an `OSError` identifies retained
+recovery files. Local replacements move the old directory to a backup on the
+same filesystem. Other writable, listable backends copy encoded objects to
+temporary disk storage, using memory proportional to one encoded object.
+
+Creating a recording or collection follows the same boundary. If creation
+fails, the operation removes the partial resource and restores any ancestor
+hashes it invalidated, so the name remains available.
+
+Callers must serialize access during replacement. This rollback boundary does
+not provide concurrent-reader snapshots or recovery from process crashes.
+Replacing an entire store with `overwrite=True` remains destructive.

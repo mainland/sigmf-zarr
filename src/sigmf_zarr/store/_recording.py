@@ -6,7 +6,7 @@ import json
 import math
 import warnings
 from collections.abc import Generator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import numpy as np
@@ -71,6 +71,10 @@ from sigmf_zarr.store._common import (
     _require_array,
     _validate_resource_name,
     index_marker_error,
+)
+from sigmf_zarr.store._transaction import (
+    _settled_on_failure,
+    replacement_transaction,
 )
 
 if TYPE_CHECKING:
@@ -336,27 +340,39 @@ class SigMFRecording:
         _validate_resource_name(recording_name, kind="Recording")
         self._store = store
         self._recording_name = recording_name
-        self._ensure_exists(
-            create=create,
-            overwrite=overwrite,
-            batched=batched,
-            sample_dtype=sample_dtype,
-            sample_shape=sample_shape,
-            sample_axes=sample_axes,
-            global_metadata=global_metadata,
-            captures=captures,
-            annotations=annotations,
-            channel_metadata=channel_metadata,
-            sample_chunks=sample_chunks,
-            sample_shards=sample_shards,
-            sample_compressor=sample_compressor,
-            sample_checksum=sample_checksum,
-        )
-        self._validate_metadata_attrs()
-        self._validate_sample_array_shape()
-        self._validate_item_metadata_array()
-        self._validate_channel_metadata_groups()
-        self._validate_sample_checksum()
+        # Only creation needs rollback. An open must not write or delete
+        # anything, even when the recording is damaged.
+        with (
+            replacement_transaction(
+                store._recordings_group,
+                recording_name,
+                overwrite=overwrite,
+                parents=(store._refresh_root(),),
+            )
+            if create
+            else nullcontext()
+        ):
+            self._ensure_exists(
+                create=create,
+                overwrite=overwrite,
+                batched=batched,
+                sample_dtype=sample_dtype,
+                sample_shape=sample_shape,
+                sample_axes=sample_axes,
+                global_metadata=global_metadata,
+                captures=captures,
+                annotations=annotations,
+                channel_metadata=channel_metadata,
+                sample_chunks=sample_chunks,
+                sample_shards=sample_shards,
+                sample_compressor=sample_compressor,
+                sample_checksum=sample_checksum,
+            )
+            self._validate_metadata_attrs()
+            self._validate_sample_array_shape()
+            self._validate_item_metadata_array()
+            self._validate_channel_metadata_groups()
+            self._validate_sample_checksum()
 
     def _validate_metadata_attrs(self) -> None:
         """Validate recording JSON attributes and stored dtype metadata.
@@ -619,6 +635,12 @@ class SigMFRecording:
             sample_axes=normalized_axes,
             channel_metadata=channel_metadata,
         )
+        # Reject malformed caller metadata before writing any arrays.
+        json_object(global_metadata or {}, name="global metadata")
+        recording_captures = json_object_list(captures or [], name="captures")
+        recording_annotations = json_object_list(
+            annotations or [], name="annotations"
+        )
         group = self._store._recordings_group.create_group(self.name)
         chunk_shape = sample_chunks or type(self)._default_creation_chunks(
             sample_dtype,
@@ -666,10 +688,8 @@ class SigMFRecording:
         group.attrs.update(
             {
                 "global": recording_global,
-                "captures": json_object_list(captures or [], name="captures"),
-                "annotations": json_object_list(
-                    annotations or [], name="annotations"
-                ),
+                "captures": recording_captures,
+                "annotations": recording_annotations,
             }
         )
 
@@ -1963,7 +1983,12 @@ class SigMFRecording:
         samples = self._samples_array
         original_shape = tuple(int(size) for size in samples.shape)
         try:
-            with self._mutation(metadata=True, samples=True):
+            # Restore the shape only after any failed or interrupted write
+            # finishes, so a late write cannot undo the restoration.
+            with (
+                _settled_on_failure(),
+                self._mutation(metadata=True, samples=True),
+            ):
                 yield samples
         finally:
             # Shape changes must invalidate aligned indexes even when the
@@ -2199,7 +2224,9 @@ class SigMFRecording:
         array = self._item_metadata_array
         original_shape = tuple(int(size) for size in array.shape)
         try:
-            with self._mutation(metadata=True):
+            # Restore the shape only after any failed or interrupted write
+            # finishes, so a late write cannot undo the restoration.
+            with _settled_on_failure(), self._mutation(metadata=True):
                 yield array
         finally:
             # Restore the shape even when the caller raises. The item axis
