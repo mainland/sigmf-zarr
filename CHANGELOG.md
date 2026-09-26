@@ -34,6 +34,8 @@ complete.
   metadata before storage changes.
 - Derive per-item metadata presence from the array, protect its chunks with
   CRC32C, and provide validated entry and slice updates.
+- Support structural recording opens that defer per-item JSON validation
+  until access, while retaining full validation by default.
 - Require recording and collection names to identify immediate child groups.
   Require collection recording identifiers to name existing recordings, and
   reject removal of a referenced recording.
@@ -86,6 +88,16 @@ complete.
 - Restrict RadioML pickle loading to built-in containers and real numeric
   NumPy arrays, and reject arrays that hold more data than the file. Check each
   CSPB ZIP member's declared size against its `.tim` header before reading it.
+
+### Indexes and splits
+
+- Discover indexes by descriptive field, and decode selected category IDs
+  explicitly without synchronizing independent JSON metadata.
+- Accept additional descriptive index attributes with protected base fields,
+  and require nonempty `field` and `kind` descriptors.
+- Store multiple named split schemes with compact assignments, read-only
+  views, provenance, and explicit group-isolation validation, including
+  isolation of reused constituent sources.
 
 ### Command line
 

@@ -66,7 +66,9 @@ nitpick_ignore = [
     ("py:class", "PathLike"),
     ("py:class", "ShardsLike"),
     ("py:class", "StoreLike"),
+    ("py:class", "np.intp"),
     ("py:class", "npt.DTypeLike"),
+    ("py:class", "npt.NDArray"),
     # Public signatures name these types by their private defining module.
     # The API reference documents their public names.
     ("py:class", "argparse._SubParsersAction"),
