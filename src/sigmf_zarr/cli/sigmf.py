@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Literal, cast, get_args
 
@@ -12,6 +13,7 @@ from sigmf_zarr.cli.import_cspb import ImportCSPBCommand
 from sigmf_zarr.cli.import_radioml2016 import ImportRadioML2016Command
 from sigmf_zarr.cli.import_radioml2018 import ImportRadioML2018Command
 from sigmf_zarr.cli.store import StoreCommand
+from sigmf_zarr.export_plan import plan_sigmf_export
 from sigmf_zarr.sigmf import (
     export_sigmf,
     export_sigmf_archive,
@@ -209,6 +211,26 @@ class ExportCommand(Command):
             help="Export even when sample-indexed metadata appears stale.",
         )
         parser.add_argument(
+            "--allow-lossy",
+            action="store_true",
+            help=(
+                "Warn and omit indexes, arrays, and channel metadata."
+            ),
+        )
+        parser.add_argument(
+            "--item-index",
+            type=int,
+            help="Export one nonnegative item position from a batch.",
+        )
+        parser.add_argument(
+            "--project-index", action="append", default=[],
+            help="Preserve this item index and its descriptors. Repeatable.",
+        )
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Print a verified JSON export plan without writing files.",
+        )
+        parser.add_argument(
             "--compact",
             action="store_true",
             help="Write compact JSON instead of pretty-printed metadata.",
@@ -231,6 +253,12 @@ class ExportCommand(Command):
         pretty = not args.compact
 
         if args.archive:
+            if args.dry_run or args.project_index:
+                raise SystemExit(
+                    "--dry-run and --project-index require a single recording"
+                )
+            if args.item_index is not None:
+                raise SystemExit("--item-index cannot be used with --archive")
             archive_path = export_sigmf_archive(
                 store,
                 args.output,
@@ -239,6 +267,7 @@ class ExportCommand(Command):
                 overwrite=args.overwrite,
                 pretty=pretty,
                 force=args.force,
+                allow_lossy=args.allow_lossy,
             )
             print(f"exported archive: {archive_path}")
             return 0
@@ -248,6 +277,19 @@ class ExportCommand(Command):
                 "--recording-name is required unless --archive is used"
             )
 
+        if args.dry_run:
+            plan = plan_sigmf_export(
+                store, args.recording_name, item_index=args.item_index,
+                project_indexes=args.project_index, force=args.force,
+            )
+            print(json.dumps(plan.as_dict(), indent=2, sort_keys=True))
+            return int(bool(
+                plan.rejected or plan.omitted and not args.allow_lossy
+            ))
+        options = (
+            {"project_indexes": args.project_index}
+            if args.project_index else {}
+        )
         meta_path = export_sigmf(
             store,
             args.recording_name,
@@ -255,6 +297,9 @@ class ExportCommand(Command):
             overwrite=args.overwrite,
             pretty=pretty,
             force=args.force,
+            allow_lossy=args.allow_lossy,
+            item_index=args.item_index,
+            **options,
         )
         print(f"exported recording: {meta_path}")
         return 0

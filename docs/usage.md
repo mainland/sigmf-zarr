@@ -551,9 +551,29 @@ export_sigmf(
 )
 ```
 
-Standard SigMF export supports only unbatched recordings. Batched recordings
-represent multiple independent items, so exporting them to standard SigMF
-requires an explicit split strategy that the implementation does not provide.
+Standard SigMF export accepts an unbatched recording or one explicitly selected
+batch item. Pass `item_index=0` to `export_sigmf` or `--item-index 0` to either
+single-recording export command to select the first item. The index must be a
+nonnegative integer within the batch. Archive export does not accept an item
+selection.
+
+Item export resolves the item's global overrides and combines shared and local
+annotations. It translates the applicable shared capture from item coordinates
+to the item's `core:offset`, then merges local captures in sample coordinates.
+Local captures win at duplicate starts. Shared acquisition fields supply
+explicit defaults for each local capture, except for `core:datetime`,
+`core:global_index`, and `core:sample_start`. Shared source anchors apply only
+to the item at their declared item offset. Export never infers anchors for later
+items or local captures.
+Captures and annotations are sorted by sample start. Export calculates a new
+item hash and checks any hash explicitly supplied in the item's global metadata.
+The source batch remains unchanged.
+
+Export rejects unprojected indexes, extension groups or arrays, and nonempty
+per-channel metadata because they have no selected interchange representation.
+Pass `allow_lossy=True` or `--allow-lossy` to omit them with a warning. This option
+also applies to archive export. `force=True` and `--force` bypass stale sample
+span checks only. They do not authorize metadata loss or bypass hash checks.
 
 When importing standard SigMF, `core:num_channels` is mapped to an explicit
 SigMF-Zarr `channel` axis. A real two-channel SigMF stream imports as
@@ -562,8 +582,34 @@ SigMF-Zarr `channel` axis. A real two-channel SigMF stream imports as
 
 Complex floating-point precision is preserved: `cf32_le` and `cf32_be` use
 32-bit I/Q components, while `cf64_le` and `cf64_be` use 64-bit components.
-Export restores the endianness declared by `core:datatype` rather than using
-the host machine's native byte order.
+Complex integer datatypes retain integer I/Q components. Export interleaves
+these components using the width and byte order declared by `core:datatype`.
+Export also restores the declared byte order for floating-point samples.
+
+Standard SigMF import reads sample data in bounded blocks. Sample conversion
+does not require materializing the complete dataset. Export regenerates the
+dataset reference for its output files and preserves dotted recording names
+and collection membership in archives.
+
+Import retains the source `core:version`, capture timestamps, annotations, and
+namespaced fields within the three standard metadata sections. Collection
+versions and custom fields are also retained when the collection is selected
+for archive export. Conversion does not preserve JSON formatting, archive
+layout, or metadata-file bytes. Export may insert default `core:num_channels`
+and `core:offset` values, removes `core:dataset` for its conforming output pair,
+and regenerates dataset and collection stream hashes.
+
+Import rejects metadata-only inputs, datasets with nonzero `core:header_bytes`
+or `core:trailing_bytes`, and extension-defined top-level objects. Archive import
+also rejects auxiliary files, multiple collections, and extra fields in
+`core:streams` entries. These checks run before destination creation. Export
+rejects header/footer metadata because it writes sample-only datasets. These
+limits mean conversion supports a subset of SigMF rather than every valid
+SigMF representation.
+
+Sample starts use absolute indices. For a recording with `core:offset` equal to
+1000 and four samples, export validates metadata against the interval from 1000
+through 1004, with an exclusive end for nonempty spans.
 
 Import verifies that the reconstructed standard dataset bytes match the source
 `core:sha512` and stores that digest. If conversion cannot preserve the source
@@ -599,3 +645,66 @@ proportional to one encoded object.
 Callers must serialize access during replacement. This rollback boundary does
 not provide concurrent-reader snapshots or recovery from process crashes.
 Replacing an entire store with `overwrite=True` remains destructive.
+
+Serialize all writes to a store, including integrity updates. The Python API
+does not coordinate concurrent writers. Readers must not assume a consistent
+snapshot while another process modifies the store.
+
+Managed sample replacement and append operations validate shapes, convert
+sample values, and validate supplied metadata before changing storage. Rejected
+inputs preserve the recording. Writable mutation contexts invalidate affected
+hashes before exposing an array or group. These contexts do not roll back
+partial writes after a storage I/O failure. Index mutation contexts leave
+incomplete indexes marked invalid until repaired.
+
+Import rejects an existing recording unless replacement is explicitly enabled.
+Replacing a recording through an importer requires a local directory store.
+The importer keeps a temporary backup and restores the recording if creation,
+conversion, or integrity calculation fails. If restoration itself fails, the
+error identifies a retained backup for recovery. Import cleanup removes a
+partially created new recording. A failed import of a new recording may leave
+the root integrity hash absent, requiring recalculation.
+
+Archive import retains backups until every recording, collection, and hash
+update succeeds. Replacement backups require additional disk space
+proportional to the content being replaced.
+
+An explicit `overwrite_store=True` recreates the destination store before the
+recording import and does not preserve its previous contents. Import rollback
+and export replacement handle operation failures. They do not provide a
+transaction across process termination, power loss, or concurrent access.
+
+## Review an export before writing
+
+`plan_sigmf_export()` returns proposed metadata and lists of preserved,
+translated, regenerated, omitted, and rejected content. By default it streams
+samples to verify exact encoding and declared integrity. Use
+`verify_samples=False` for metadata inspection without sample reads. Such a
+plan does not establish lossless sample conversion. Planning never writes
+output or repairs source metadata, and export revalidates the source.
+
+```python
+from sigmf_zarr import SigMFZarrStore, plan_sigmf_export
+
+with SigMFZarrStore.open("store.zarr") as store:
+    plan = plan_sigmf_export(
+        store, "rec", item_index=0, project_indexes=("mod_class_id", "snr_db")
+    )
+    print(plan.as_dict())
+```
+
+The equivalent command prints a JSON report and returns a nonzero status when
+rejections or unauthorized omissions prevent export:
+
+```bash
+sigmf-zarr export store.zarr item.sigmf-meta --recording-name rec \
+  --item-index 0 --project-index mod_class_id --project-index snr_db --dry-run
+```
+
+Remove `--dry-run` to write the recording. Explicitly selected indexes retain
+scalar values, category IDs and labels, units, and all JSON descriptors in the
+[SigMF-Zarr index projection extension](sigmf-zarr-indexes.sigmf-ext.md).
+Unselected native metadata remains an omission. Projection rejects conflicting
+existing JSON and does not infer canonical modulation or SNR meanings.
+The same options are available through the recording resource export command.
+Archive exports do not accept item selection, projection, or dry runs.

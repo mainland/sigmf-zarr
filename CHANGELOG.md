@@ -18,6 +18,13 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
   batched format-3 imports. Use approximately 1 MiB chunks for unbatched
   format-3 imports and 4 MiB chunks for format-2 imports.
 - Import and export standard SigMF recordings and archives.
+- Preserve source recording and collection versions during interchange, and
+  validate absolute sample coordinates using `core:offset`.
+- Export explicitly selected batch items with resolved capture scopes,
+  independent timestamps, and per-item dataset hashes.
+- Reject unsupported input metadata and archive files before destination
+  creation. Require explicit permission and warn before omitting native indexes,
+  extension arrays, or channel metadata during standard export.
 - Import RadioML 2016, RadioML 2018, and Chad Spooner CSPB datasets.
 - Preserve and verify standard SigMF dataset hashes.
 - Maintain logical sample, metadata, recording, collection, and store hashes.

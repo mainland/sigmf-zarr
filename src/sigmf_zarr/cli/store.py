@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
 from sigmf_zarr.cli.context import StoreContext
 from sigmf_zarr.cli.group import CommandGroup
 from sigmf_zarr.cli.output import OutputCommand
+from sigmf_zarr.export_plan import plan_sigmf_export
 from sigmf_zarr.readonly import ReadOnlyArray
 from sigmf_zarr.sigmf import export_sigmf, export_sigmf_archive
 from sigmf_zarr.store import SigMFCollection, SigMFRecording, SigMFZarrStore
@@ -367,6 +369,26 @@ class RecordingExportCommand(StoreOutputCommand):
             help="Export even when sample-indexed metadata appears stale.",
         )
         parser.add_argument(
+            "--allow-lossy",
+            action="store_true",
+            help=(
+                "Warn and omit indexes, arrays, and channel metadata."
+            ),
+        )
+        parser.add_argument(
+            "--item-index",
+            type=int,
+            help="Export one nonnegative item position from a batch.",
+        )
+        parser.add_argument(
+            "--project-index", action="append", default=[],
+            help="Preserve this item index and its descriptors. Repeatable.",
+        )
+        parser.add_argument(
+            "--dry-run", action="store_true",
+            help="Print a verified JSON export plan without writing files.",
+        )
+        parser.add_argument(
             "--compact",
             action="store_true",
             help="Write compact JSON metadata.",
@@ -381,6 +403,20 @@ class RecordingExportCommand(StoreOutputCommand):
         Returns:
             Process exit status.
         """
+        if args.dry_run:
+            plan = plan_sigmf_export(
+                self.context.open(args.store), args.name,
+                item_index=args.item_index, project_indexes=args.project_index,
+                force=args.force,
+            )
+            print(json.dumps(plan.as_dict(), indent=2, sort_keys=True))
+            return int(bool(
+                plan.rejected or plan.omitted and not args.allow_lossy
+            ))
+        options = (
+            {"project_indexes": args.project_index}
+            if args.project_index else {}
+        )
         path = export_sigmf(
             self.context.open(args.store),
             args.name,
@@ -388,6 +424,9 @@ class RecordingExportCommand(StoreOutputCommand):
             overwrite=args.overwrite,
             pretty=not args.compact,
             force=args.force,
+            allow_lossy=args.allow_lossy,
+            item_index=args.item_index,
+            **options,
         )
         self.write_output(
             args,
@@ -521,6 +560,13 @@ class CollectionExportCommand(StoreOutputCommand):
             help="Export even when sample-indexed metadata appears stale.",
         )
         parser.add_argument(
+            "--allow-lossy",
+            action="store_true",
+            help=(
+                "Warn and omit indexes, arrays, and channel metadata."
+            ),
+        )
+        parser.add_argument(
             "--compact",
             action="store_true",
             help="Write compact JSON metadata.",
@@ -542,6 +588,7 @@ class CollectionExportCommand(StoreOutputCommand):
             overwrite=args.overwrite,
             pretty=not args.compact,
             force=args.force,
+            allow_lossy=args.allow_lossy,
         )
         self.write_output(
             args,
