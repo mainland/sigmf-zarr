@@ -284,7 +284,7 @@ complete.
   disable HDF5 plugin loading during import. Require scalar numeric label
   and SNR elements, and at most 32,768 classes.
 
-### Indexes and splits
+### Indexes, splits, and queries
 
 - Discover indexes by descriptive field, and decode selected category IDs
   explicitly without synchronizing independent JSON metadata.
@@ -299,6 +299,16 @@ complete.
   `validity` mask and empty-string group identities when a split is created.
 - Reject object index values that are not strings instead of storing their
   `str()` text.
+- Compile and evaluate batched index queries, and filter candidate items with
+  Boolean JMESPath predicates over their metadata.
+- Reserve `true`, `false`, `and`, `or`, and `in` as bare query names, require
+  a word boundary after keywords, limit numeric literals to 100 characters, and
+  report operand errors with their query line and column.
+- Store `IndexFilter` membership operands as tuples, so compiled queries are
+  hashable and `IndexFilter.value` is a tuple for `in` comparisons. The new
+  `QueryScalar` type names a scalar comparison operand.
+- Read index queries, `filter_items()`, and split selections in
+  chunk-aligned spans, so each stored chunk is decoded once.
 
 ### Machine learning
 
