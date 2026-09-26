@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 import numpy.typing as npt
 import pytest
+import zarr
 from numcodecs import CRC32C, LZ4, Blosc, GZip, VLenUTF8, Zstd
 from zarr.codecs import (
     BloscCodec,
@@ -22,6 +24,7 @@ from zarr.core.group import Group
 from sigmf_zarr.json import JSONObject, JSONValue, json_object
 from sigmf_zarr.readonly import ReadOnlyArray
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
+from sigmf_zarr.validation import validate_store
 
 
 def test_default_sample_chunks_preserves_existing_default() -> None:
@@ -617,6 +620,72 @@ def test_set_samples_resizes_unbatched_time_axis(tmp_path: Path) -> None:
     np.testing.assert_array_equal(reopened.samples[:], samples)
 
 
+def test_recording_sha512_lifecycle(tmp_path: Path) -> None:
+    """Managed mutations should invalidate whole-recording SHA-512 metadata.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=False,
+        sample_shape=(4,),
+        sample_axes=("time",),
+        global_metadata={"core:datatype": "rf32_le"},
+    )
+    samples = np.arange(4, dtype=np.float32)
+    recording.set_samples(samples)
+    expected = hashlib.sha512(samples.astype("<f4").tobytes()).hexdigest()
+
+    initial_sha512 = recording.sha512
+    assert initial_sha512 is None
+    assert recording.calculate_sha512() == expected
+    assert recording.verify_sha512() is False
+    assert recording.update_sha512() == expected
+    updated_sha512 = recording.sha512
+    assert updated_sha512 == expected
+    assert recording.verify_sha512() is True
+
+    with pytest.raises(TypeError, match="read-only"):
+        recording.samples[0] = np.float32(99.0)
+    unchanged_sha512 = recording.sha512
+    assert unchanged_sha512 == expected
+
+    with recording.mutate_samples() as writable_samples:
+        writable_samples[0] = np.float32(99.0)
+    assert recording.sha512 is None
+
+    recording.update_sha512()
+    recording.append_samples(np.array([5.0], dtype=np.float32))
+    assert recording.sha512 is None
+
+    recording.update_sha512()
+    recording.set_samples(samples)
+    assert recording.sha512 is None
+
+
+def test_datatype_change_invalidates_recording_sha512(tmp_path: Path) -> None:
+    """Changing the output byte encoding should invalidate `core:sha512`.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.create(
+        "rec",
+        batched=False,
+        sample_shape=(4,),
+        sample_axes=("time",),
+        global_metadata={"core:datatype": "rf32_le"},
+    )
+    recording.update_sha512()
+
+    recording.set_global_field("core:datatype", "rf32_be")
+
+    assert recording.sha512 is None
+
+
 def test_set_samples_rejects_non_time_axis_resize(tmp_path: Path) -> None:
     """set_samples should reject non-time axis changes.
 
@@ -741,6 +810,39 @@ def test_exact_sample_conversion_is_accepted(
     np.testing.assert_array_equal(
         recording.samples[0], np.asarray(values).astype(dtype)
     )
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [(">f4", "<f4"), (">i2", "<i2"), (">c8", "<c8"), ("i1", "|i1")],
+)
+def test_created_sample_dtype_is_little_endian(
+    tmp_path: Path, requested: str, expected: str
+) -> None:
+    """Both formats must store and record one little-endian sample dtype.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        requested: Sample dtype passed to recording creation.
+        expected: Recorded and stored sample dtype.
+    """
+    values = np.array([1, -2, 3, 4], dtype=requested)
+    metadata_hashes = set()
+    for zarr_format in (2, 3):
+        store_path = tmp_path / f"store-{zarr_format}.zarr"
+        store = SigMFZarrStore.create(store_path, zarr_format=zarr_format)
+        recording = store.recordings.create(
+            "rec", sample_shape=(4,), sample_dtype=requested
+        )
+        recording.set_samples(values)
+        metadata_hashes.add(recording.calculate_metadata_sha512())
+
+        reopened = SigMFZarrStore.open(store_path).recordings.open("rec")
+        assert reopened.global_metadata["sigmf-zarr:dtype"] == expected
+        assert np.dtype(reopened.samples.dtype).str == expected
+        np.testing.assert_array_equal(reopened.samples[:], values)
+        assert validate_store(store_path).valid is True
+    assert len(metadata_hashes) == 1
 
 
 def test_append_samples_adds_batched_capture(tmp_path: Path) -> None:
@@ -1011,6 +1113,90 @@ def test_one_item_appends_do_not_fix_item_metadata_chunks(
     assert recording.samples.chunks == (1024, 2, 128)
     assert recording.item_metadata_array.chunks == (1024,)
     assert recording._item_metadata_array.nchunks_initialized == 1
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+@pytest.mark.parametrize("batched", [False, True])
+def test_empty_append_without_capture_keeps_hashes(
+    tmp_path: Path, zarr_format: int, batched: bool
+) -> None:
+    """An append of nothing must not change the recording or its hashes.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format.
+        batched: Whether the recording has an item axis.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=cast(ZarrFormat, zarr_format)
+    )
+    recording = store.recordings.create(
+        "rec",
+        batched=batched,
+        sample_shape=(2, 4),
+        sample_axes=("channel", "time"),
+    )
+    recording.append_samples(np.ones((1, 2, 4) if batched else (2, 4)))
+    if not batched:
+        recording.update_sha512()
+    recording.update_integrity()
+    store.update_integrity()
+    attributes = recording._raw_group.attrs.asdict()
+    store_attributes = store._refresh_root().attrs.asdict()
+
+    if batched:
+        recording.append_samples(np.ones((0, 2, 4)), item_metadata=[])
+    else:
+        recording.append_samples(np.ones((2, 0)))
+
+    assert recording._raw_group.attrs.asdict() == attributes
+    assert store._refresh_root().attrs.asdict() == store_attributes
+    assert not recording.has_item_metadata
+    assert validate_store(store, require_integrity=True).valid
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+@pytest.mark.parametrize("batched", [False, True])
+def test_empty_append_with_capture_is_rejected(
+    tmp_path: Path, zarr_format: int, batched: bool
+) -> None:
+    """A capture must describe at least one appended sample.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format.
+        batched: Whether the recording has an item axis.
+    """
+    path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(
+        path, zarr_format=cast(ZarrFormat, zarr_format)
+    )
+    recording = store.recordings.create(
+        "rec",
+        batched=batched,
+        sample_shape=(2, 4),
+        sample_axes=("channel", "time"),
+    )
+    recording.append_samples(np.ones((1, 2, 4) if batched else (2, 4)))
+    store.update_integrity()
+    before = {
+        entry.relative_to(path): entry.read_bytes()
+        for entry in path.rglob("*")
+        if entry.is_file()
+    }
+
+    with pytest.raises(ValueError, match="at least one"):
+        recording.append_samples(
+            np.ones((0, 2, 4) if batched else (2, 0)),
+            capture={"core:frequency": 1.0},
+        )
+
+    assert {
+        entry.relative_to(path): entry.read_bytes()
+        for entry in path.rglob("*")
+        if entry.is_file()
+    } == before
+    assert validate_store(store, require_integrity=True).valid
 
 
 def test_append_samples_keeps_item_metadata_aligned(tmp_path: Path) -> None:
@@ -1608,6 +1794,43 @@ def test_object_strings_keep_trailing_nul_characters(
     assert list(recording.index("labels")[:]) == list(values)
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_numpy_integer_dimensions_are_accepted(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """NumPy integers in shapes, chunks, and shards must act as integers.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "store.zarr", zarr_format=zarr_format
+    )
+    # Typed callers pass int, but NumPy integers must behave the same.
+    two: Any = np.int64(2)
+    four: Any = np.int64(4)
+    recording = store.recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(two, four),
+        sample_axes=("channel", "time"),
+        sample_chunks=(two, two, four),
+        sample_shards=(four, two, four) if zarr_format == 3 else None,
+    )
+    recording.append_samples(np.ones((4, 2, 4), np.float32))
+    store.add_index("ids", np.arange(4), chunks=(two,))
+    recording.add_extension_array(
+        "test/values",
+        np.zeros(8),
+        chunks=(two,),
+        shards=(four,) if zarr_format == 3 else None,
+    )
+    assert recording.sample_shape == (2, 4)
+    assert recording.global_metadata["sigmf-zarr:sample-shape"] == [2, 4]
+    assert validate_store(store).valid
+
+
 def test_recording_open_rejects_invalid_sample_shape_rank(
     tmp_path: Path,
 ) -> None:
@@ -1691,6 +1914,26 @@ def test_store_string_index_uses_variable_length_utf8(
         )
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_open_rejects_boolean_schema_version(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """The JSON value `true` is not the schema version `1`.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+    """
+    store_path = tmp_path / "store.zarr"
+    SigMFZarrStore.create(store_path, zarr_format=zarr_format)
+    zarr.open_group(store_path, mode="r+").attrs["schema_version"] = True
+
+    with pytest.raises(ValueError, match="schema version"):
+        SigMFZarrStore.open(store_path)
+    with pytest.raises(ValueError, match="schema version"):
+        validate_store(store_path)
+
+
 def test_decode_json_index_rejects_deep_entries(tmp_path: Path) -> None:
     """An entry too deep for the JSON decoder raises `ValueError`.
 
@@ -1728,6 +1971,36 @@ def test_recording_creation_rejects_non_numeric_sample_dtypes(
     assert "rec" not in store.recordings
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_validation_reports_non_numeric_sample_dtype(
+    tmp_path: Path, zarr_format: ZarrFormat
+) -> None:
+    """Validation must report a stored date-time sample array.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+    """
+    path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(path, zarr_format=zarr_format)
+    store.recordings.create("rec", sample_shape=(4,), sample_checksum=None)
+    store.close()
+    group = zarr.open_group(path / "recordings" / "rec", mode="r+")
+    del group["samples"]
+    group.create_array("samples", shape=(4,), dtype="<m8[ns]", chunks=(4,))
+    metadata = dict(cast(JSONObject, group.attrs["global"]))
+    metadata["sigmf-zarr:dtype"] = "<m8[ns]"
+    group.attrs["global"] = metadata
+
+    result = validate_store(path)
+    assert result.valid is False
+    assert any(
+        "is not a Boolean, integer, floating-point, or complex dtype"
+        in issue.message
+        for issue in result.issues
+    )
+
+
 @pytest.mark.parametrize("position", [True, np.bool_(False), 1.0, "0", None])
 def test_item_metadata_positions_must_be_integers(
     tmp_path: Path, position: object
@@ -1757,6 +2030,44 @@ def test_item_metadata_positions_must_be_integers(
     }
     assert recording.get_item_metadata(1) == {}
     assert store.verify_integrity()
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+@pytest.mark.parametrize(
+    "data",
+    [
+        np.float32(1.5),
+        np.arange(12, dtype=np.int16).reshape(3, 4),
+        np.arange(24, dtype=np.float64).reshape(2, 3, 4),
+        np.array("text"),
+        np.array([["a", "bc"], ["def", ""]]),
+    ],
+    ids=["scalar", "matrix", "cube", "scalar-text", "text-matrix"],
+)
+def test_extension_arrays_default_chunks_for_any_rank(
+    tmp_path: Path, zarr_format: ZarrFormat, data: npt.NDArray[Any]
+) -> None:
+    """Default extension chunks must match the rank of the data.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format to create.
+        data: Extension values of rank other than one.
+    """
+    path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(path, zarr_format=zarr_format)
+    recording = store.recordings.create("rec", sample_shape=(4,))
+    array = recording.add_extension_array("values", data)
+    assert array.shape == data.shape
+    assert len(array.chunks) == data.ndim
+    stored = np.asarray(array[...])
+    if data.dtype.kind == "U":
+        assert stored.tolist() == data.tolist()
+    else:
+        np.testing.assert_array_equal(stored, data)
+    store.update_integrity()
+    assert store.verify_integrity()
+    assert validate_store(path).valid is True
 
 
 @pytest.mark.parametrize(

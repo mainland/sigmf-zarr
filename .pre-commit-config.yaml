@@ -21,6 +21,11 @@ repos:
     hooks:
       - id: rumdl
 
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: c92afdf2c6ca336aaa8f39e2bd8d48f62dbd8e1f  # frozen: v1.31.1
+    hooks:
+      - id: zizmor
+
   - repo: local
     hooks:
       - id: ruff-check

@@ -66,6 +66,7 @@ nitpick_ignore = [
     ("py:class", "npt.DTypeLike"),
     # Public signatures name these types by their private defining module.
     # The API reference documents their public names.
+    ("py:class", "argparse._SubParsersAction"),
     ("py:class", "sigmf_zarr.readonly._ReadOnlyIndexer"),
     ("py:class", "sigmf_zarr.store._common.ChecksumName"),
     ("py:class", "sigmf_zarr.store._common.ZarrFormat"),

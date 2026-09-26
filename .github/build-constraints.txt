@@ -1,0 +1,7 @@
+# Build backend for release and CI distributions. `uv build` resolves the
+# `[build-system]` requirements in pyproject.toml at build time. These pins
+# make each build use the same backend. Update them deliberately.
+packaging==26.3
+setuptools==84.2.1
+setuptools-scm==10.3.4
+vcs-versioning==2.5.0

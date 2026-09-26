@@ -1,6 +1,8 @@
 # Usage
 
-Use SigMF-Zarr as a Python API for building Zarr-backed signal stores.
+Use SigMF-Zarr as a Python API for building Zarr-backed signal stores or from
+the command line to import and export standard SigMF files and supported
+datasets.
 
 ## Installation
 
@@ -20,7 +22,183 @@ Run commands from the repository environment:
 
 ```bash
 .venv/bin/python -m pytest
+.venv/bin/sigmf-zarr --help
 ```
+
+## Command line
+
+The package installs the `sigmf-zarr` command. Its resource-oriented commands
+inspect a store and its recordings and collections:
+
+```bash
+sigmf-zarr store store.zarr info
+sigmf-zarr store store.zarr recordings
+sigmf-zarr store store.zarr recording myrec info --format json
+sigmf-zarr store store.zarr collections
+sigmf-zarr store store.zarr collection paired info
+sigmf-zarr store store.zarr validate
+sigmf-zarr store store.zarr integrity verify
+```
+
+Inspection commands produce human-readable text by default and accept
+`--format json` for scripts. A store argument is a Zarr URL only when it starts
+with an explicit scheme, such as `s3://` or `file://`. Any other store argument
+names a local directory, including one whose name contains `#` or `?`.
+
+`validate` checks store structure and verifies every declared hash, including
+`core:sha512`. It reads each sample array once for each declared sample hash.
+Pass `--skip-integrity` to check structure only, or `--require-integrity` to
+also require hashes for the store and every recording and collection. For an
+untrusted store, pass `--max-array-bytes` to bound the data that validation
+decodes. Validation does not verify a hash that covers an array whose declared
+logical size, or whose decoded chunk or shard size, exceeds the limit. It does
+not check per-item metadata entries in a chunk that exceeds the limit, and it
+stops checking entries once their decoded text exceeds the limit. Validation
+reports each skipped array and each unchecked set of entries as an issue.
+Variable-length strings count 16 bytes per element. The limit therefore bounds
+the number of strings in one decoded chunk, but not their length, so a small
+compressed chunk of long strings can still decode to more than the limit. The
+limit also applies with `--skip-integrity`.
+
+Before it reads a local store, `validate` lists the directory tree without
+following links. If it finds a symbolic link, an entry that is neither a
+regular file nor a directory, such as a FIFO or device, or a directory that it
+cannot list, it reports each one and reads no store content. A store opened
+through an fsspec local file system, as in `local:///data/store.zarr` or
+`simplecache::file:///data/store.zarr`, is a local store. A failed read,
+including a failed remote read, is reported as an issue.
+
+`integrity update` recalculates every hash, then checks structure and hash
+presence without reading the samples again.
+
+All importers are subcommands of `sigmf-zarr import`. List the supported
+formats with:
+
+```bash
+sigmf-zarr import --help
+```
+
+Import a single standard SigMF recording:
+
+```bash
+sigmf-zarr import sigmf input.sigmf-meta store.zarr
+```
+
+Import a standard SigMF archive:
+
+```bash
+sigmf-zarr import sigmf input.sigmf store.zarr
+```
+
+All import commands share `SOURCE`, `STORE`, `--recording-name`,
+`--overwrite-store`, `--overwrite-recording`, and `--zarr-format`. When the
+target store already exists, its Zarr format is detected automatically. New
+stores use Zarr format 3 by default. Pass `--zarr-format 2` when creating a new
+store for a downstream tool that requires the Zarr format 2 layout:
+
+```bash
+sigmf-zarr import sigmf input.sigmf-meta store.zarr --zarr-format 2
+```
+
+Supplying `--zarr-format` for an existing store verifies that the store has the
+requested format.
+
+Export one unbatched recording back to standard SigMF:
+
+```bash
+sigmf-zarr export store.zarr output.sigmf-meta --recording-name myrec
+```
+
+The equivalent resource-oriented form is:
+
+```bash
+sigmf-zarr store store.zarr recording myrec export output.sigmf-meta
+```
+
+Export a standard SigMF archive:
+
+```bash
+sigmf-zarr export store.zarr output.sigmf --archive --recording rec1
+```
+
+Export targets without a `.sigmf-meta` or `.sigmf` suffix receive one, and dots
+in the target stem are retained. An empty target, a target that ends with a
+path separator, and a target whose final component is `.` or `..` are errors.
+
+With `--overwrite`, export moves each existing target file into a backup
+directory before it publishes the new files. If another process creates a
+directory at a target path after the initial check, export moves that
+directory back, raises `ValueError`, and leaves the previous files in place.
+Any exception during publication, including `KeyboardInterrupt`, restores the
+previous files before it propagates.
+
+Archive export writes every member with UID and GID 0, empty owner and group
+names, mode `0o755` for directories and `0o644` for files, and modification
+time 0, the Unix epoch. Exports of the same content to the same target name
+therefore produce identical archive bytes.
+
+The import command can infer standard SigMF input from the file suffix. Use
+`--format` when the suffix is ambiguous.
+
+### Text and JSON output
+
+Text output escapes every nonprintable character in store names, metadata,
+validation messages, warnings, log messages, error messages, and `--debug`
+tracebacks. Control characters, such as the escape character and carriage
+return, appear as Python-style backslash escapes, for example `\x1b` and `\r`.
+A line feed in a name or message appears as `\n`, so each name, issue, and
+message occupies one output line. A file name that is not valid UTF-8
+appears with escapes such as `\udcff`. Backslashes in names are not escaped,
+so text output is for display only. JSON output escapes every non-ASCII
+character, and its strings decode to the stored names.
+
+With `--format json`, each `store` command prints one JSON object:
+
+- `store STORE info` prints `schema_name`, `schema_version`, `zarr_format`,
+  `metadata_sha512`, and the `recordings`, `collections`, and `indexes` name
+  lists.
+- `store STORE validate` and both `integrity` commands print `valid`,
+  `recordings_checked`, `collections_checked`, `indexes_checked`, and
+  `issues`. Each issue has a `path` and a `message`.
+- `store STORE recordings` prints `{"recordings": [...]}`, and
+  `store STORE collections` prints `{"collections": [...]}`.
+- `store STORE recording NAME info` prints `name`, `zarr_format`,
+  `sample_count`, `item_count`, `batched`, `samples_shape`, `samples_chunks`,
+  `sample_axes`, `sample_dtype`, `sample_checksum`, `sha512`,
+  `sample_sha512`, `metadata_sha512`, `num_channels`, `has_item_metadata`,
+  `global_keys`, `num_captures`, `num_annotations`, `extensions`, and
+  `indexes`. `sample_count` is the length of the `time` axis, which is the
+  item length in a batched recording. `item_count` is the number of batch
+  items, or `1` for an unbatched recording.
+- `store STORE recording NAME validate-rfml` prints `valid`, `profile`,
+  `version`, `indexes_checked`, `unvalidated_fields`,
+  `source_truth_verified`, and `issues`.
+- `store STORE recording NAME export` prints `recording` and `output`. With
+  `--dry-run`, it prints the `SigMFExportPlan.as_dict()` report in both
+  output formats.
+- `store STORE collection NAME info` prints `name`, `recording_ids`,
+  `metadata_sha512`, and `metadata_keys`.
+- `store STORE collection NAME export` prints `collection` and `output`.
+
+### Exit status
+
+Every command exits with one of these statuses:
+
+- `0`: The command succeeded.
+- `1`: A check failed. Validation or integrity verification found issues,
+  RFML profile validation found violations, or an export dry run found
+  rejections or omissions that `--allow-lossy` does not permit.
+- `2`: A usage or input error occurred. Examples are an invalid option, a
+  missing or unreadable store, a missing recording, a failed remote read, and
+  an invalid import source. The command prints the usage line of the selected
+  subcommand and a message that starts with `sigmf-zarr: error:` to standard
+  error. Where a library message names a Python parameter that has a
+  command-line option, such as `overwrite=True`, the message names the
+  option, such as `--overwrite`. A missing recording or collection is named
+  with its kind, as in `recording not found: 'name'`.
+
+With `--debug`, an input error prints its Python traceback to standard error
+instead, and the command exits with status 1.
 
 ## Create a recording
 
@@ -132,7 +310,8 @@ Use `sample_axes` to make the tensor layout explicit. Standard SigMF serializes
 a `cf*` signal as interleaved complex samples in its flat `.sigmf-data` byte
 stream. SigMF-Zarr instead stores the components in one real-valued Zarr array
 with an explicit `iq` axis of length `2`: index `0` is I and index `1` is Q.
-They are not separate arrays.
+They are not separate arrays. Import splits standard complex samples along this
+axis, and export combines them into the standard interleaved representation.
 
 ```python
 recording = store.recordings.create(
@@ -433,10 +612,20 @@ recording = store.recordings.create(
 )
 ```
 
-`set_samples()` and `append_samples()` automatically remove a stored
-`core:sha512` digest. Public sample views are read-only. Use a mutation context
-for same-shape value updates. It invalidates hashes before granting writable
-access:
+For an unbatched recording, calculate or verify standard SigMF
+`core:sha512` over the exact `.sigmf-data` byte stream that export would
+produce:
+
+```python
+digest = recording.calculate_sha512()  # Does not change metadata.
+recording.update_sha512()              # Stores core:sha512.
+assert recording.verify_sha512()
+```
+
+`set_samples()` and `append_samples()` automatically remove a stored digest.
+Public sample views are read-only. They prevent accidental mutation but are not
+a security boundary. Use a mutation context for same-shape value updates. It
+invalidates hashes before granting writable access:
 
 ```python
 replacement = np.ones(100, dtype=np.float32)
@@ -444,7 +633,9 @@ with recording.mutate_samples() as samples:
     samples[100:200] = replacement
 ```
 
-Use `set_samples()` or `append_samples()` for shape changes.
+Use `set_samples()` or `append_samples()` for shape changes. SHA-512 is a
+whole-recording portability and identity check. CRC32C remains the efficient
+per-chunk corruption check.
 
 SigMF-Zarr can additionally maintain logical SHA-512 hashes for samples and
 metadata. Unlike `core:sha512`, these native hashes describe the logical Zarr
@@ -525,6 +716,82 @@ An index is marked invalid before the context body runs and restored to valid
 only after successful structural validation. Resizing a sample axis similarly
 invalidates indexes aligned with that axis until they are repaired or replaced.
 Re-run `store.update_integrity()` after completing a series of changes.
+
+## Import and export SigMF
+
+The reusable Python helpers mirror the command line:
+
+```python
+from sigmf_zarr import SigMFZarrStore, export_sigmf, import_sigmf
+
+recording = import_sigmf(
+    "store.zarr",
+    "input.sigmf-meta",
+    recording_name="imported",
+    overwrite_store=True,
+)
+
+export_sigmf(
+    SigMFZarrStore.open("store.zarr"),
+    "imported",
+    "roundtrip.sigmf-meta",
+    overwrite=True,
+)
+```
+
+Standard SigMF export supports only unbatched recordings. Batched recordings
+represent multiple independent items, so exporting them to standard SigMF
+requires an explicit split strategy that the implementation does not provide.
+
+When importing standard SigMF, `core:num_channels` is mapped to an explicit
+SigMF-Zarr `channel` axis. A real two-channel SigMF stream imports as
+`("channel", "time")`. A complex two-channel stream imports as
+`("channel", "iq", "time")`.
+
+Complex floating-point precision is preserved: `cf32_le` and `cf32_be` use
+32-bit I/Q components, while `cf64_le` and `cf64_be` use 64-bit components.
+Export restores the endianness declared by `core:datatype` rather than using
+the host machine's native byte order.
+
+Import verifies that the reconstructed standard dataset bytes match the source
+`core:sha512` and stores that digest. If the declared digest is stale or
+conversion cannot preserve the source bytes exactly, import raises `ValueError`
+instead of retaining a misleading digest. Import also raises `ValueError` for
+an unreadable archive, an archive member that the `tarfile` `data` extraction
+filter rejects, and a recording that sigmf-python cannot read, such as one
+whose `core:dataset` file is missing. Export adds `core:sha512` when it is
+absent and rejects a stored digest that does not match the bytes being written.
+
+A `.sigmf` archive must be an uncompressed tar file. Archive import raises
+`ValueError` for a gzip, bzip2, xz, or Zstandard stream, and checks every member
+before it extracts any. It reads member headers itself and requires each header
+to follow the previous one, so a malformed header cannot make parsing loop. It
+rejects sparse files, members other than regular files and directories, such as
+symbolic links, hard links, and device files, members with an absolute name, a
+`..` component, or a NUL character, two regular files with the same name, a
+name that is both a regular file and a directory, and a directory with a SigMF
+file suffix. A member name that the file system cannot hold, such as one that
+is too long, is also a `ValueError`. Archive import also rejects an archive
+whose regular files declare more bytes than the archive holds, and an archive
+that would create more files and directories, including implied parent
+directories, than it has 512-byte blocks. The extracted file data is therefore
+no larger than the archive. Each directory can still occupy a file-system block
+and an inode, so a directory needs up to about eight times its 512-byte header
+on a file system with 4 KiB blocks.
+
+Archive import also verifies `.sigmf-collection` stream hashes against the
+referenced metadata files. A standalone `.sigmf-meta` file has no standard
+self-hash for its metadata. After a successful import, SigMF-Zarr calculates
+its own sample and metadata hashes. Export verifies any stored native hashes,
+calculates `core:sha512` from the emitted data bytes, and, for archives,
+calculates collection stream hashes from the emitted metadata bytes.
+
+For multi-channel unbatched recordings, standard SigMF export validates
+`core:num_channels` against the declared `channel` axis. If the field is
+missing and the recording has more than one channel, export fills it from the
+axis length. If the field is present but does not match the axis length, export
+raises `ValueError`. Single-channel exports may still include
+`core:num_channels: 1` because that is normal standard SigMF metadata.
 
 ## Mutation and failure behavior
 
