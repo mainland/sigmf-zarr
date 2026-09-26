@@ -60,10 +60,21 @@ The importer creates typed indexes aligned with the `item` axis:
 | `mode_id` | `int32` | ID in the index's sorted `labels` attribute |
 | `snr_db` | `int16` | SNR in dB |
 
-The `mode_id` index uses the field `panoradio:mode`. Its labels preserve the
+The `mode_id` index uses the field `rfml-dataset:class`. Its labels preserve the
 source transmission-mode names. The `snr_db` index uses the field
 `panoradio:snr` and the unit `dB`. The importer derives the vocabulary from
 the supplied tags and does not require all published modes or SNR levels.
+
+New imports declare the [RFML dataset profile](rfml.md), version `0.1.0`, in
+shared `core:extensions`. The importer replaces any supplied declaration for
+that profile with the version it writes and preserves other namespaces. It
+does not modify the caller's metadata object. Transmission-mode labels use the
+generic class field because they may describe protocols as well as modulation.
+
+Earlier imports used `field="panoradio:mode"`. Those stores remain readable.
+Named reads of `mode_id`, raw IDs, and lookup order remain unchanged, while
+field-based discovery must select the stored field name. Source SNR remains
+`panoradio:snr` because its full profile measurement convention is unresolved.
 
 ## Storage options
 

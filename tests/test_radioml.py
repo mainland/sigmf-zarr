@@ -101,7 +101,11 @@ def test_import_radioml_dataset_writes_store(tmp_path: Path) -> None:
     np.testing.assert_array_equal(recording.samples[:], dataset[("BPSK", 0)])
     np.testing.assert_array_equal(recording.index("mod_class_id")[:], [0])
     assert recording.index("mod_class_id").attrs["labels"] == ["BPSK"]
+    assert recording.index("mod_class_id").attrs["field"] == (
+        "rfml-dataset:modulation"
+    )
     np.testing.assert_array_equal(recording.index("snr_db")[:], [0])
+    assert recording.index("snr_db").attrs["field"] == "radioml:snr"
     assert store.verify_integrity()
 
 

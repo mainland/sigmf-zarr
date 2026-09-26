@@ -106,6 +106,8 @@ complete.
   process-local read-only handles.
 - Record dataset manifests with target descriptors, item order, transform
   descriptions, software versions, and input hashes.
+- Define the draft `rfml-dataset` dense metadata profile. Adopt RFML modulation
+  fields for RadioML imports and generic class fields for Panoradio imports.
 - Add a RadioML VT-CNN2 training example with seeded modulation/SNR-stratified
   splits, CPU target transforms, spawn workers, and validation accuracy by SNR.
 
