@@ -19,6 +19,7 @@ from sigmf_zarr._import_target import (
     open_import_store,
     remove_new_store_on_failure,
 )
+from sigmf_zarr._rfml import _with_rfml_profile
 from sigmf_zarr.json import JSONObject
 from sigmf_zarr.provenance import file_identity, import_metadata
 from sigmf_zarr.sample_storage import resolve_import_sample_storage
@@ -239,7 +240,7 @@ def import_panoradio_dataset(
         Path(tags_path), item_count
     )
     sample_dtype = logical_sample_dtype(samples.real.dtype)
-    metadata = dict(global_metadata or {})
+    metadata = _with_rfml_profile(global_metadata)
     metadata["panoradio:source_dataset"] = (
         source_dataset or Path(source_path).stem
     )
@@ -307,7 +308,7 @@ def import_panoradio_dataset(
             "mode_id",
             mode_id,
             axis="item",
-            field="panoradio:mode",
+            field="rfml-dataset:class",
             labels=tuple(classes),
         )
         recording.add_index(

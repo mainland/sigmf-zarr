@@ -19,6 +19,7 @@ from sigmf_zarr.cli.export import (
 from sigmf_zarr.cli.group import CommandGroup
 from sigmf_zarr.cli.output import OutputCommand
 from sigmf_zarr.readonly import ReadOnlyArray
+from sigmf_zarr.rfml import RFMLValidationReport, validate_rfml
 from sigmf_zarr.store import SigMFCollection, SigMFRecording, SigMFZarrStore
 from sigmf_zarr.validation import validate_store
 
@@ -101,6 +102,30 @@ def collection_result(collection: SigMFCollection) -> dict[str, Any]:
         "metadata_sha512": collection.metadata_sha512,
         "metadata_keys": sorted(collection.metadata),
     }
+
+
+def rfml_report_text(report: RFMLValidationReport) -> str:
+    """Return a human-readable RFML profile validation report.
+
+    Args:
+        report: Profile validation result.
+
+    Returns:
+        Summary line, one line per issue, and the unvalidated fields.
+    """
+    lines = [f"valid={report.valid!r}, indexes={report.indexes_checked}"]
+    # Paths, messages, and field names can quote untrusted names. Escape
+    # each one so that its line feeds cannot start a new output line.
+    lines.extend(
+        escape_text(f"{issue.path}: {issue.message}")
+        for issue in report.issues
+    )
+    if report.unvalidated_fields:
+        lines.append(
+            "unvalidated fields: "
+            + ", ".join(escape_text(f) for f in report.unvalidated_fields)
+        )
+    return "\n".join(lines)
 
 
 def require_recording(store: SigMFZarrStore, name: str) -> SigMFZarrStore:
@@ -438,6 +463,38 @@ class RecordingExportCommand(StoreOutputCommand):
         return status
 
 
+class RecordingRFMLValidationCommand(StoreOutputCommand):
+    """Validate the dense RFML profile apart from integrity and splits."""
+
+    name = "validate-rfml"
+    help = "Validate declared RFML metadata fields"
+
+    def __init__(self, context: StoreContext) -> None:
+        """Initialize profile validation.
+
+        Args:
+            context: Shared read-only store context.
+        """
+        super().__init__(context, "Validate the dense RFML metadata profile.")
+
+    def handle(self, args: argparse.Namespace) -> int:
+        """Check descriptors and values without reading samples.
+
+        Args:
+            args: Parsed recording selection and output format.
+
+        Returns:
+            Zero on conformance, or one when requirements are violated.
+        """
+        store = require_recording(self.context.open(args.store), args.name)
+        recording = store.recordings.open(args.name, validation="structural")
+        report = validate_rfml(recording)
+        self.write_output(
+            args, text=rfml_report_text(report), value=report.as_dict()
+        )
+        return int(not report.valid)
+
+
 class RecordingCommand(CommandGroup):
     """Group commands that operate on one recording."""
 
@@ -452,7 +509,11 @@ class RecordingCommand(CommandGroup):
         """
         super().__init__(
             "Inspect or export one recording.",
-            (RecordingInfoCommand(context), RecordingExportCommand(context)),
+            (
+                RecordingInfoCommand(context),
+                RecordingExportCommand(context),
+                RecordingRFMLValidationCommand(context),
+            ),
             destination="recording_action",
         )
 
@@ -663,5 +724,8 @@ __all__ = [
     "StoreValidateCommand",
     "collection_result",
     "recording_result",
+    "require_collection",
+    "require_recording",
+    "rfml_report_text",
     "store_result",
 ]
