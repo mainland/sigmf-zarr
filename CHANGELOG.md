@@ -177,9 +177,38 @@ complete.
 
 ### Dataset importers
 
-- Import RadioML 2016 and RadioML 2018 datasets in bounded batches.
-- Restrict RadioML pickle loading to built-in containers and real numeric
-  NumPy arrays, and reject arrays that hold more data than the file.
+- Import RadioML 2016, RadioML 2018, and Chad Spooner CSPB datasets in bounded
+  batches.
+- Load RadioML pickles with a restricted opcode interpreter that never calls a
+  function named by the file, accepts only plain integer and floating-point
+  arrays, checks declared array sizes against the file size before
+  allocating, and bounds opcode count and nesting depth. Reject pickle entries
+  with no items. Check each CSPB ZIP member's declared size against its `.tim`
+  header before reading it.
+- Export `load_radioml2016_pickle()` from `sigmf_zarr`, and accept `str` paths
+  as well as path-like objects.
+- Rename the public Python API parameter `iq_chunks` of
+  `import_radioml2016_dataset()` and `import_radioml2018_dataset()` to
+  `sample_chunks`, as in the other importers. The old name is not accepted.
+- Replace an existing target with `overwrite_store` only when it is an empty
+  directory or a SigMF-Zarr store, and refuse a target that equals or
+  contains an input. Check sample chunk and shard options before replacing
+  anything. A failed import removes only a directory that it created,
+  identified by device and inode.
+- Accept only `(str, int)` pickle keys with a label of at most 256
+  characters, an `int16` SNR other than a Boolean, and total label text no
+  longer than the file. Limit text integers and memo indexes to the ranges
+  of the binary pickle opcodes and dictionaries to 65,536 entries.
+- Combine RadioML 2016 and RML22 buckets into writes of up to `batch_size`
+  items, and reject mappings with more than 4,096 buckets.
+- Accept only stored and deflate CSPB ZIP members, and inflate a member at
+  most one byte past the size that its `.tim` header declares. Reject
+  symbolic links in CSPB source directories. Require CSPB truth integers to
+  fit `int64`, and at most 32,768 modulation labels.
+- Allow only the gzip, shuffle, and fletcher32 HDF5 filters in RadioML 2018
+  files, inflate gzip chunks with a bound, verify Fletcher-32 checksums, and
+  disable HDF5 plugin loading during import. Require scalar numeric label
+  and SNR elements, and at most 32,768 classes.
 
 ### Command line
 
