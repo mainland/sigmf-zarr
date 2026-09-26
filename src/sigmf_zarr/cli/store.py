@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import Any
 
 from sigmf_zarr._text import escape_text
+from sigmf_zarr.cli.command import NotFoundError, positive_int
 from sigmf_zarr.cli.context import StoreContext
 from sigmf_zarr.cli.group import CommandGroup
 from sigmf_zarr.cli.output import OutputCommand
@@ -97,6 +98,42 @@ def collection_result(collection: SigMFCollection) -> dict[str, Any]:
     }
 
 
+def require_recording(store: SigMFZarrStore, name: str) -> SigMFZarrStore:
+    """Check that a selected recording exists.
+
+    Args:
+        store: Source store.
+        name: Recording name.
+
+    Returns:
+        The same store.
+
+    Raises:
+        NotFoundError: If the recording does not exist.
+    """
+    if name not in store.recordings:
+        raise NotFoundError("recording", name)
+    return store
+
+
+def require_collection(store: SigMFZarrStore, name: str) -> SigMFZarrStore:
+    """Check that a selected collection exists.
+
+    Args:
+        store: Source store.
+        name: Collection name.
+
+    Returns:
+        The same store.
+
+    Raises:
+        NotFoundError: If the collection does not exist.
+    """
+    if name not in store.collections:
+        raise NotFoundError("collection", name)
+    return store
+
+
 class StoreOutputCommand(OutputCommand):
     """Output command sharing a lazily opened store context."""
 
@@ -176,6 +213,14 @@ class StoreValidateCommand(StoreOutputCommand):
             action="store_true",
             help="Require hashes for the store and every resource.",
         )
+        parser.add_argument(
+            "--max-array-bytes",
+            type=positive_int,
+            help=(
+                "Skip and report checks that would read more than this many "
+                "bytes of one array, chunk, or item metadata entry."
+            ),
+        )
 
     def handle(self, args: argparse.Namespace) -> int:
         """Validate the selected store.
@@ -190,6 +235,7 @@ class StoreValidateCommand(StoreOutputCommand):
             self.context.open(args.store),
             verify_integrity=not args.skip_integrity,
             require_integrity=args.require_integrity,
+            max_array_bytes=args.max_array_bytes,
         )
         self.write_output(args, text=report.format(), value=report.as_dict())
         return 0 if report.valid else 1
@@ -337,7 +383,8 @@ class RecordingInfoCommand(StoreOutputCommand):
         Returns:
             Process exit status.
         """
-        recording = self.context.open(args.store).recordings[args.name]
+        store = require_recording(self.context.open(args.store), args.name)
+        recording = store.recordings[args.name]
         self.write_output(
             args,
             text=recording.info(),
@@ -491,7 +538,8 @@ class CollectionInfoCommand(StoreOutputCommand):
         Returns:
             Process exit status.
         """
-        collection = self.context.open(args.store).collections[args.name]
+        store = require_collection(self.context.open(args.store), args.name)
+        collection = store.collections[args.name]
         self.write_output(
             args,
             text=collection.info(),
@@ -548,7 +596,7 @@ class CollectionExportCommand(StoreOutputCommand):
             Process exit status.
         """
         path = export_sigmf_archive(
-            self.context.open(args.store),
+            require_collection(self.context.open(args.store), args.name),
             args.output,
             collection_name=args.name,
             overwrite=args.overwrite,
@@ -557,7 +605,7 @@ class CollectionExportCommand(StoreOutputCommand):
         )
         self.write_output(
             args,
-            text=f"exported collection: {path}",
+            text=f"exported collection: {escape_text(str(path))}",
             value={"collection": args.name, "output": str(path)},
         )
         return 0

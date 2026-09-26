@@ -717,6 +717,41 @@ def test_validation_limit_skips_only_oversized_samples(
     assert not validate_store(store, max_array_bytes=16).valid
 
 
+def test_validate_command_accepts_array_size_limit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The command line exposes the validation size limit.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        capsys: Pytest output capture fixture.
+    """
+    store_path, _ = _validation_store(tmp_path)
+    command = ["store", str(store_path), "validate", "--format", "json"]
+
+    status = SigMFCommand().run([*command, "--max-array-bytes", "8"])
+    result = json.loads(capsys.readouterr().out)
+
+    assert status == 1
+    assert [issue["path"] for issue in result["issues"]] == [
+        "recordings/rec/samples"
+    ]
+    assert SigMFCommand().run([*command, "--max-array-bytes", "16"]) == 0
+    capsys.readouterr()
+    # The limit also bounds structural reads, so the command accepts it
+    # without hash verification and reports a result instead of a usage
+    # error.
+    status = SigMFCommand().run(
+        [*command, "--max-array-bytes", "8", "--skip-integrity"]
+    )
+    assert status in {0, 1}
+    assert "valid" in json.loads(capsys.readouterr().out)
+    with pytest.raises(SystemExit) as exit_info:
+        SigMFCommand().run([*command, "--max-array-bytes", "0"])
+    assert exit_info.value.code == 2
+    assert "--max-array-bytes" in capsys.readouterr().err
+
+
 def test_validation_reports_symbolic_links(tmp_path: Path) -> None:
     """Links planted below a local store root are reported, not followed.
 

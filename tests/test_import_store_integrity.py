@@ -7,7 +7,10 @@ from pathlib import Path
 import numpy as np
 from sigmf import SigMFFile
 
-from sigmf_zarr import SigMFZarrStore, import_sigmf
+from sigmf_zarr import (
+    SigMFZarrStore,
+    import_sigmf,
+)
 from tests.testdata import TEST_FLOAT32_DATA, TEST_METADATA
 
 
