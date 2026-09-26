@@ -50,6 +50,13 @@ This is the first public alpha of the initial SigMF-Zarr format draft.
 - Store multiple named split schemes with compact assignments, read-only
   views, provenance, and explicit scalar group-isolation validation.
 
+- Add an optional dense PyTorch dataset with explicit targets and split
+  selection, dtype-preserving CPU tensors, transforms, batched reads, and
+  process-local read-only handles.
+
+- Add a RadioML VT-CNN2 training example with seeded modulation/SNR-stratified
+  splits, CPU target transforms, spawn workers, and validation accuracy by SNR.
+
 The format and Python API may change incompatibly during the alpha series.
 Data written by one alpha may require migration before a later alpha can read
 it. Stable compatibility begins only when the initial format draft is declared

@@ -25,7 +25,7 @@ repos:
 
       - id: mypy
         name: Mypy
-        entry: uv run --locked --extra dev mypy src
+        entry: uv run --locked --extra dev --extra pytorch mypy src examples
         language: system
         pass_filenames: false
-        files: ^(src/.*\.py|pyproject\.toml)$
+        files: ^((src|examples)/.*\.py|pyproject\.toml)$

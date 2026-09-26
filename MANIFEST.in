@@ -6,3 +6,5 @@ include tox.ini
 include uv.lock
 recursive-include docs *.md *.py
 recursive-include tests *.py
+recursive-include benchmarks *.py
+recursive-include examples *.py
