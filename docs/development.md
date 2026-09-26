@@ -65,6 +65,13 @@ uv pip install --python .venv/bin/python --no-deps \
 This command rebuilds the local package without changing installed dependency
 versions.
 
+The desktop viewer tests require the [Qt system dependencies](viewer.md).
+Without a display, run them with the offscreen platform:
+
+```bash
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest tests/test_viewer_qt.py
+```
+
 ## Checks
 
 Install the pre-commit hooks once per clone:
@@ -92,12 +99,12 @@ Run every hook against the complete repository:
 Run the test suite with branch coverage:
 
 ```bash
-.venv/bin/python -m pytest --cov
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest --cov
 ```
 
 The test suite treats every warning as an error. A coverage run fails below 80
-percent. Environments without the optional integrations skip the PyTorch tests,
-so measure coverage only with every extra installed.
+percent. Environments without the optional integrations skip the PyTorch and
+desktop viewer tests, so measure coverage only with every extra installed.
 
 Tox runs the tests without the lock, so a runtime dependency missing from
 `pyproject.toml` fails. Its environments are:
@@ -112,7 +119,8 @@ Tox runs the tests without the lock, so a runtime dependency missing from
 - `linkcheck`: The external link check. It needs the network and is not part of
   CI.
 
-Run one environment with `.venv/bin/tox -e <name>`.
+Run one environment with `.venv/bin/tox -e <name>`. The `full` and `min`
+environments require the Qt system dependencies.
 
 CI runs every tox environment except `linkcheck`. It runs `full` on Python
 3.12, 3.13, and 3.14 by starting tox under each version. CI also checks that

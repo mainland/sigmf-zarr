@@ -326,7 +326,36 @@ complete.
   allocate memory per item. Reject remote reads in a process created by
   `os.fork()` from the dataset's owner.
 
+### Desktop viewer
+
+- Add an optional Qt viewer that opens stores read-only and plots waveforms,
+  constellations, spectra, and spectrograms with capture-aware overlays.
+- Interpret shared and per-item captures, including independent and
+  fractional timestamps, when computing plot time coordinates.
+- Display names and other text from the store as plain text, without Qt rich
+  text or Matplotlib mathtext.
+- Draw at most 500 region overlays in each Time and Spectrogram plot, in order
+  of their first sample, and report the number of omitted regions.
+- Prepare regions and metadata text in workers, fill metadata tabs when
+  shown, truncate long text, and list or draw at most 1,000 regions.
+- Keep index names that differ only in nonprintable characters distinct,
+  and name the exception type of an error without a message.
+
 ### Command line
 
 - Provide the `sigmf-zarr` command for store inspection, validation, integrity
-  updates, SigMF interchange, and dataset import.
+  updates, SigMF interchange, dataset import, and the desktop viewer.
+- Exit with status 0 on success, 1 when a validation, integrity, or export
+  plan check fails, and 2 for a usage or input error.
+- Escape nonprintable characters, such as terminal control sequences and
+  undecodable file names, in text output, error messages, warnings, and log
+  records.
+- Report the `time` axis length as `sample_count` and the number of items as
+  `item_count` in `store STORE recording NAME info --format json`. Print
+  `validate-rfml` results as text unless `--format json` is given.
+- Escape each untrusted field before joining output lines, including
+  `--debug` tracebacks, so names with line feeds cannot forge output lines.
+- Exit with status 2 for backend client, overflow, and memory errors.
+- Name command-line options rather than Python parameters in errors, name
+  the kind of a missing resource, and print the selected subcommand's usage
+  line. Allow `--max-array-bytes` with `--skip-integrity`.

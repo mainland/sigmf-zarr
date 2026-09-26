@@ -28,6 +28,7 @@ from sigmf_zarr.cli.store import (
     require_collection,
     require_recording,
 )
+from sigmf_zarr.cli.view import ViewCommand
 from sigmf_zarr.sigmf import import_sigmf, import_sigmf_archive
 
 ImportFormat = Literal["auto", "sigmf", "sigmf-archive"]
@@ -374,6 +375,7 @@ class SigMFCommand(CommandGroup):
                 StoreCommand(context),
                 ImportGroup(),
                 ExportCommand(),
+                ViewCommand(),
             ),
             destination="command_name",
         )
