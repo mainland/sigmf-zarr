@@ -248,6 +248,31 @@ def test_url_locations_reach_zarr(
     assert [child.name for child in tmp_path.iterdir()] == ["file.zarr"]
 
 
+@pytest.mark.parametrize("zarr_format", [2, 3])
+def test_http_url_location_reaches_zarr(
+    tmp_path: Path, zarr_format: int
+) -> None:
+    """An HTTP URL string opens the served store read-only.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format.
+    """
+    pytest.importorskip("aiohttp")
+    from tests.http_store import serve_directory
+
+    SigMFZarrStore.create(
+        tmp_path / "data.zarr", zarr_format=cast(ZarrFormat, zarr_format)
+    ).collections.create("kept")
+    with serve_directory(tmp_path) as url:
+        location = f"{url}/data.zarr"
+        with SigMFZarrStore.open(location) as store:
+            assert store.zarr_format == zarr_format
+            assert store.list_collections() == ("kept",)
+        assert validate_store(location).issues == ()
+        assert StoreContext().open(location).list_collections() == ("kept",)
+
+
 def test_append_mode_initializes_empty_target_as_format_3(
     tmp_path: Path,
 ) -> None:
