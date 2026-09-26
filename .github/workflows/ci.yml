@@ -95,6 +95,8 @@ jobs:
           uv pip install --python .venv/bin/python dist/*.whl
           .venv/bin/sigmf-zarr import sigmf --help
           .venv/bin/sigmf-zarr --version
+          .venv/bin/sigmf-zarr import radioml2016 --help
+          .venv/bin/sigmf-zarr import radioml2018 --help
       - uses: actions/upload-artifact@v4
         with:
           name: distributions

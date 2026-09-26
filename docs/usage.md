@@ -74,7 +74,28 @@ sigmf-zarr import sigmf input.sigmf-meta store.zarr --zarr-format 2
 ```
 
 Supplying `--zarr-format` for an existing store verifies that the store has the
-requested format.
+requested format. The same behavior applies to both RadioML import commands.
+Zarr format 2 does not support sample sharding, so it cannot be combined with
+`--sample-shard-batch`.
+
+Import a RadioML 2016 pickle mapping:
+
+```bash
+sigmf-zarr import radioml2016 RML2016.10a.pkl store.zarr
+```
+
+Python pickle loading can execute code. Use `sigmf-zarr import radioml2016`
+only with dataset files obtained from a trusted source.
+
+Import a RadioML 2018 HDF5 dataset:
+
+```bash
+sigmf-zarr import radioml2018 \
+  GOLD_XYZ_OSC.0001_1024.hdf5 store.zarr
+```
+
+See [RadioML](radioml.md) for dataset-specific behavior, class ordering, CLI
+options, and Python examples.
 
 Export one unbatched recording back to standard SigMF:
 
@@ -94,8 +115,8 @@ Export a standard SigMF archive:
 sigmf-zarr export store.zarr output.sigmf --archive --recording rec1
 ```
 
-The import command can infer standard SigMF input from the file suffix. Use
-`--format` when the suffix is ambiguous.
+The `sigmf-zarr import sigmf` command detects standard SigMF metadata files
+and archives from the file suffix. Use `--format` when the suffix is ambiguous.
 
 ## Create a recording
 
@@ -296,7 +317,7 @@ recording.add_index(
     "snr_db",
     np.array([0, 2, 4, 6] * 4, dtype=np.int16),
     axis="item",
-    field="example:snr",
+    field="radioml:snr",
     unit="dB",
     overwrite=True,
 )
@@ -305,7 +326,7 @@ recording.add_index(
     "mod_class_id",
     np.zeros((16,), dtype=np.int16),
     axis="item",
-    field="example:mod_class",
+    field="radioml:mod_class",
     labels=["BPSK"],
     overwrite=True,
 )

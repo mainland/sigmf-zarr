@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
   "crc32c>=2.4",
+  "h5py>=3.11",
   "numcodecs>=0.12",
   "numpy>=2.0.2",
   "sigmf>=1.11.0",
@@ -123,6 +124,7 @@ no_implicit_optional = true
 
 [[tool.mypy.overrides]]
 module = [
+  "h5py",
   "numcodecs",
   "numcodecs.*",
   "sigmf.*",

@@ -5,11 +5,20 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import pickle
+import warnings
 from pathlib import Path
 
+import h5py
+import numpy as np
+from zarr.codecs import BloscCodec
+
+import sigmf_zarr.cli.import_radioml2016 as radioml2016_cli
+import sigmf_zarr.cli.import_radioml2018 as radioml2018_cli
 import sigmf_zarr.cli.sigmf as sigmf_cli
 import sigmf_zarr.cli.store as store_cli
-from sigmf_zarr.cli import Command, ImportCommand
+import sigmf_zarr.radioml2016 as radioml2016
+from sigmf_zarr.cli import Command, ImportCommand, positive_int
 from sigmf_zarr.store import SigMFZarrStore
 
 
@@ -120,9 +129,43 @@ def test_sigmf_command_registers_subcommand_classes() -> None:
     assert isinstance(store_args.command, store_cli.StoreInfoCommand)
 
 
+def test_radioml_importers_have_nested_parsers() -> None:
+    """Dispatch RadioML import subcommands with dataset-specific defaults."""
+    parser = sigmf_cli.SigMFCommand().build_parser()
+    radioml2016_args = parser.parse_args(
+        ["import", "radioml2016", "input.pkl", "store.zarr"]
+    )
+    radioml2018_args = parser.parse_args(
+        ["import", "radioml2018", "input.hdf5", "store.zarr"]
+    )
+
+    assert isinstance(
+        radioml2016_args.command, radioml2016_cli.ImportRadioML2016Command
+    )
+    assert radioml2016_args.handler == radioml2016_args.command.handle
+    assert radioml2016_args.source == Path("input.pkl")
+    assert radioml2016_args.recording_name == "radioml2016"
+    assert radioml2016_args.zarr_format is None
+    assert isinstance(
+        radioml2018_args.command, radioml2018_cli.ImportRadioML2018Command
+    )
+    assert radioml2018_args.handler == radioml2018_args.command.handle
+    assert radioml2018_args.source == Path("input.hdf5")
+    assert radioml2018_args.recording_name == "radioml2018"
+    assert radioml2018_args.zarr_format is None
+
+
 def test_import_commands_share_import_base() -> None:
     """All concrete importers should inherit shared import behavior."""
     assert issubclass(sigmf_cli.ImportSigMFCommand, ImportCommand)
+    assert issubclass(
+        radioml2016_cli.ImportRadioML2016Command,
+        ImportCommand,
+    )
+    assert issubclass(
+        radioml2018_cli.ImportRadioML2018Command,
+        ImportCommand,
+    )
 
 
 def test_import_parsers_accept_zarr_format_2() -> None:
@@ -130,7 +173,86 @@ def test_import_parsers_accept_zarr_format_2() -> None:
     sigmf_args = sigmf_cli.ImportSigMFCommand().build_parser().parse_args(
         ["input.sigmf-meta", "store.zarr", "--zarr-format", "2"]
     )
+    radioml2016_args = (
+        radioml2016_cli.ImportRadioML2016Command()
+        .build_parser()
+        .parse_args(["input.pkl", "store.zarr", "--zarr-format", "2"])
+    )
+    radioml2018_args = (
+        radioml2018_cli.ImportRadioML2018Command()
+        .build_parser()
+        .parse_args(["input.hdf5", "store.zarr", "--zarr-format", "2"])
+    )
     assert sigmf_args.zarr_format == 2
+    assert radioml2016_args.zarr_format == 2
+    assert radioml2018_args.zarr_format == 2
+
+
+def test_radioml2016_command_auto_detects_existing_zarr_format_2(
+    tmp_path,
+) -> None:
+    """The 2016 command should not force v3 onto an existing v2 store.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    source_path = tmp_path / "RML2016.10a.pkl"
+    store_path = tmp_path / "store-v2.zarr"
+    with source_path.open("wb") as handle:
+        pickle.dump(
+            {
+                ("BPSK", 0): np.arange(16, dtype=np.float32).reshape(
+                    2, 2, 4
+                )
+            },
+            handle,
+        )
+    SigMFZarrStore.create(store_path, zarr_format=2)
+
+    status = sigmf_cli.SigMFCommand().run(
+        ["import", "radioml2016", str(source_path), str(store_path)]
+    )
+
+    store = SigMFZarrStore.open(store_path)
+    assert status == 0
+    assert store.zarr_format == 2
+    assert store.recordings["radioml2016"].samples.shape == (2, 2, 4)
+
+
+def test_radioml2018_command_auto_detects_existing_zarr_format_2(
+    tmp_path,
+) -> None:
+    """The 2018 command should not force v3 onto an existing v2 store.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    source_path = tmp_path / "RML2018.hdf5"
+    store_path = tmp_path / "store-v2.zarr"
+    samples = np.arange(16, dtype=np.float32).reshape(2, 4, 2)
+    labels = np.zeros(
+        (2, len(radioml2018_cli.RADIOML2018_MODULATION_CLASSES)),
+        dtype=np.float32,
+    )
+    labels[0, 0] = 1.0
+    labels[1, 1] = 1.0
+    with h5py.File(source_path, "w") as source:
+        source.create_dataset("X", data=samples)
+        source.create_dataset("Y", data=labels)
+        source.create_dataset("Z", data=np.array([[0], [2]], dtype=np.int16))
+    SigMFZarrStore.create(store_path, zarr_format=2)
+
+    status = sigmf_cli.SigMFCommand().run(
+        [
+            "import", "radioml2018", str(source_path), str(store_path),
+            "--batch-size", "1",
+        ]
+    )
+
+    store = SigMFZarrStore.open(store_path)
+    assert status == 0
+    assert store.zarr_format == 2
+    assert store.recordings["radioml2018"].samples.shape == (2, 2, 4)
 
 
 def test_import_command_format_choices_match_literal() -> None:
@@ -163,7 +285,7 @@ def test_detect_import_format_from_suffixes() -> None:
     )
     try:
         sigmf_cli.detect_import_format(
-            Path("dataset.pkl"),
+            Path("RML2016.10a.pkl"),
             "auto",
             archive=False,
         )
@@ -183,6 +305,158 @@ def test_detect_import_format_prefers_explicit_archive_flag() -> None:
         )
         == "sigmf-archive"
     )
+
+
+def test_radioml2016_command_dispatches_pickle(monkeypatch, capsys) -> None:
+    """The explicit 2016 command should route pickles through the shared API.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        capsys: Pytest capture fixture.
+    """
+    captured: dict[str, object] = {}
+
+    class FakeStore:
+        def info(self) -> str:
+            """Return fake store info.
+
+            Returns:
+                Store info string.
+            """
+            return "store-info"
+
+    def fake_load_pickle(path: Path, *, encoding: str):
+        """Capture pickle loading arguments.
+
+        Args:
+            path: Pickle path.
+            encoding: Pickle string encoding.
+
+        Returns:
+            Fake pickle payload.
+        """
+        captured["pickle_path"] = path
+        captured["encoding"] = encoding
+        return {("BPSK", 0): "raw"}
+
+    def fake_as_radioml_dict(obj: object):
+        """Return a fake RadioML mapping.
+
+        Args:
+            obj: Raw object to validate.
+
+        Returns:
+            Fake RadioML mapping.
+        """
+        captured["raw_obj"] = obj
+        return {
+            ("BPSK", 0): np.zeros((2, 2, 128), dtype=np.float32),
+        }
+
+    def fake_import_radioml_dataset(
+        store_path,
+        dataset,
+        *,
+        source_dataset=None,
+        recording_name="radioml",
+        overwrite_store=False,
+        overwrite_recording=False,
+        batch_size=4096,
+        sample_shards=None,
+        sample_compressor="auto",
+        global_metadata=None,
+        captures=None,
+        annotations=None,
+        iq_chunks=None,
+        zarr_format=3,
+    ):
+        """Capture RadioML import arguments.
+
+        Args:
+            store_path: Target store path.
+            dataset: RadioML dataset.
+            source_dataset: Optional source dataset name.
+            recording_name: Recording name.
+            overwrite_store: Whether to recreate the store.
+            overwrite_recording: Whether to replace a recording.
+            batch_size: Maximum sample items copied per write.
+            sample_shards: Sample shard shape.
+            sample_compressor: Sample compressor.
+            global_metadata: Optional global metadata.
+            captures: Optional capture metadata.
+            annotations: Optional annotation metadata.
+            iq_chunks: Optional IQ chunk shape.
+            zarr_format: Physical Zarr format.
+
+        Returns:
+            Fake store.
+        """
+        captured["store_path"] = store_path
+        captured["dataset"] = dataset
+        captured["source_dataset"] = source_dataset
+        captured["recording_name"] = recording_name
+        captured["overwrite_store"] = overwrite_store
+        captured["overwrite_recording"] = overwrite_recording
+        captured["batch_size"] = batch_size
+        captured["sample_shards"] = sample_shards
+        captured["sample_compressor"] = sample_compressor
+        captured["global_metadata"] = global_metadata
+        captured["captures"] = captures
+        captured["annotations"] = annotations
+        captured["iq_chunks"] = iq_chunks
+        captured["zarr_format"] = zarr_format
+        return FakeStore()
+
+    monkeypatch.setattr(
+        radioml2016_cli,
+        "load_radioml2016_pickle",
+        fake_load_pickle,
+    )
+    monkeypatch.setattr(
+        radioml2016_cli,
+        "as_radioml2016_dict",
+        fake_as_radioml_dict,
+    )
+    monkeypatch.setattr(
+        radioml2016_cli,
+        "import_radioml2016_dataset",
+        fake_import_radioml_dataset,
+    )
+
+    args = argparse.Namespace(
+        source=Path("RML2016.10a.pkl"),
+        store="store.zarr",
+        recording_name="radioml2016",
+        overwrite_store=True,
+        overwrite_recording=False,
+        encoding="latin1",
+        batch_size=2,
+        source_dataset=None,
+        sample_shard_batch=8,
+        sample_compression="zstd",
+        sample_compression_level=7,
+        zarr_format=3,
+    )
+
+    status = radioml2016_cli.ImportRadioML2016Command().handle(args)
+    output = capsys.readouterr().out
+
+    assert status == 0
+    assert captured["pickle_path"] == Path("RML2016.10a.pkl")
+    assert captured["encoding"] == "latin1"
+    assert set(captured["dataset"]) == {("BPSK", 0)}
+    assert captured["store_path"] == "store.zarr"
+    assert captured["source_dataset"] == "RML2016.10a"
+    assert captured["recording_name"] == "radioml2016"
+    assert captured["overwrite_store"] is True
+    assert captured["overwrite_recording"] is False
+    assert captured["sample_shards"] == (8, 2, 128)
+    assert isinstance(captured["sample_compressor"], BloscCodec)
+    compressor_name = captured["sample_compressor"].cname
+    assert getattr(compressor_name, "value", compressor_name) == "zstd"
+    assert captured["sample_compressor"].clevel == 7
+    assert captured["zarr_format"] == 3
+    assert "store-info" in output
 
 
 def test_export_command_passes_force_to_single_export(
@@ -357,3 +631,128 @@ def test_export_command_passes_force_to_archive_export(
     assert captured["pretty"] is True
     assert captured["force"] is True
     assert "exported archive: bundle.sigmf" in output
+
+
+def test_resolve_sample_shards_validates_batch_size() -> None:
+    """Shard sizing should require a positive sample batch count.
+
+    Raises:
+        AssertionError: If invalid shard sizing does not raise.
+    """
+    try:
+        positive_int("0")
+    except argparse.ArgumentTypeError as exc:
+        assert "must be positive" in str(exc)
+    else:
+        raise AssertionError("Expected error for non-positive shard batch")
+
+
+def test_load_modulation_classes_supports_json(tmp_path) -> None:
+    """The 2018 converter should accept an explicit class-order file.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    classes_path = tmp_path / "classes-fixed.json"
+    classes_path.write_text('["BPSK", "QPSK"]', encoding="utf-8")
+
+    assert radioml2018_cli.load_modulation_classes(classes_path) == (
+        "BPSK",
+        "QPSK",
+    )
+
+
+def test_radioml2018_default_uses_corrected_class_order() -> None:
+    """The default should match the corrected classes-fixed.json mapping."""
+    assert radioml2018_cli.RADIOML2018_MODULATION_CLASSES == (
+        "OOK",
+        "4ASK",
+        "8ASK",
+        "BPSK",
+        "QPSK",
+        "8PSK",
+        "16PSK",
+        "32PSK",
+        "16APSK",
+        "32APSK",
+        "64APSK",
+        "128APSK",
+        "16QAM",
+        "32QAM",
+        "64QAM",
+        "128QAM",
+        "256QAM",
+        "AM-SSB-WC",
+        "AM-SSB-SC",
+        "AM-DSB-WC",
+        "AM-DSB-SC",
+        "FM",
+        "GMSK",
+        "OQPSK",
+    )
+
+
+def test_load_classes_supports_standard_assignment(tmp_path) -> None:
+    """The 2018 importer should parse the distributed classes file safely.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    classes_path = tmp_path / "classes.txt"
+    classes_path.write_text(
+        "classes = ['32PSK',\n '16APSK',\n '32QAM',\n 'FM']\n",
+        encoding="utf-8",
+    )
+
+    assert radioml2018_cli.load_modulation_classes(classes_path) == (
+        "32PSK",
+        "16APSK",
+        "32QAM",
+        "FM",
+    )
+
+
+def test_load_pickle_suppresses_known_numpy_pickle_warning(
+    monkeypatch, tmp_path
+) -> None:
+    """Loading legacy pickles should suppress the NumPy align warning.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        tmp_path: Pytest temporary path fixture.
+    """
+    pickle_path = tmp_path / "dataset.pkl"
+    pickle_path.write_bytes(b"placeholder")
+
+    def fake_pickle_load(handle, *, encoding: str):
+        """Emit the known warning while loading.
+
+        Args:
+            handle: Open pickle file handle.
+            encoding: Pickle string encoding.
+
+        Returns:
+            Fake decoded payload.
+        """
+        del handle, encoding
+        warnings.warn(
+            (
+                "dtype(): align should be passed as Python or NumPy "
+                "boolean but got `align=0`."
+            ),
+            np.exceptions.VisibleDeprecationWarning,
+            stacklevel=1,
+        )
+        return {"ok": True}
+
+    monkeypatch.setattr(radioml2016.pickle, "load", fake_pickle_load)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = radioml2016_cli.load_radioml2016_pickle(
+            pickle_path,
+            encoding="latin1",
+        )
+
+    assert result == {"ok": True}
+    assert caught == []

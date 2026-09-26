@@ -8,7 +8,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, cast
+
+from zarr.codecs import BloscCodec
+from zarr.core.array import CompressorLike, ShardsLike
 
 
 def package_version() -> str:
@@ -22,6 +25,98 @@ def package_version() -> str:
         return version("sigmf-zarr")
     except PackageNotFoundError:
         return "1.0.0a1"
+
+
+def positive_int(value: str) -> int:
+    """Parse a positive integer for ``argparse``.
+
+    Args:
+        value: Command-line value.
+
+    Returns:
+        Parsed positive integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value is not a positive integer.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def add_sample_storage_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add storage options shared by the RadioML import commands.
+
+    Args:
+        parser: Argument parser to extend.
+    """
+    parser.add_argument(
+        "--sample-compression",
+        choices=("none", "zstd"),
+        help="Optional compression codec for sample arrays.",
+    )
+    parser.add_argument(
+        "--sample-compression-level",
+        type=int,
+        default=3,
+        help="Compression level for zstd.",
+    )
+    parser.add_argument(
+        "--sample-shard-batch",
+        type=positive_int,
+        help=(
+            "Optional number of items per physical sample shard "
+            "(Zarr format 3 only)."
+        ),
+    )
+
+
+def resolve_sample_compressor(
+    args: argparse.Namespace,
+) -> CompressorLike | None:
+    """Resolve shared RadioML sample compression arguments.
+
+    Args:
+        args: Parsed import arguments.
+
+    Returns:
+        Zarr compressor configuration.
+    """
+    if args.sample_compression is None:
+        return "auto"
+    if args.sample_compression == "none":
+        return None
+    return BloscCodec(cname="zstd", clevel=args.sample_compression_level)
+
+
+def resolve_sample_shards(
+    args: argparse.Namespace,
+    sample_shape: tuple[int, ...],
+) -> ShardsLike | None:
+    """Resolve shared RadioML sample sharding arguments.
+
+    Args:
+        args: Parsed import arguments.
+        sample_shape: Shape of one imported sample.
+
+    Returns:
+        Full shard shape, or ``None`` when sharding is not requested.
+
+    Raises:
+        ValueError: If sharding is requested for Zarr format 2.
+    """
+    shard_batch = cast(int | None, args.sample_shard_batch)
+    if shard_batch is None:
+        return None
+    if args.zarr_format == 2:
+        raise ValueError(
+            "--sample-shard-batch requires Zarr format 3"
+        )
+    return (shard_batch, *sample_shape)
 
 
 class Command(ABC):
@@ -288,5 +383,9 @@ class ImportCommand(Command):
 __all__ = [
     "Command",
     "ImportCommand",
+    "add_sample_storage_arguments",
+    "positive_int",
     "package_version",
+    "resolve_sample_compressor",
+    "resolve_sample_shards",
 ]

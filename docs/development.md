@@ -11,6 +11,12 @@ and the resolved dependency set is recorded in `uv.lock`.
 - Sphinx documentation: `docs`
 - Design and planning notes: `notes`
 
+Reusable RadioML conversion functions live in `sigmf_zarr.radioml2016` and
+`sigmf_zarr.radioml2018`. Command-line modules parse arguments and call these
+functions. Importers share the recording rollback boundary in
+`sigmf_zarr.store._transaction`. Schema validation and read-only views remain
+independent of the command-line interface.
+
 ## Environment
 
 Create or update the local environment with development and documentation
