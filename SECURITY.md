@@ -23,10 +23,15 @@ files are therefore subject to the same guidance as the other untrusted inputs
 below. The remaining risk is NumPy's validation of the array state recorded in
 the file.
 
-SigMF archives, HDF5 files, JSON metadata, and Zarr stores should be treated
-as untrusted data. Run imports with operating system permissions appropriate
-for the output location and apply external resource limits when processing
-unknown or unusually large datasets.
+SigMF archives, HDF5 files, ZIP files, `.tim` files, JSON metadata, and Zarr
+stores should be treated as untrusted data. Run imports with operating
+system permissions appropriate for the output location and apply external
+resource limits when processing unknown or unusually large datasets.
 
-SigMF archive import extracts the complete archive into the system temporary
-directory, which must have space for the extracted files.
+Some imports hold or extract a whole input before writing it:
+
+- The CSPB importer decompresses each `.tim` ZIP member in memory. It first
+  requires the member's declared size to equal the size its `.tim` header
+  declares, but a header may declare up to 16 GiB.
+- SigMF archive import extracts the complete archive into the system temporary
+  directory, which must have space for the extracted files.

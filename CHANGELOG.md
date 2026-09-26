@@ -63,9 +63,11 @@ complete.
 
 ### Dataset importers
 
-- Import RadioML 2016 and RadioML 2018 datasets in bounded batches.
+- Import RadioML 2016, RadioML 2018, and Chad Spooner CSPB datasets in bounded
+  batches.
 - Restrict RadioML pickle loading to built-in containers and real numeric
-  NumPy arrays, and reject arrays that hold more data than the file.
+  NumPy arrays, and reject arrays that hold more data than the file. Check each
+  CSPB ZIP member's declared size against its `.tim` header before reading it.
 
 ### Command line
 
