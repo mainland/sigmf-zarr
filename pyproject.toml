@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
   "crc32c>=2.4",
+  "jsonschema>=4.0",
   "numcodecs>=0.12",
   "numpy>=2.0.2",
   "sigmf>=1.11.0",
@@ -51,6 +52,9 @@ dev = [
   "tox>=4.30",
   "tox-uv>=1.28",
 ]
+
+[project.scripts]
+sigmf-zarr = "sigmf_zarr.cli.sigmf:main"
 
 [project.urls]
 Documentation = "https://sigmf-zarr.readthedocs.io/"
@@ -83,6 +87,7 @@ branch = true
 source = ["sigmf_zarr"]
 
 [tool.coverage.report]
+fail_under = 80
 show_missing = true
 skip_covered = true
 
@@ -131,6 +136,7 @@ pretty = true
 
 [[tool.mypy.overrides]]
 module = [
+  "jsonschema",
   "numcodecs",
   "numcodecs.*",
   "sigmf.*",
@@ -179,7 +185,6 @@ dependency_groups = ["docs"]
 commands = [["sphinx-build", "-b", "linkcheck", "docs", "docs/_build/linkcheck"]]
 
 [tool.repo-review.ignore]
-GH100 = "Continuous integration is not set up yet."
 PC110 = "Ruff format runs as a local hook from .venv."
 PC140 = "Mypy runs as a local hook from .venv."
 PC170 = "The documentation is Markdown and has no reStructuredText."

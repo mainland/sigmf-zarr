@@ -141,6 +141,35 @@ A recording is treated as batched when
 `samples.ndim == len(sigmf-zarr:sample-shape) + 1`. The leading runtime axis is
 then named `item`.
 
+SigMF-Zarr extension fields are stripped when exporting a recording back to
+standard SigMF metadata. Other extension declarations and non-`sigmf-zarr:*`
+fields are preserved.
+
+## Complex sample representation
+
+Standard SigMF and SigMF-Zarr represent the same logical complex samples
+differently:
+
+| Representation | Standard SigMF | SigMF-Zarr |
+| --- | --- | --- |
+| Container | Flat `.sigmf-data` byte stream | Chunked `samples` Zarr array |
+| Complex sample | Interleaved I and Q components described by a `cf*` datatype | Real-valued elements with an explicit length-2 `iq` axis |
+| Single channel | Time-ordered complex samples | `(iq, time)` |
+| Multiple channels | Time-major, channel-interleaved complex samples | `(channel, iq, time)` |
+
+SigMF-Zarr does not use a complex Zarr dtype, and it does not store I and Q in
+separate arrays. Index `0` of the `iq` axis contains the in-phase component and
+index `1` contains the quadrature component. A standard SigMF import splits
+each complex sample into those two planes. Export combines the planes into
+complex samples again and writes the interleaved byte stream required by the
+declared `core:datatype`.
+
+For floating-point complex data, `cf32_*` maps to a real-valued Zarr array with
+32-bit components and `cf64_*` maps to one with 64-bit components. Import and
+export preserve the declared byte order in the standard SigMF representation.
+The logical Zarr representation uses the array dtype recorded by
+`sigmf-zarr:dtype`.
+
 ## Sample axes
 
 Sample axes make the tensor layout explicit. The stored
@@ -242,6 +271,21 @@ The implementation can infer default axes for common shapes:
 - Rank 3 with last dimension `2`: `(time, channel, iq)`
 
 For other shapes, writers should provide `sample_axes` explicitly.
+
+When importing standard SigMF, `core:num_channels` is mapped into an explicit
+`channel` axis. Real multi-channel streams import as `(channel, time)`.
+Complex multi-channel streams import as `(channel, iq, time)`. The flat
+standard SigMF stream is interpreted as time-major, channel-interleaved data.
+Complex `cf32_*` datasets use 32-bit floating-point I/Q components in Zarr,
+while `cf64_*` datasets retain 64-bit components. Export applies the byte order
+declared by `core:datatype`, so conforming `cf64_le` and `cf64_be` dataset bytes
+round-trip exactly through either Zarr physical format.
+
+When exporting an unbatched recording to standard SigMF, the declared
+`channel` axis is mapped to `core:num_channels`. If `core:num_channels` is
+already present, it must be a positive integer that matches the `channel` axis
+length, or `1` when no `channel` axis is declared. If it is absent and the
+recording has more than one channel, export fills it from the axis length.
 
 ## Captures and appends
 
@@ -375,6 +419,23 @@ Writers may disable sample checksums explicitly, in which case
 `sigmf-zarr:checksum` is `null`. Readers must verify that this metadata field
 agrees with the sample array codec pipeline.
 
+An unbatched recording may also carry standard SigMF `core:sha512`. The digest
+covers the exact byte stream produced for its `.sigmf-data` file, after applying
+the layout and byte order declared by `core:datatype`. It does not cover Zarr
+metadata, compressed chunk bytes, or a `.sigmf` archive container. This makes
+the digest independent of whether the physical store uses Zarr format 2 or
+Zarr format 3.
+
+`core:sha512` is optional because it is an O(N) recording-level check and cannot
+be updated incrementally after arbitrary writes. Managed sample replacement and
+append operations must remove it before changing samples. A writer may then
+recalculate it after the mutation is complete. Public sample and index handles
+are read-only. Writable access is available only through mutation contexts,
+which invalidate affected digests before returning the backing array. Chunk
+CRC32C remains the automatic, local integrity mechanism for normal Zarr reads.
+SHA-512 provides portable identity for the reconstructed standard SigMF
+dataset.
+
 SigMF-Zarr also defines optional native logical SHA-512 hashes. These hashes
 cover the data model rather than serialized Zarr metadata or encoded chunk
 bytes, so they have the same values for equivalent Zarr format 2 and Zarr
@@ -458,10 +519,22 @@ Managed API mutations and writable mutation contexts remove every affected
 native hash before writing. A failed index mutation leaves the index explicitly
 invalid. A full `store.update_integrity()` pass recalculates recording,
 collection, and root hashes, while `store.verify_integrity()` requires all of
-those hashes to be present and current. These whole-content hashes complement
-chunk CRC32C. They do not authenticate a store against an attacker who can
-alter both content and stored hashes or bypass the API to modify the backing
-Zarr store directly.
+those hashes to be present and current. Importers hash the resource they write.
+They also update the store-wide hash when every other recording and collection
+has current hashes, and otherwise leave it absent. These whole-content hashes
+complement chunk CRC32C. They do not authenticate a store against an attacker
+who can alter both content and stored hashes or bypass the API to modify the
+backing Zarr store directly.
+
+At the standard SigMF boundary, import verifies every available standard hash
+and creates native hashes for content that passes its checks. `core:sha512`
+checks each `.sigmf-data` byte stream. A `.sigmf-collection` additionally checks
+its declared hashes for the referenced `.sigmf-meta` files. Standalone
+`.sigmf-meta` files have no standard field that hashes their own metadata, so
+there is nothing external to verify in that case. Export always calculates
+`core:sha512` from the emitted data bytes. Archive export calculates collection
+stream hashes from the emitted metadata bytes. If a native internal hash is
+present but stale, export fails rather than silently blessing changed content.
 
 ### Canonical JSON encoding
 
@@ -519,7 +592,8 @@ two required attributes and may have the optional `integrity` attribute:
 Each recording identifier must name a recording in the store. The Python API
 rejects creating a collection that references a missing recording and rejects
 removing a recording that a collection references. Readers should tolerate
-dangling references written by other tools.
+dangling references written by other tools, and `validate_store()` reports
+them.
 
 Collections are useful for representing relationships among recordings without
 moving or duplicating sample arrays.

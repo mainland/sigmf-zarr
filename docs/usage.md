@@ -1,6 +1,8 @@
 # Usage
 
-Use SigMF-Zarr as a Python API for building Zarr-backed signal stores.
+Use SigMF-Zarr as a Python API for building Zarr-backed signal stores or as a
+command-line interface (CLI) for importing and exporting standard SigMF files
+and supported datasets.
 
 ## Installation
 
@@ -20,7 +22,90 @@ Run commands from the repository environment:
 
 ```bash
 .venv/bin/python -m pytest
+.venv/bin/sigmf-zarr --help
 ```
+
+## CLI
+
+The package installs the `sigmf-zarr` command. Its resource-oriented commands
+inspect a store and its recordings and collections:
+
+```bash
+sigmf-zarr store store.zarr info
+sigmf-zarr store store.zarr recordings
+sigmf-zarr store store.zarr recording myrec info --format json
+sigmf-zarr store store.zarr collections
+sigmf-zarr store store.zarr collection paired info
+sigmf-zarr store store.zarr validate
+sigmf-zarr store store.zarr integrity verify
+```
+
+Inspection commands produce human-readable text by default and accept
+`--format json` for scripts. Store locations remain strings so compatible Zarr
+URLs are not coerced into local filesystem paths.
+
+`validate` checks store structure and verifies every declared hash, including
+`core:sha512`. It reads each sample array once for each declared sample hash.
+Pass `--skip-integrity` to check structure only, or `--require-integrity` to
+also require hashes for the store and every recording and collection.
+`integrity update` recalculates every hash, then checks structure and hash
+presence without reading the samples again.
+
+All importers are subcommands of `sigmf-zarr import`. List the supported
+formats with:
+
+```bash
+sigmf-zarr import --help
+```
+
+Import a single standard SigMF recording:
+
+```bash
+sigmf-zarr import sigmf input.sigmf-meta store.zarr
+```
+
+Import a standard SigMF archive:
+
+```bash
+sigmf-zarr import sigmf input.sigmf store.zarr
+```
+
+All import commands share `SOURCE`, `STORE`, `--recording-name`,
+`--overwrite-store`, `--overwrite-recording`, and `--zarr-format`. When the
+target store already exists, its Zarr format is detected automatically. New
+stores use Zarr format 3 by default. Pass `--zarr-format 2` when creating a new
+store for a downstream tool that requires the Zarr format 2 layout:
+
+```bash
+sigmf-zarr import sigmf input.sigmf-meta store.zarr --zarr-format 2
+```
+
+Supplying `--zarr-format` for an existing store verifies that the store has the
+requested format.
+
+Export one unbatched recording back to standard SigMF:
+
+```bash
+sigmf-zarr export store.zarr output.sigmf-meta --recording-name myrec
+```
+
+The equivalent resource-oriented form is:
+
+```bash
+sigmf-zarr store store.zarr recording myrec export output.sigmf-meta
+```
+
+Export a standard SigMF archive:
+
+```bash
+sigmf-zarr export store.zarr output.sigmf --archive --recording rec1
+```
+
+Export targets without a `.sigmf-meta` or `.sigmf` suffix receive one, and dots
+in the target stem are retained.
+
+The import command can infer standard SigMF input from the file suffix. Use
+`--format` when the suffix is ambiguous.
 
 ## Create a recording
 
@@ -97,7 +182,8 @@ Use `sample_axes` to make the tensor layout explicit. Standard SigMF serializes
 a `cf*` signal as interleaved complex samples in its flat `.sigmf-data` byte
 stream. SigMF-Zarr instead stores the components in one real-valued Zarr array
 with an explicit `iq` axis of length `2`: index `0` is I and index `1` is Q.
-They are not separate arrays.
+They are not separate arrays. Import splits standard complex samples along this
+axis, and export combines them into the standard interleaved representation.
 
 ```python
 recording = store.recordings.create(
@@ -374,10 +460,19 @@ recording = store.recordings.create(
 )
 ```
 
-`set_samples()` and `append_samples()` automatically remove a stored
-`core:sha512` digest. Public sample views are read-only. Use a mutation context
-for same-shape value updates. It invalidates hashes before granting writable
-access:
+For an unbatched recording, calculate or verify standard SigMF
+`core:sha512` over the exact `.sigmf-data` byte stream that export would
+produce:
+
+```python
+digest = recording.calculate_sha512()  # Does not change metadata.
+recording.update_sha512()              # Stores core:sha512.
+assert recording.verify_sha512()
+```
+
+`set_samples()` and `append_samples()` automatically remove a stored digest.
+Public sample views are read-only. Use a mutation context for same-shape value
+updates. It invalidates hashes before granting writable access:
 
 ```python
 replacement = np.ones(100, dtype=np.float32)
@@ -385,7 +480,9 @@ with recording.mutate_samples() as samples:
     samples[100:200] = replacement
 ```
 
-Use `set_samples()` or `append_samples()` for shape changes.
+Use `set_samples()` or `append_samples()` for shape changes. SHA-512 is a
+whole-recording portability and identity check. CRC32C remains the efficient
+per-chunk corruption check.
 
 SigMF-Zarr can additionally maintain logical SHA-512 hashes for samples and
 metadata. Unlike `core:sha512`, these native hashes describe the logical Zarr
@@ -441,6 +538,62 @@ An index is marked invalid before the context body runs and restored to valid
 only after successful structural validation. Resizing a sample axis similarly
 invalidates indexes aligned with that axis until they are repaired or replaced.
 Re-run `store.update_integrity()` after completing a series of changes.
+
+## Import and export SigMF
+
+The reusable Python helpers mirror the CLI:
+
+```python
+from sigmf_zarr import SigMFZarrStore, export_sigmf, import_sigmf
+
+recording = import_sigmf(
+    "store.zarr",
+    "input.sigmf-meta",
+    recording_name="imported",
+    overwrite_store=True,
+)
+
+export_sigmf(
+    SigMFZarrStore.open("store.zarr"),
+    "imported",
+    "roundtrip.sigmf-meta",
+    overwrite=True,
+)
+```
+
+Standard SigMF export supports only unbatched recordings. Batched recordings
+represent multiple independent items, so exporting them to standard SigMF
+requires an explicit split strategy that the implementation does not provide.
+
+When importing standard SigMF, `core:num_channels` is mapped to an explicit
+SigMF-Zarr `channel` axis. A real two-channel SigMF stream imports as
+`("channel", "time")`. A complex two-channel stream imports as
+`("channel", "iq", "time")`.
+
+Complex floating-point precision is preserved: `cf32_le` and `cf32_be` use
+32-bit I/Q components, while `cf64_le` and `cf64_be` use 64-bit components.
+Export restores the endianness declared by `core:datatype` rather than using
+the host machine's native byte order.
+
+Import verifies that the reconstructed standard dataset bytes match the source
+`core:sha512` and stores that digest. If conversion cannot preserve the source
+bytes exactly, import fails instead of retaining a misleading digest. Export
+adds `core:sha512` when it is absent and rejects a stored digest that does not
+match the bytes being written.
+
+Archive import also verifies `.sigmf-collection` stream hashes against the
+referenced metadata files. A standalone `.sigmf-meta` file has no standard
+self-hash for its metadata. After a successful import, SigMF-Zarr calculates
+its own sample and metadata hashes. Export verifies any stored native hashes,
+calculates `core:sha512` from the emitted data bytes, and, for archives,
+calculates collection stream hashes from the emitted metadata bytes.
+
+For multi-channel unbatched recordings, standard SigMF export validates
+`core:num_channels` against the declared `channel` axis. If the field is
+missing and the recording has more than one channel, export fills it from the
+axis length. If the field is present but does not match the axis length, export
+raises `ValueError`. Single-channel exports may still include
+`core:num_channels: 1` because that is normal standard SigMF metadata.
 
 ## Mutation and failure behavior
 
