@@ -375,12 +375,13 @@ Each recording-level index has these attributes:
   `channel`, or a custom sample axis.
 
 `field`
-: Required. Metadata field represented by the index, such as
+: Required nonempty string. Metadata field represented by the index, such as
   `radioml:snr`, `radioml:mod_class`, or an application-specific namespaced
   field.
 
 `kind`
-: Required. Describes the index kind. The default value is `metadata`.
+: Required nonempty string. Describes the index kind. The default value is
+  `metadata`.
 
 `unit`
 : Optional. Unit string for numeric values, such as `dB` or `Hz`.
@@ -398,10 +399,54 @@ Each recording-level index has these attributes:
 : Optional explanation accompanying `sigmf-zarr:valid=false`.
 
 An index array is a materialized metadata vector, not an automatically
-maintained secondary index. If a writer appends samples after creating an
+maintained secondary index. Its `field` attribute is descriptive. Multiple
+named indexes may describe the same field, and their values may differ from
+each other and from JSON metadata. Metadata accessors read JSON without
+consulting indexes. Index readers use the explicitly selected array. Neither
+representation is synchronized with the other.
+
+Writers remain responsible for semantic freshness after sample value edits,
+same-length reordering, or JSON edits. A matching checksum does not establish
+that an SNR value or label still describes the signal. If a writer appends
+samples after creating an
 axis-aligned index, the index becomes invalid and the writer must update or
 replace it before use. Integrity recalculation must reject a store containing
 an invalid index rather than hashing it as current.
+
+### Named split convention
+
+An item-aligned index with `field="sigmf-zarr:split"`, `kind="split"`,
+integer assignments, and unique nonempty string `labels` describes a named
+partition scheme. Multiple schemes may share that field value. Index names
+identify schemes, and no scheme is the default.
+
+Optional provenance attributes are `split_type`, `method`, `seed`,
+`group_index`, `group_sources`, `inputs`, `description`, and `generator`.
+The split API supports
+`holdout`, `kfold`, and `custom` types and `published`, `random`, `group_random`,
+`chronological`, and `custom` methods. A seed is a nonnegative integer.
+`group_random` requires `group_index` or `group_sources`. These attributes record
+how assignments were produced and which source to check. They do not establish
+live dependencies.
+
+Explicit split validation requires valid category IDs, at least two occupied
+partitions, and no empty declared partition. If a grouping index is declared,
+every integer or string group identity must occur in one partition only.
+Generic index validation still checks structure, independently of split
+semantics. Source changes do not invalidate stored splits. Nullable splits are
+unsupported. No schema version change is required.
+
+`group_sources` selects a resolved global `field` containing a component list
+and an `identity` key within each component. An optional `fallback_index`
+supplies a single source identity only when the field is absent. Empty lists
+represent known empty scenes. Missing or malformed identities must fail
+validation. Integer and nonempty string identities are scoped to the recording.
+Each constituent identity must occur in one partition only. This also isolates
+transitively connected mixtures. The descriptor does not claim physical emitter
+or acquisition-session independence.
+
+`inputs` may contain an explicit binding produced by `capture_inputs()` before
+the split is written. `verify_inputs()` checks this binding separately.
 
 ## Logical integrity
 

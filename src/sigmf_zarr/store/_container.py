@@ -133,6 +133,7 @@ class SigMFRecordings:
         self,
         recording_name: str,
         *,
+        validation: Literal["full", "structural"] = "full",
         create: bool | None = None,
         overwrite: bool = False,
         batched: bool = False,
@@ -153,6 +154,8 @@ class SigMFRecordings:
 
         Args:
             recording_name: Recording name.
+            validation: Full item JSON validation (default) or structural
+                validation with entries checked when accessed.
             create: Whether a missing recording may be created.
             overwrite: Whether an existing recording should be replaced.
             batched: Whether a new sample array includes a batch axis.
@@ -175,11 +178,13 @@ class SigMFRecordings:
         Raises:
             KeyError: If the recording does not exist and creation is not
                 allowed.
-            ValueError: If recording creation receives an invalid sample shape.
+            ValueError: If the sample shape, validation mode, or stored
+                metadata is invalid.
         """
         return recording_cls(
             self._store,
             recording_name,
+            validation=validation,
             create=create,
             overwrite=overwrite,
             batched=batched,

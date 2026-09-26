@@ -42,9 +42,8 @@ def test_input_binding_detects_changes(tmp_path: Path, changed: str) -> None:
         [1, 1],
         axis="item",
         field="test:derived",
+        attributes={"inputs": binding},
     )
-    with rec.mutate_index("derived") as derived:
-        derived.attrs["inputs"] = binding
     assert verify_inputs(rec, binding)
     if changed == "samples":
         with rec.mutate_samples() as samples:
