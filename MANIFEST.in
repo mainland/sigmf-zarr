@@ -1,0 +1,8 @@
+include LICENSE
+include CHANGELOG.md
+include CONTRIBUTING.md
+include SECURITY.md
+include tox.ini
+include uv.lock
+recursive-include docs *.md *.py
+recursive-include tests *.py

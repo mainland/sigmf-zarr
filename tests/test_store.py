@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import numpy as np
 from numcodecs import CRC32C, Blosc, VLenUTF8, Zstd
 from zarr.codecs import BloscCodec, VLenUTF8Codec
@@ -525,6 +527,75 @@ def test_set_samples_resizes_unbatched_time_axis(tmp_path) -> None:
     assert reopened.sample_shape == (2, 6)
     assert reopened.sample_count == 6
     np.testing.assert_array_equal(reopened.samples[:], samples)
+
+
+def test_recording_sha512_lifecycle(tmp_path) -> None:
+    """Managed mutations should invalidate whole-recording SHA-512 metadata.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=False,
+        sample_shape=(4,),
+        sample_axes=("time",),
+        global_metadata={"core:datatype": "rf32_le"},
+    )
+    samples = np.arange(4, dtype=np.float32)
+    recording.set_samples(samples)
+    expected = hashlib.sha512(samples.astype("<f4").tobytes()).hexdigest()
+
+    assert recording.sha512 is None
+    assert recording.calculate_sha512() == expected
+    assert recording.verify_sha512() is False
+    assert recording.update_sha512() == expected
+    assert recording.sha512 == expected
+    assert recording.verify_sha512() is True
+
+    try:
+        recording.samples[0] = np.float32(99.0)
+    except TypeError as exc:
+        assert "read-only" in str(exc)
+    else:
+        raise AssertionError("Expected direct sample mutation to fail")
+    assert recording.sha512 == expected
+
+    with recording.mutate_samples() as writable_samples:
+        writable_samples[0] = np.float32(99.0)
+    assert recording.sha512 is None
+
+    recording.update_sha512()
+    recording.append_samples(np.array([5.0], dtype=np.float32))
+    assert recording.sha512 is None
+
+    recording.update_sha512()
+    recording.set_samples(samples)
+    assert recording.sha512 is None
+
+
+def test_datatype_change_invalidates_recording_sha512(tmp_path) -> None:
+    """Changing the output byte encoding should invalidate `core:sha512`.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr", overwrite=True)
+    recording = store.recordings.open(
+        "rec",
+        create=True,
+        batched=False,
+        sample_shape=(4,),
+        sample_axes=("time",),
+        global_metadata={"core:datatype": "rf32_le"},
+    )
+    recording.update_sha512()
+
+    recording.set_global_field("core:datatype", "rf32_be")
+
+    assert recording.sha512 is None
 
 
 def test_set_samples_rejects_non_time_axis_resize(tmp_path) -> None:
