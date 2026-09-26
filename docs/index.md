@@ -18,6 +18,7 @@ cspb
 panoradio
 pytorch
 query
+viewer
 rfml
 format
 provenance

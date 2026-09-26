@@ -49,6 +49,7 @@ nitpick_ignore = [
     # NumPy documents its scalar types as attributes, not classes.
     ("py:class", "numpy.complex64"),
     ("py:class", "numpy.float32"),
+    ("py:class", "numpy.float64"),
     ("py:class", "numpy.int16"),
     ("py:class", "numpy.int64"),
     # zarr does not document these configuration types and aliases.

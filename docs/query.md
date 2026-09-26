@@ -112,3 +112,6 @@ In-flight backend reads finish under their backend timeout configuration.
 The JSON predicate evaluates resolved item metadata only for surviving index
 candidates. JMESPath requires the `query` extra. This optional JSON
 facility is separate from the core index query language.
+
+The [dataset viewer](viewer.md) uses the same query module. Its **Displayed
+indexes** selection affects presentation only and does not restrict queries.
