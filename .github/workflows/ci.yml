@@ -24,7 +24,31 @@ jobs:
       - name: Sync locked environment
         run: uv sync --locked --extra dev --extra docs --extra query
       - name: Run tests
-        run: uv run --extra query pytest
+        run: .venv/bin/pytest --no-cov
+
+  viewer:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Install Qt system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
+      - name: Sync viewer environment
+        run: uv sync --locked --extra dev --extra query --extra viewer
+      - name: Run tests including desktop integration
+        run: .venv/bin/pytest --no-cov
 
   pytorch:
     runs-on: ubuntu-latest
@@ -39,11 +63,15 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install uv
         run: python -m pip install uv
-      - name: Sync core development environment
-        run: uv sync --locked --extra dev --extra query
+      - name: Install Qt system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
+      - name: Sync integration development environment
+        run: uv sync --locked --extra dev --extra query --extra viewer
       - name: Install CPU PyTorch
         run: uv pip install --python .venv/bin/python 'torch>=2.6' --index-url https://download.pytorch.org/whl/cpu
-      - name: Run tests including adapter
+      - name: Run tests and coverage with both optional integrations
         run: .venv/bin/pytest
       - name: Type check
         run: .venv/bin/mypy src examples
@@ -75,14 +103,18 @@ jobs:
           python-version: "3.12"
       - name: Install uv
         run: python -m pip install uv
+      - name: Install Qt system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libegl1
       - name: Create minimum supported environment
         run: |
           uv venv .venv
-          uv pip install --python .venv/bin/python --resolution lowest-direct '.[dev,query]'
+          uv pip install --python .venv/bin/python --resolution lowest-direct '.[dev,query,viewer]'
       - name: Install minimum CPU PyTorch
         run: uv pip install --python .venv/bin/python 'torch==2.6.0' --index-url https://download.pytorch.org/whl/cpu
       - name: Test minimum supported dependencies
-        run: .venv/bin/pytest
+        run: .venv/bin/pytest --no-cov
 
   latest-dependencies:
     runs-on: ubuntu-latest
@@ -117,6 +149,7 @@ jobs:
           uv pip install --python .venv/bin/python dist/*.whl
           .venv/bin/sigmf-zarr import sigmf --help
           .venv/bin/python -c 'import sys; import sigmf_zarr; assert "torch" not in sys.modules'
+          .venv/bin/sigmf-zarr view --help
           .venv/bin/sigmf-zarr --version
           .venv/bin/sigmf-zarr import radioml2016 --help
           .venv/bin/sigmf-zarr import radioml2018 --help
