@@ -8,6 +8,7 @@ and the resolved dependency set is recorded in `uv.lock`.
 
 - Package source: `src/sigmf_zarr`
 - Test suite: `tests`
+- Executable training examples: `examples`
 - Sphinx documentation: `docs`
 
 Reusable RadioML conversion functions live in `sigmf_zarr.radioml2016`
@@ -29,9 +30,9 @@ uv sync
 
 `uv sync` creates `.venv` from `uv.lock` and installs the package in editable
 mode with the `dev` dependency group. That group includes the `test` and `docs`
-groups and the checkers at the versions that the lock pins. Run tools from the
-environment as `.venv/bin/python -m <tool>`, which works however the
-environment was built.
+groups, every optional extra, and the checkers at the versions that the lock
+pins. Run tools from the environment as `.venv/bin/python -m <tool>`, which
+works however the environment was built.
 
 Where uv is unavailable, pip 25.1 or later can build an equivalent environment.
 This path ignores `uv.lock`:
@@ -41,6 +42,11 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -U pip
 .venv/bin/python -m pip install -e . --group dev
 ```
+
+The locked environment installs CPU PyTorch from the PyTorch CPU index, which
+`[tool.uv.sources]` in `pyproject.toml` selects. The setting affects only uv's
+development environment. Package installations and the pip path resolve `torch`
+from PyPI, whose Linux wheels include CUDA support.
 
 Editable installs load source changes directly, but their installed version
 metadata is captured when the package is built. After changing commits or
@@ -64,11 +70,11 @@ Install the pre-commit hooks once per clone:
 .venv/bin/pre-commit install
 ```
 
-The hooks run Ruff lint and format checks, strict mypy over `src`, `tests`, and
-`docs/conf.py`, sp-repo-review, codespell, rumdl, zizmor, and basic file
-checks. The Ruff, mypy, and sp-repo-review hooks run from `.venv`, so they use
-the versions that the lock pins. The hooks check files and never rewrite them.
-Format Python sources with Ruff:
+The hooks run Ruff lint and format checks, strict mypy over `src`, `tests`,
+`examples`, `benchmarks`, and `docs/conf.py`, sp-repo-review, codespell, rumdl,
+zizmor, and basic file checks. The Ruff, mypy, and sp-repo-review hooks run
+from `.venv`, so they use the versions that the lock pins. The hooks check
+files and never rewrite them. Format Python sources with Ruff:
 
 ```bash
 .venv/bin/python -m ruff format
@@ -87,13 +93,14 @@ Run the test suite with branch coverage:
 ```
 
 The test suite treats every warning as an error. A coverage run fails below 80
-percent.
+percent. Environments without the optional integrations skip the PyTorch tests,
+so measure coverage only with every extra installed.
 
 Tox runs the tests without the lock, so a runtime dependency missing from
 `pyproject.toml` fails. Its environments are:
 
-- `3.12`, `3.13`, and `3.14`: The tests and coverage on each supported Python
-  version.
+- `3.12`, `3.13`, and `3.14`: The core tests on each supported Python version.
+- `full`: The tests with every optional integration and coverage.
 - `min`: The tests with the lowest supported direct dependency versions.
 - `lint`: Every pre-commit hook. It requires `.venv`.
 - `docs`: The documentation build.
@@ -136,3 +143,24 @@ resolve, grouped by cause.
 
 Publishing and tagging are deliberate maintainer actions. Ordinary test and
 build commands never publish a package.
+
+## Dense loading benchmark
+
+Run the reproducible local and loopback HTTP comparison:
+
+```bash
+.venv/bin/python -m benchmarks.pytorch_loading
+```
+
+The development environment includes PyTorch. The benchmark compares scalar
+reads with `__getitems__()` for 256-item sequential and random requests, using
+8,192 float32 items with shape `(2, 128)`. Zarr format 2 uses 256-item chunks.
+Zarr format 3 uses the same chunks within 4,096-item shards. It reports
+constructor time, Python allocation peak during construction, and median read
+times over three warm-cache trials. Allocation tracking excludes native
+allocations. HTTP runs use a local server and do not model WAN latency or S3.
+
+One Python 3.12 run with PyTorch 2.14 measured batched reads at 16.5-35.8 times
+scalar throughput for local storage and 24.9-80.1 times for loopback HTTP.
+These measurements support using orthogonal batch selection. They are not
+performance guarantees or timing assertions in the test suite.

@@ -33,8 +33,12 @@ dependencies = [
   "zarr>=3.2",
 ]
 
+[project.optional-dependencies]
+pytorch = ["torch>=2.6"]
+
 [dependency-groups]
 test = [
+  "fsspec[http]>=2024.6",
   "pytest>=9.0",
   "pytest-cov>=7.0",
 ]
@@ -44,6 +48,7 @@ docs = [
   "sphinx==9.1.0",
 ]
 dev = [
+  "sigmf-zarr[pytorch]",
   { include-group = "test" },
   { include-group = "docs" },
   "mypy==2.1.0",
@@ -62,6 +67,16 @@ Documentation = "https://sigmf-zarr.readthedocs.io/"
 Source = "https://github.com/mainland/sigmf-zarr"
 Issues = "https://github.com/mainland/sigmf-zarr/issues"
 Changelog = "https://github.com/mainland/sigmf-zarr/blob/main/CHANGELOG.md"
+
+[tool.uv.sources]
+# The development environment uses CPU PyTorch. PyPI's Linux wheels pull in
+# several gigabytes of CUDA libraries that no check needs.
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -126,6 +141,7 @@ line-length = 79
 
 [tool.mypy]
 files = [
+  "benchmarks",
   "docs/conf.py",
   "examples",
   "src",
@@ -154,21 +170,27 @@ env_list = [
   "3.12",
   "3.13",
   "3.14",
+  "full",
   "min",
   "lint",
   "docs",
 ]
 
 [tool.tox.env_run_base]
-description = "Run the tests and coverage without the lock"
+description = "Run the tests without the lock"
 dependency_groups = ["test"]
 extras = []
+commands = [["pytest", { replace = "posargs", extend = true }]]
+
+[tool.tox.env.full]
+description = "Run the tests with every optional integration and coverage"
+extras = ["pytorch"]
 commands = [["pytest", "--cov", "--cov-report=term-missing", { replace = "posargs", extend = true }]]
 
 [tool.tox.env.min]
 description = "Run the tests with the lowest direct dependency versions"
 uv_resolution = "lowest-direct"
-extras = []
+extras = ["pytorch"]
 
 [tool.tox.env.lint]
 description = "Run the pre-commit hooks, which use the .venv environment"
