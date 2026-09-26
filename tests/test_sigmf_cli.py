@@ -17,6 +17,7 @@ import numpy.typing as npt
 import pytest
 from zarr.codecs import BloscCodec
 
+import sigmf_zarr.cli.export as export_cli
 import sigmf_zarr.cli.import_cspb as cspb_cli
 import sigmf_zarr.cli.import_radioml2016 as radioml2016_cli
 import sigmf_zarr.cli.import_radioml2018 as radioml2018_cli
@@ -866,6 +867,9 @@ def test_export_command_passes_force_to_single_export(
         overwrite: bool = False,
         pretty: bool = True,
         force: bool = False,
+        allow_lossy: bool = False,
+        item_index: int | None = None,
+        project_indexes: list[str] | tuple[str, ...] = (),
     ) -> Path:
         """Capture single-recording export arguments.
 
@@ -876,6 +880,9 @@ def test_export_command_passes_force_to_single_export(
             overwrite: Whether to replace existing files.
             pretty: Whether to pretty-print metadata.
             force: Whether to bypass stale metadata validation.
+            allow_lossy: Whether metadata may be omitted.
+            item_index: Optional batch item.
+            project_indexes: Explicit item indexes to project.
 
         Returns:
             Fake metadata path.
@@ -886,10 +893,13 @@ def test_export_command_passes_force_to_single_export(
         captured["overwrite"] = overwrite
         captured["pretty"] = pretty
         captured["force"] = force
+        captured["allow_lossy"] = allow_lossy
+        captured["item_index"] = item_index
+        captured["project_indexes"] = project_indexes
         return Path("out.sigmf-meta")
 
     monkeypatch.setattr(SigMFZarrStore, "open", fake_open)
-    monkeypatch.setattr(sigmf_cli, "export_sigmf", fake_export_sigmf)
+    monkeypatch.setattr(export_cli, "export_sigmf", fake_export_sigmf)
 
     args = argparse.Namespace(
         store=Path("store.zarr"),
@@ -901,6 +911,10 @@ def test_export_command_passes_force_to_single_export(
         overwrite=True,
         compact=True,
         force=True,
+        allow_lossy=True,
+        item_index=3,
+        dry_run=False,
+        project_index=[],
     )
 
     status = sigmf_cli.ExportCommand().handle(args)
@@ -914,6 +928,9 @@ def test_export_command_passes_force_to_single_export(
     assert captured["overwrite"] is True
     assert captured["pretty"] is False
     assert captured["force"] is True
+    assert captured["allow_lossy"] is True
+    assert captured["item_index"] == 3
+    assert captured["project_indexes"] == []
     assert "exported recording: out.sigmf-meta" in output
 
 
@@ -945,40 +962,43 @@ def test_export_command_passes_force_to_archive_export(
 
     def fake_export_sigmf_archive(
         store: object,
-        archive_target: Path,
+        output_path: Path,
         *,
         recording_names: list[str] | None = None,
         collection_name: str | None = None,
         overwrite: bool = False,
         pretty: bool = True,
         force: bool = False,
+        allow_lossy: bool = False,
     ) -> Path:
         """Capture archive export arguments.
 
         Args:
             store: Source store.
-            archive_target: Target archive path.
+            output_path: Target archive path.
             recording_names: Optional recording names.
             collection_name: Optional collection name.
             overwrite: Whether to replace an existing archive.
             pretty: Whether to pretty-print metadata.
             force: Whether to bypass stale metadata validation.
+            allow_lossy: Whether metadata may be omitted.
 
         Returns:
             Fake archive path.
         """
         captured["store"] = store
-        captured["archive_target"] = archive_target
+        captured["output_path"] = output_path
         captured["recording_names"] = recording_names
         captured["collection_name"] = collection_name
         captured["overwrite"] = overwrite
         captured["pretty"] = pretty
         captured["force"] = force
+        captured["allow_lossy"] = allow_lossy
         return Path("bundle.sigmf")
 
     monkeypatch.setattr(SigMFZarrStore, "open", fake_open)
     monkeypatch.setattr(
-        sigmf_cli,
+        export_cli,
         "export_sigmf_archive",
         fake_export_sigmf_archive,
     )
@@ -993,6 +1013,10 @@ def test_export_command_passes_force_to_archive_export(
         overwrite=True,
         compact=False,
         force=True,
+        allow_lossy=True,
+        item_index=None,
+        dry_run=False,
+        project_index=[],
     )
 
     status = sigmf_cli.ExportCommand().handle(args)
@@ -1001,12 +1025,13 @@ def test_export_command_passes_force_to_archive_export(
     assert status == 0
     assert captured["store_path"] == Path("store.zarr")
     assert captured["store"] is fake_store
-    assert captured["archive_target"] == Path("bundle.sigmf")
+    assert captured["output_path"] == Path("bundle.sigmf")
     assert captured["recording_names"] == ["rec-a", "rec-b"]
     assert captured["collection_name"] == "paired"
     assert captured["overwrite"] is True
     assert captured["pretty"] is True
     assert captured["force"] is True
+    assert captured["allow_lossy"] is True
     assert "exported archive: bundle.sigmf" in output
 
 

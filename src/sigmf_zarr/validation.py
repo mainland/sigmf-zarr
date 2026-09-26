@@ -24,9 +24,7 @@ from typing import Any, cast
 import jsonschema
 import numpy as np
 import sigmf
-from jsonschema import ValidationError
 from sigmf.schema import SCHEMA_COLLECTION, get_schema
-from sigmf.sigmffile import SigMFFile
 from zarr.core.array import Array
 from zarr.core.buffer import default_buffer_prototype
 from zarr.core.group import Group
@@ -35,6 +33,7 @@ from zarr.storage import FsspecStore, LocalStore, WrapperStore
 
 from sigmf_zarr._consolidated import members, without_consolidated_metadata
 from sigmf_zarr._text import escape_text
+from sigmf_zarr.export_plan import validate_sigmf_schema
 from sigmf_zarr.integrity import (
     INTEGRITY_ATTR,
     _decoded_chunk_nbytes,
@@ -1486,33 +1485,6 @@ def _root_arrays(root: Group) -> Iterator[tuple[str, Array[Any]]]:
             for child, descendant in sorted(members(member, max_depth=None)):
                 if isinstance(descendant, Array):
                     yield f"{name}/{child}", descendant
-
-
-def validate_sigmf_schema(metadata: JSONObject) -> None:
-    """Check standard SigMF metadata against the SigMF core schema.
-
-    Validation applies this check. It uses the schema that sigmf-python
-    selects and also requires captures and annotations to be ordered by
-    `core:sample_start`. A declared `core:version` is checked as written.
-
-    Args:
-        metadata: SigMF metadata document with a `global` object. It is not
-            modified.
-
-    Raises:
-        ValueError: If the metadata violates the SigMF schema.
-    """
-    checker = SigMFFile(metadata=deepcopy(dict(metadata)))
-    global_info = metadata.get("global")
-    # sigmf-python replaces core:version with its own version.
-    if isinstance(global_info, dict) and "core:version" in global_info:
-        checker.set_global_field("core:version", global_info["core:version"])
-    try:
-        checker.validate()
-    except ValidationError as exc:
-        raise ValueError(
-            f"Metadata does not satisfy the SigMF schema: {exc.message}"
-        ) from exc
 
 
 def validate_store(

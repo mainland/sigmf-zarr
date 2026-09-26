@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import inspect
 import os
 import shutil
 import stat
@@ -29,52 +28,35 @@ _created_targets: ContextVar[list[tuple[Path, os.stat_result]] | None] = (
 def remove_new_store_on_failure[**P, R](
     importer: Callable[P, R],
 ) -> Callable[P, R]:
-    """Remove a local target store that a failed import created.
+    """Remove a local target directory that a failed import created.
 
-    The wrapped importer names its target store with a `store_path`
-    parameter. If nothing exists at that local path when the import starts
-    and the import raises, the directory created at that path is removed
-    before the exception propagates. An existing store or directory is never
-    removed, because recording rollback inside the importer restores it. A
-    store named by a URL is never removed.
+    The wrapped importer must open its target store with `open_import_store`.
+    That function records the device and inode numbers of a directory that
+    it creates. If the import raises, the wrapper removes the directory only
+    while the target path still names that same directory. An existing store
+    or directory is never removed, because recording rollback inside the
+    importer restores it. A store named by a URL is never removed.
 
     Args:
-        importer: Import function with a `store_path` parameter.
+        importer: Import function that opens its target store with
+            `open_import_store`.
 
     Returns:
         Import function with the same signature.
     """
-    signature = inspect.signature(importer)
 
     @functools.wraps(importer)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        store_path = signature.bind(*args, **kwargs).arguments["store_path"]
-        location = (
-            store_location(store_path)
-            if isinstance(store_path, str | PathLike)
-            else None
-        )
-        new_target = location if isinstance(location, Path) else None
-        if new_target is not None and (
-            new_target.exists() or new_target.is_symlink()
-        ):
-            new_target = None
+        created: list[tuple[Path, os.stat_result]] = []
+        token = _created_targets.set(created)
         try:
             return importer(*args, **kwargs)
         except BaseException as exc:
-            if (
-                new_target is not None
-                and new_target.is_dir()
-                and not new_target.is_symlink()
-            ):
-                try:
-                    shutil.rmtree(new_target)
-                except OSError as cleanup_exc:
-                    exc.add_note(
-                        "Could not remove the new store "
-                        f"{str(new_target)!r}: {cleanup_exc}"
-                    )
+            for path, identity in created:
+                _remove_created_directory(path, identity, exc)
             raise
+        finally:
+            _created_targets.reset(token)
 
     return wrapper
 

@@ -106,6 +106,22 @@ FAILING_IMPORTS = [
 
 
 @pytest.mark.parametrize("failing_import", FAILING_IMPORTS)
+def test_failed_import_removes_store_it_created(
+    tmp_path: Path, failing_import: Callable[[Path], None]
+) -> None:
+    """A failed import into a new path must not leave an empty store.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        failing_import: Import that fails after opening its target.
+    """
+    store_path = tmp_path / "store.zarr"
+    with pytest.raises(ValueError, match="requires Zarr format 3"):
+        failing_import(store_path)
+    assert not store_path.exists()
+
+
+@pytest.mark.parametrize("failing_import", FAILING_IMPORTS)
 def test_failed_import_preserves_existing_store(
     tmp_path: Path, failing_import: Callable[[Path], None]
 ) -> None:

@@ -176,7 +176,64 @@ complete.
 
 - Import and export standard SigMF recordings, archives, and collections.
   Preserve and verify standard SigMF dataset hashes.
+- Preserve exact dataset encodings, source recording and collection versions,
+  and absolute sample coordinates based on `core:offset`.
+- Export explicitly selected batch items with resolved capture scopes,
+  independent timestamps, and per-item dataset hashes. Item export checks the
+  recording metadata hash and relies on chunk CRC32C for the selected samples.
+- Reject unsupported input metadata and archive files before destination
+  creation. Reject sample axes that standard SigMF cannot represent.
+- Check imported metadata against the SigMF schema that export applies, and
+  reject `sigmf-zarr:*` fields in imported captures and annotations and
+  datasets without a complete sample, so every imported recording can be
+  exported.
+- Accept only uncompressed tar files as `.sigmf` archives. Before extraction,
+  reject sparse members, members other than regular files and directories,
+  members outside the archive root, and members that declare more bytes than
+  the archive holds.
+- Name a recording imported through its `.sigmf-data` path by its SigMF base
+  name, and reject an empty `recording_name` and export targets that are empty
+  or end in `.` or `..`.
+- Require explicit permission, and warn, before omitting native indexes,
+  extension arrays, channel metadata, or recording nodes outside the defined
+  layout during standard export.
 - Check exported metadata against the SigMF schema before writing output.
+- Write archive members with UID and GID 0, empty owner names, fixed modes, and
+  modification time 0, so identical exports produce identical archives.
+- Without `overwrite`, treat a dangling symbolic link as an existing export
+  target, and never replace a target created while export runs.
+- Plan exports without writing output, and project explicitly selected indexes
+  into the `sigmf-zarr-indexes` extension. Planning raises `KeyError` for a
+  missing recording, as export does.
+- Move replaced recordings and collections to a backup during archive import
+  instead of copying them.
+- Rename public Python API parameters to match the other importers and
+  exporters: `sigmf_path` of `import_sigmf()` to `source_path`,
+  `archive_source` and `overwrite_recordings` of `import_sigmf_archive()` to
+  `source_path` and `overwrite_recording`, and `archive_target` of
+  `export_sigmf_archive()` to `output_path`. The old names are not accepted.
+- Accept `sample_chunks` and `sample_shards` in `import_sigmf_archive()`. They
+  apply to every recording in the archive, with the same meaning and defaults
+  as in `import_sigmf()`.
+- Read archive member headers with an offset and count bound, so a crafted
+  archive cannot make `tarfile` loop (CVE-2025-8194). Count implied parent
+  directories against the archive size. Report invalid member names and
+  layouts as `ValueError`.
+- Require `overwrite_collection=True` (`--overwrite-collection`) before
+  archive import replaces a collection with the same name.
+- Apply the sample-index checks of default export at import, so integral
+  floating-point indexes and captures or annotations past the data are
+  rejected. Reject a `core:dataset` file that is a symbolic link or not a
+  regular file.
+- Check collections against the SigMF collection schema at archive import
+  and export, and reject a collection that names a recording more than
+  once.
+- Reject a complex dtype on an `iq` axis in export and export plans.
+- Reject export targets that end in `/` or `/.`. Roll back export
+  publication after an interrupt, and never delete a directory that appears
+  at a target during export.
+- Raise `KeyError` for a missing projected index before any other export
+  check.
 
 ### Dataset importers
 

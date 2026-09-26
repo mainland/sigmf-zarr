@@ -1772,6 +1772,36 @@ def test_set_global_field_rejects_managed_storage_fields(
     assert store.recordings["rec"].sample_shape == (2, 8)
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("core:sample_rate", "fast"),
+        ("core:sample_rate", 2**64),
+        ("core:version", 7),
+        ("core:datatype", "float32"),
+        ("core:offset", -1),
+    ],
+)
+def test_set_global_field_rejects_values_that_validation_rejects(
+    tmp_path: Path, key: str, value: JSONValue
+) -> None:
+    """The managed setter must not store a field that fails validation.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        key: Global field to set.
+        value: Value that violates the SigMF schema.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr")
+    recording = store.recordings.create("rec", sample_shape=(8,))
+    store.update_integrity()
+    original = recording.global_metadata
+    with pytest.raises(ValueError, match="SigMF schema"):
+        recording.set_global_field(key, value)
+    assert recording.global_metadata == original
+    assert validate_store(store, require_integrity=True).valid
+
+
 @pytest.mark.parametrize("zarr_format", [2, 3])
 def test_object_strings_keep_trailing_nul_characters(
     tmp_path: Path, zarr_format: ZarrFormat
