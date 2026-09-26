@@ -27,6 +27,7 @@ from sigmf_zarr.radioml2018 import (
     import_radioml2018_dataset,
 )
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
+from sigmf_zarr.rfml import RFMLValidationReport, validate_rfml
 from sigmf_zarr.sigmf import (
     calculate_sha512,
     export_sigmf,
@@ -67,6 +68,7 @@ __all__ = [
     "RadioML2016Value",
     "ReadOnlyArray",
     "ReadOnlyGroup",
+    "RFMLValidationReport",
     "as_radioml2016_dict",
     "calculate_sha512",
     "capture_inputs",
@@ -89,6 +91,7 @@ __all__ = [
     "ValidationIssue",
     "ValidationReport",
     "validate_store",
+    "validate_rfml",
 ]
 
 try:
