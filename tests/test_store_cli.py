@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tarfile
 from pathlib import Path
 
 import numpy as np
@@ -100,6 +101,35 @@ def test_missing_recording_is_reported_by_name(
     assert "not found: 'missing'" in capsys.readouterr().err
 
 
+def test_collection_export_contains_only_its_recordings(
+    store_path: Path, tmp_path: Path
+) -> None:
+    """The collection export command archives only collection members.
+
+    Args:
+        store_path: Example store path.
+        tmp_path: Pytest temporary path fixture.
+    """
+    output = tmp_path / "pair.sigmf"
+    assert (
+        run(
+            [
+                "store",
+                str(store_path),
+                "collection",
+                "pair",
+                "export",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    with tarfile.open(output) as archive:
+        names = {Path(name).name for name in archive.getnames()}
+    assert "c.sigmf-meta" not in names
+    assert {"a.sigmf-meta", "b.sigmf-meta", "pair.sigmf-collection"} <= names
+
+
 def test_integrity_commands_update_and_verify(
     store_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -128,3 +158,31 @@ def test_validate_skip_integrity_ignores_declared_hashes(
     store.recordings["a"].set_global_field("core:sha512", "0" * 128)
     assert run(["store", str(store_path), "validate"]) == 1
     assert run(["store", str(store_path), "validate", "--skip-integrity"]) == 0
+
+
+def test_archive_import_command_round_trips_collection(
+    store_path: Path, tmp_path: Path
+) -> None:
+    """Archive import through the command line restores a collection.
+
+    Args:
+        store_path: Example store path.
+        tmp_path: Pytest temporary path fixture.
+    """
+    archive = tmp_path / "pair.sigmf"
+    run(
+        [
+            "store",
+            str(store_path),
+            "collection",
+            "pair",
+            "export",
+            str(archive),
+        ]
+    )
+    imported = tmp_path / "imported.zarr"
+    assert run(["import", "sigmf", str(archive), str(imported)]) == 0
+    store = SigMFZarrStore.open(imported)
+    assert store.list_recordings() == ("a", "b")
+    assert store.collections["pair"].recording_ids == ("a", "b")
+    assert store.verify_integrity()
