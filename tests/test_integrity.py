@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
 from zarr.core.array import Array
 from zarr.core.group import Group, GroupMetadata
 
+from sigmf_zarr.json import JSONObject
 from sigmf_zarr.readonly import ReadOnlyArray, ReadOnlyGroup
 from sigmf_zarr.store import SigMFZarrStore, ZarrFormat
+from sigmf_zarr.validation import validate_store
 
 
 def _create_hashed_store(
@@ -486,6 +489,65 @@ def test_item_metadata_is_writable_only_in_mutation_context(
         item_metadata[0] = '{"global":{"test:value":1}}'
 
     assert recording.get_item_metadata(0) == {"global": {"test:value": 1}}
+    assert recording.metadata_sha512 is None
+    assert store.metadata_sha512 is None
+
+
+@pytest.mark.parametrize("zarr_format", [2, 3])
+@pytest.mark.parametrize("length", [2, 5])
+@pytest.mark.parametrize("raised", [False, True])
+def test_item_metadata_mutation_restores_shape(
+    tmp_path: Path, zarr_format: int, length: int, raised: bool
+) -> None:
+    """A resize must not leave the recording unopenable.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        zarr_format: Physical Zarr format.
+        length: Length the body resizes the array to.
+        raised: Whether the body raises after resizing.
+    """
+    store = SigMFZarrStore.create(
+        tmp_path / "batched.zarr", zarr_format=cast(ZarrFormat, zarr_format)
+    )
+    # One-item chunks let a shrink delete the stored entry objects.
+    recording = store.recordings.create(
+        "batch", batched=True, sample_shape=(4,), sample_chunks=(1, 4)
+    )
+    entries: list[JSONObject | None] = [
+        {"global": {"test:value": value}} for value in range(3)
+    ]
+    for entry in entries:
+        recording.append_samples(
+            np.zeros((1, 4), dtype=np.float32), item_metadata=[entry]
+        )
+    assert recording.item_metadata_array.chunks == (1,)
+    store.update_integrity()
+
+    def mutate() -> None:
+        """Write one entry and resize, then optionally raise."""
+        with recording.mutate_item_metadata() as item_metadata:
+            item_metadata[0] = '{"global":{"test:value":9}}'
+            item_metadata.resize((length,))
+            if raised:
+                raise ValueError("body")
+
+    with pytest.raises(ValueError, match="body" if raised else "resize"):
+        mutate()
+
+    # Written values remain. Entries outside a shrunken extent are lost.
+    expected = [{"global": {"test:value": 9}}, entries[1], entries[2]]
+    if length < 3:
+        expected[2] = {}
+    for reopened in (
+        store.recordings.open("batch"),
+        store.recordings.open("batch", validation="structural"),
+    ):
+        assert [
+            reopened.get_item_metadata(index) for index in range(3)
+        ] == expected
+    # The remaining sample hash is a separate partial-integrity case (B11).
+    assert validate_store(store, verify_integrity=False).valid
     assert recording.metadata_sha512 is None
     assert store.metadata_sha512 is None
 
