@@ -49,15 +49,15 @@ test = [
 docs = [
   "furo>=2024.1.29",
   "myst-parser>=2.0",
-  "sphinx==9.1.0",
+  "sphinx==9.1.1",
 ]
 dev = [
   "sigmf-zarr[pytorch,query,viewer]",
   { include-group = "test" },
   { include-group = "docs" },
-  "mypy==2.1.0",
-  "pre-commit==4.6.2",
-  "ruff==0.15.15",
+  "mypy==2.4.0",
+  "pre-commit==4.7.0",
+  "ruff==0.17.2",
   "sp-repo-review[cli]==2026.8.14",
   "tox>=4.30",
   "tox-uv>=1.28",
@@ -205,7 +205,7 @@ set_env = { QT_QPA_PLATFORM = "offscreen" }
 description = "Run the pre-commit hooks, which use the .venv environment"
 skip_install = true
 dependency_groups = []
-deps = ["pre-commit==4.6.2"]
+deps = ["pre-commit==4.7.0"]
 commands = [["pre-commit", "run", "--all-files", "--show-diff-on-failure"]]
 
 [tool.tox.env.docs]
