@@ -17,6 +17,10 @@ import sigmf_zarr.cli.sigmf as sigmf_cli
 from sigmf_zarr import SigMFZarrStore, import_sigmf, import_sigmf_archive
 from sigmf_zarr.sigmf import _check_archive_members, _read_archive_members
 
+# The JSON decoder raises `RecursionError` at this depth on some interpreters.
+# Others decode it and reach the library's own depth check.
+DEEP_MESSAGE = "nests too deeply|nested at most 128 levels deep"
+
 SAMPLES = np.arange(8, dtype="<f4")
 """Samples of every test recording."""
 
@@ -248,7 +252,7 @@ def test_archive_member_names_raise_value_error(
             + "[" * 100000
             + "]" * 100000
             + "}}",
-            "nests too deeply",
+            DEEP_MESSAGE,
         ),
     ],
 )
@@ -357,6 +361,28 @@ def test_deeply_nested_metadata_raises_value_error(tmp_path: Path) -> None:
         + "]" * 100000
         + '}, "captures": [], "annotations": []}'
     )
+    with pytest.raises(ValueError, match=DEEP_MESSAGE):
+        import_sigmf(tmp_path / "out.zarr", meta)
+
+
+def test_metadata_recursion_error_raises_value_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A decoder that exhausts the stack is reported as invalid input.
+
+    Interpreters differ in the depth at which the JSON decoder raises
+    `RecursionError`, so this test forces the error.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    meta = _write_pair(tmp_path, _metadata())
+
+    def exhaust_stack(*args: object, **kwargs: object) -> object:
+        raise RecursionError
+
+    monkeypatch.setattr(json, "load", exhaust_stack)
     with pytest.raises(ValueError, match="nests too deeply"):
         import_sigmf(tmp_path / "out.zarr", meta)
 

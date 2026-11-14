@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,6 +26,10 @@ from sigmf_zarr.json import JSONObject, JSONValue, json_object
 from sigmf_zarr.readonly import ReadOnlyArray
 from sigmf_zarr.store import SigMFRecording, SigMFZarrStore, ZarrFormat
 from sigmf_zarr.validation import validate_store
+
+# The JSON decoder raises `RecursionError` at 100,000 levels on some
+# interpreters. Others decode it and reach the library's own depth check.
+DEEP_MESSAGE = "nested too deeply|nested at most 128 levels deep"
 
 
 def test_default_sample_chunks_preserves_existing_default() -> None:
@@ -1050,6 +1055,70 @@ def test_item_metadata_writers_reject_invalid_capture_starts(
     ]
 
 
+def _exhaust_stack_on(monkeypatch: pytest.MonkeyPatch, marker: str) -> None:
+    """Make `json.loads` raise `RecursionError` for text with a marker.
+
+    Interpreters differ in the depth at which the JSON decoder raises
+    `RecursionError`, so tests that cover the handlers force the error. Other
+    text decodes normally, because the Zarr stores use the decoder too.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+        marker: Substring that selects the text that fails.
+    """
+    real_loads = json.loads
+
+    def loads(text: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(text, str) and marker in text:
+            raise RecursionError
+        return real_loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", loads)
+
+
+def test_item_metadata_recursion_error_raises_value_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stored item metadata entry that exhausts the decoder is rejected.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    store_path = tmp_path / "store.zarr"
+    store = SigMFZarrStore.create(store_path)
+    recording = store.recordings.create("rec", batched=True, sample_shape=(4,))
+    recording.append_samples(
+        np.zeros((1, 4), dtype=np.float32), item_metadata=[None]
+    )
+    item_metadata = zarr.open_array(
+        store_path, path="recordings/rec/item_metadata", mode="r+"
+    )
+    item_metadata[0] = '{"global":{"x:marker":"exhaust"}}'
+    structural = SigMFZarrStore.open(store_path).recordings.open("rec")
+
+    _exhaust_stack_on(monkeypatch, "exhaust")
+    with pytest.raises(ValueError, match="is nested too deeply"):
+        structural.get_item_metadata(0)
+
+
+def test_decode_json_index_recursion_error_raises_value_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An index entry that exhausts the decoder raises `ValueError`.
+
+    Args:
+        tmp_path: Pytest temporary path fixture.
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    store = SigMFZarrStore.create(tmp_path / "store.zarr")
+    store.add_index("deep", np.array(['{"x": "exhaust"}', "{}"]))
+
+    _exhaust_stack_on(monkeypatch, "exhaust")
+    with pytest.raises(ValueError, match="entry 0 is nested too deeply"):
+        store.decode_json_index("deep")
+
+
 @pytest.mark.parametrize("zarr_format", [2, 3])
 def test_deep_item_metadata_raises_value_error(
     tmp_path: Path, zarr_format: ZarrFormat
@@ -1083,13 +1152,13 @@ def test_deep_item_metadata_raises_value_error(
     )
     item_metadata[1] = raw
     reopened = SigMFZarrStore.open(store_path)
-    with pytest.raises(ValueError, match="nested too deeply"):
+    with pytest.raises(ValueError, match=DEEP_MESSAGE):
         reopened.recordings.open("rec", validation="full")
     # The default structural open defers entry checks to access.
     structural = reopened.recordings.open("rec")
-    with pytest.raises(ValueError, match="nested too deeply"):
+    with pytest.raises(ValueError, match=DEEP_MESSAGE):
         structural.get_item_metadata(1)
-    with pytest.raises(ValueError, match="nested too deeply"):
+    with pytest.raises(ValueError, match=DEEP_MESSAGE):
         structural.resolved_item_metadata(1)
 
 
@@ -2041,7 +2110,7 @@ def test_decode_json_index_rejects_deep_entries(tmp_path: Path) -> None:
     depth = 100_000
     store.add_index("deep", np.array(["[" * depth + "]" * depth, "{}"]))
 
-    with pytest.raises(ValueError, match="entry 0 is nested too deeply"):
+    with pytest.raises(ValueError, match=DEEP_MESSAGE):
         store.decode_json_index("deep")
 
 
