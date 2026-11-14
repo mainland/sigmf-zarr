@@ -113,7 +113,8 @@ Tox runs the tests without the lock, so a runtime dependency missing from
   version.
 - `full`: The tests with every optional integration and coverage, on the
   Python version that runs tox.
-- `min`: The tests with the lowest supported direct dependency versions.
+- `min`: The tests with the lowest supported direct dependency versions, on
+  Python 3.12.
 - `lint`: Every pre-commit hook. It requires `.venv`.
 - `docs`: The documentation build.
 - `linkcheck`: The external link check. It needs the network and is not part of

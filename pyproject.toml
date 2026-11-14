@@ -201,6 +201,7 @@ commands = [["pytest", "--cov", "--cov-report=term-missing", { replace = "posarg
 
 [tool.tox.env.min]
 description = "Run the tests with the lowest direct dependency versions"
+base_python = ["3.12"]
 uv_resolution = "lowest-direct"
 extras = ["pytorch", "query", "viewer"]
 set_env = { QT_QPA_PLATFORM = "offscreen", UV_TORCH_BACKEND = "cpu" }
