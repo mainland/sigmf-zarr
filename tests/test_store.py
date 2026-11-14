@@ -2108,7 +2108,10 @@ def test_decode_json_index_rejects_deep_entries(tmp_path: Path) -> None:
     """
     store = SigMFZarrStore.create(tmp_path / "store.zarr")
     depth = 100_000
-    store.add_index("deep", np.array(["[" * depth + "]" * depth, "{}"]))
+    # Nest objects, not arrays, so that an interpreter whose decoder accepts
+    # this depth reaches the depth check rather than the object check.
+    deep = '{"a":' * depth + "0" + "}" * depth
+    store.add_index("deep", np.array([deep, "{}"]))
 
     with pytest.raises(ValueError, match=DEEP_MESSAGE):
         store.decode_json_index("deep")
