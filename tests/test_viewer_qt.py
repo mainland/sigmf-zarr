@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import time
@@ -58,6 +59,21 @@ def app() -> QApplication:
     app = QApplication.instance() or QApplication([])
     assert isinstance(app, QApplication)
     return app
+
+
+@pytest.fixture(autouse=True)
+def collect_garbage() -> Generator[None, None, None]:
+    """Collect cyclic garbage on the main thread after each test.
+
+    Cyclic collection otherwise runs on whichever thread allocates next,
+    including a worker. Freeing a Qt wrapper there makes shiboken defer the C++
+    deletion to the main thread, which has crashed on a later test.
+
+    Yields:
+        Control to the test.
+    """
+    yield
+    gc.collect()
 
 
 def wait_for(app: QApplication, predicate: Callable[[], bool]) -> None:
