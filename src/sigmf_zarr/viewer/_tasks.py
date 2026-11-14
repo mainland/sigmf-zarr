@@ -45,6 +45,24 @@ class _Task:
         self.progress = (examined, total)
 
 
+def _ignore_error(message: str) -> None:
+    """Discard an error reported after the task set closed.
+
+    Args:
+        message: Error text.
+    """
+
+
+def _ignore_progress(key: str, examined: int, total: int) -> None:
+    """Discard progress reported after the task set closed.
+
+    Args:
+        key: Task name.
+        examined: Number of examined items.
+        total: Total number of items.
+    """
+
+
 class Tasks(QObject):
     """Run bounded concurrent work and deliver only the latest keyed result."""
 
@@ -154,4 +172,9 @@ class Tasks(QObject):
         self._timer.stop()
         for key in list(self._pending):
             self.cancel(key)
+        # The callbacks are usually bound methods of the owning widget, which
+        # owns this object. Dropping them breaks that reference cycle, so that
+        # reference counting can free a closed widget.
+        self._error = _ignore_error
+        self._progress = _ignore_progress
         self._executor.shutdown(wait=False, cancel_futures=True)

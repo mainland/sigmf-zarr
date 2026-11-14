@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import time
+import weakref
 from collections.abc import Callable, Generator, Mapping, Sequence
 from pathlib import Path
 from threading import Event, current_thread, get_ident, main_thread
@@ -58,6 +60,21 @@ def app() -> QApplication:
     app = QApplication.instance() or QApplication([])
     assert isinstance(app, QApplication)
     return app
+
+
+@pytest.fixture(autouse=True)
+def collect_garbage() -> Generator[None, None, None]:
+    """Collect cyclic garbage on the main thread after each test.
+
+    Cyclic collection otherwise runs on whichever thread allocates next,
+    including a worker. Freeing a Qt wrapper there makes shiboken defer the C++
+    deletion to the main thread, which has crashed on a later test.
+
+    Yields:
+        Control to the test.
+    """
+    yield
+    gc.collect()
 
 
 def wait_for(app: QApplication, predicate: Callable[[], bool]) -> None:
@@ -1459,3 +1476,54 @@ def test_bounded_json_stops_at_limit() -> None:
     assert len(text) < MAX_TOOLTIP_TEXT + 100
     assert text.endswith("characters)")
     assert bounded_json({"a": 1}, MAX_TOOLTIP_TEXT) == '{\n  "a": 1\n}'
+
+
+def open_and_close(
+    app: QApplication, path: Path
+) -> weakref.ReferenceType[DatasetViewer]:
+    """Show a viewer, close it, and keep no strong reference to it.
+
+    Args:
+        app: Qt application.
+        path: Dataset path.
+
+    Returns:
+        Weak reference to the closed viewer.
+    """
+    widget = DatasetViewer(DatasetSource(path))
+    widget.show()
+    wait_for(app, lambda: "Samples [0, 32)" in widget.status.text())
+    widget.close()
+    return weakref.ref(widget)
+
+
+def test_closed_viewer_is_freed_without_cyclic_collection(
+    app: QApplication, tmp_path: Path
+) -> None:
+    """Free a closed viewer by reference counting on the main thread.
+
+    A reference cycle would leave the viewer to cyclic collection, which can
+    run on a worker thread and delete Qt objects there.
+
+    Args:
+        app: Qt application.
+        tmp_path: Temporary directory.
+    """
+    path = tmp_path / "dataset.zarr"
+    rec = SigMFZarrStore.create(path).recordings.create(
+        "rec",
+        batched=True,
+        sample_shape=(2, 32),
+        sample_axes=("iq", "time"),
+    )
+    rec.append_samples(np.ones((4, 2, 32), dtype=np.float32))
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        reference = open_and_close(app, path)
+        app.processEvents()
+        assert reference() is None
+    finally:
+        if was_enabled:
+            gc.enable()

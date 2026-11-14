@@ -902,6 +902,22 @@ class SpectrogramPanel(MatplotlibPanel):
             self.maximum_db.blockSignals(False)
 
 
+def _draw_frequency(
+    waterfall: SpectrogramPanel, figure: Figure, window: SampleWindow
+) -> None:
+    """Draw raw bin power using the spectrogram's window function.
+
+    A module-level function keeps the panel from holding a reference to the
+    viewer that owns it.
+
+    Args:
+        waterfall: Spectrogram panel supplying the analysis settings.
+        figure: Target figure.
+        window: Cached sample interval.
+    """
+    spectrum(figure, window, window_function=waterfall.analysis_settings()[2])
+
+
 class DatasetViewer(QWidget):
     """Record browser with filtering, item navigation, and replaceable panels.
 
@@ -1163,9 +1179,7 @@ class DatasetViewer(QWidget):
             waterfall.region_picked.connect(self._inspect_region)
             self._spectrogram_panel = waterfall
             waterfall.analysis_changed.connect(self._analysis_requested)
-            waterfall.time_navigated.connect(
-                partial(self._plot_navigated, waterfall)
-            )
+            waterfall.time_navigated.connect(self._time_navigated)
             self._time_panels.append(waterfall)
             self.add_panel(
                 "Spectrogram",
@@ -1175,7 +1189,11 @@ class DatasetViewer(QWidget):
             )
             for title, draw, reduced in (
                 ("Time", waveform, overview_waveform),
-                ("Frequency", self._draw_frequency, overview_spectrum),
+                (
+                    "Frequency",
+                    partial(_draw_frequency, waterfall),
+                    overview_spectrum,
+                ),
                 ("I/Q", constellation, overview_constellation),
             ):
                 panel = MatplotlibPanel(
@@ -1194,9 +1212,7 @@ class DatasetViewer(QWidget):
                 panel.region_picked.connect(self._inspect_region)
                 if title == "Time":
                     self._time_panels.append(panel)
-                    panel.time_navigated.connect(
-                        partial(self._plot_navigated, panel)
-                    )
+                    panel.time_navigated.connect(self._time_navigated)
                 self.add_panel(
                     title,
                     panel,
@@ -1283,9 +1299,7 @@ class DatasetViewer(QWidget):
         timeline_layout.setContentsMargins(0, 0, 0, 0)
         self.timeline = RangeSelector()
         self.timeline.range_changed.connect(self._range_changed)
-        self.timeline.region_selected.connect(
-            lambda region: self._inspect_region(region.key)
-        )
+        self.timeline.region_selected.connect(self._timeline_region_selected)
         self.timeline.visible_range_changed.connect(
             self._timeline_view_changed
         )
@@ -1346,21 +1360,20 @@ class DatasetViewer(QWidget):
         layout.addWidget(self.item_navigation)
         navigation = QHBoxLayout()
         self.previous_item = QPushButton("Previous item")
-        self.previous_item.clicked.connect(lambda: self.step_item(-1))
+        self.previous_item.clicked.connect(self._step_previous)
         self.next_item = QPushButton("Next item")
-        self.next_item.clicked.connect(lambda: self.step_item(1))
+        self.next_item.clicked.connect(self._step_next)
         navigation.addWidget(self.previous_item)
         navigation.addWidget(self.next_item)
-        for key, step in (("Alt+Left", -1), ("Alt+Right", 1)):
-            shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.activated.connect(lambda step=step: self.step_item(step))
+        previous_shortcut = QShortcut(QKeySequence("Alt+Left"), self)
+        previous_shortcut.activated.connect(self._step_previous)
+        next_shortcut = QShortcut(QKeySequence("Alt+Right"), self)
+        next_shortcut.activated.connect(self._step_next)
         navigation.addWidget(QLabel("Match"))
         self.item_position = QSpinBox()
         self.item_position.setRange(0, 0)
         self.item_position.setEnabled(False)
-        self.item_position.valueChanged.connect(
-            lambda value: self.item_slider.setValue(value - 1)
-        )
+        self.item_position.valueChanged.connect(self._position_changed)
         navigation.addWidget(self.item_position)
         self.selection_text = QLabel()
         self.selection_text.setTextFormat(Qt.TextFormat.PlainText)
@@ -1726,6 +1739,16 @@ class DatasetViewer(QWidget):
         self._update_range_text()
         self._request_window(clear_display=not self._plot_selecting)
 
+    def _time_navigated(self, limits: tuple[float, float]) -> None:
+        """Map a time gesture on the emitting panel to the sample selection.
+
+        Args:
+            limits: Visible horizontal sample or time coordinates.
+        """
+        panel = self.sender()
+        if isinstance(panel, MatplotlibPanel):
+            self._plot_navigated(panel, limits)
+
     def _plot_navigated(
         self, panel: MatplotlibPanel, limits: tuple[float, float]
     ) -> None:
@@ -1780,20 +1803,6 @@ class DatasetViewer(QWidget):
         elif self._frequency_panel is not None:
             with self._frequency_panel.preserve_view():
                 self._frequency_panel.redraw()
-
-    def _draw_frequency(self, figure: Figure, window: SampleWindow) -> None:
-        """Draw raw bin power using the shared window selection.
-
-        Args:
-            figure: Target figure.
-            window: Cached sample interval.
-        """
-        window_function = (
-            self._spectrogram_panel.analysis_settings()[2]
-            if self._spectrogram_panel is not None
-            else "hann"
-        )
-        spectrum(figure, window, window_function=window_function)
 
     def _presentation_changed(self) -> None:
         """Redraw overlays and coordinate axes without reading samples."""
@@ -2026,6 +2035,30 @@ class DatasetViewer(QWidget):
             )
 
         self._tasks.submit("timeline", work, ready)
+
+    def _step_previous(self) -> None:
+        """Select the previous item."""
+        self.step_item(-1)
+
+    def _step_next(self) -> None:
+        """Select the next item."""
+        self.step_item(1)
+
+    def _position_changed(self, value: int) -> None:
+        """Move the item slider to a one-based position.
+
+        Args:
+            value: One-based position within the selection.
+        """
+        self.item_slider.setValue(value - 1)
+
+    def _timeline_region_selected(self, region: Region) -> None:
+        """Inspect the region chosen on the timeline.
+
+        Args:
+            region: Selected timeline region.
+        """
+        self._inspect_region(region.key)
 
     def step_item(self, step: int) -> None:
         """Step through individual items in the filtered selection.
